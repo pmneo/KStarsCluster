@@ -975,7 +975,7 @@ public abstract class KStarsCluster {
 		private void stopCapture() {
 			capturePaused.set( false );
 			captureRunning.set( false );
-			this.capture.methods.stop();
+			this.capture.methods.abort();
 		}
 		
 		public boolean canCapture() {
