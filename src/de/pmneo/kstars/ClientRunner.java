@@ -26,6 +26,7 @@ public class ClientRunner {
 		
 		KStarsCluster.Client client = new KStarsCluster.Client(  host, port );
 		client.setSyncMount( syncMount );
+		client.connectToKStars();
 		client.listen();
 	}
 }

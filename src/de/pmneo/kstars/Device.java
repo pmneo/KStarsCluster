@@ -1,5 +1,6 @@
 package de.pmneo.kstars;
 
+import java.lang.reflect.Constructor;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -15,11 +16,13 @@ import org.freedesktop.dbus.interfaces.DBusSigHandler;
 import org.freedesktop.dbus.interfaces.Properties;
 import org.freedesktop.dbus.messages.DBusSignal;
 import org.freedesktop.dbus.types.Variant;
+import org.kde.kstars.ekos.AbstractStateSignal;
 
 public class Device<T extends DBusInterface> {
 
 	public final T methods;
 	public final String interfaceName;
+	public final String objectPath;
 	
 	private final DBusConnection con;
 	
@@ -31,6 +34,8 @@ public class Device<T extends DBusInterface> {
 		
 		this.con = con;
 		
+		this.objectPath = objectPath;
+		
 		this.methods = con.getRemoteObject( busName, objectPath, impl );
 		this.properties = con.getRemoteObject( busName, objectPath, Properties.class );
 		this.interfaceName = impl.getAnnotation( DBusInterfaceName.class ).value();
@@ -40,6 +45,17 @@ public class Device<T extends DBusInterface> {
 		dbusProperties = Arrays.stream( impl.getAnnotationsByType( DBusProperty.class ) ).collect( Collectors.toMap( p -> p.name(), p->p.type() ) );
 	}
 	
+	private Class<? extends AbstractStateSignal<?> > newStateSignal;
+	@SuppressWarnings("rawtypes")
+	private DBusSigHandler newStateHandler;
+	
+	public <S extends AbstractStateSignal<?>> void addNewStatusHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
+		this.newStateSignal = _type;
+		this.newStateHandler = _handler;
+		
+		this.addSigHandler( _type, _handler );
+	}
+	
 	public <S extends DBusSignal> void addSigHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
 		con.<S>addSigHandler( _type, this.methods,status -> {
 			synchronized( this ) {
@@ -47,6 +63,28 @@ public class Device<T extends DBusInterface> {
 				_handler.handle( status );
 			}
 		} );
+	}
+	
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	public void determineAndDispatchCurrentState() {
+		Map<String,Object> payload = readAll();
+		
+		if( this.newStateSignal != null ) {
+			try {
+				Enum status = (Enum) payload.get( "status" );
+				
+				Constructor c = this.newStateSignal.getConstructor( String.class, Object[].class );
+					
+				if( c != null ) {
+					AbstractStateSignal s = (AbstractStateSignal) c.newInstance( this.objectPath, new Object[] { Integer.valueOf( status.ordinal() ) } );
+					this.newStateHandler.handle( s );
+				}
+			}
+			catch( Throwable t ) {
+				t.printStackTrace();
+			}
+			
+		}
 	}
 	
 	private void parseProperty( String key, Variant<?> value ) {
@@ -81,14 +119,28 @@ public class Device<T extends DBusInterface> {
 	}
 	
 	public synchronized Object read( String name ) {
-		final Map<String,Variant<?>> all = this.properties.Get( interfaceName, name );
-		all.forEach( this::parseProperty );
+		Object value = this.properties.Get( interfaceName, name );
+		
+		if( value instanceof Map ) {
+			@SuppressWarnings("unchecked")
+			final Map<String,Variant<?>> all = (Map<String,Variant<?>>) value;
+			all.forEach( this::parseProperty );
+		}
+		else {
+			this.parsedProperties.put( name, value );
+		}
 		return this.parsedProperties.get( name );
 	}
 	
 	public synchronized Map<String, Object> getParsedProperties() {
 		return new HashMap<String, Object>( parsedProperties );
 	}
+	
+	public synchronized Object write( String name, Object value ) {
+		this.properties.Set( interfaceName, name, value );
+		return this.read( name );
+	}
+	
 	
 	@Override
 	public String toString() {
