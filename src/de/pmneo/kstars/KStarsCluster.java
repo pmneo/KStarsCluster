@@ -473,7 +473,8 @@ public abstract class KStarsCluster {
 		protected final String host;
 		protected final int listenPort; 
 		
-		protected boolean syncMount = false;
+		protected boolean syncMount = true;
+		protected boolean autoFocusEnabled = true;
 		
 		protected String targetPostFix = "client";
 		
@@ -488,6 +489,13 @@ public abstract class KStarsCluster {
 		}
 		public boolean isSyncMount() {
 			return syncMount;
+		}
+		
+		public void setAutoFocuseEnabled(boolean autoFocus) {
+			this.autoFocusEnabled = autoFocus;
+		}
+		public boolean isAutoFocusEnabled() {
+			return autoFocusEnabled;
 		}
 		
 		public void setTargetPostFix(String targetPostFix) {
@@ -558,7 +566,6 @@ public abstract class KStarsCluster {
 		protected AtomicBoolean autoCapture = new AtomicBoolean( true );
 		
 		protected void resetValues() {
-			autoFocusDone.set( false );
 			captureRunning.set( false );
 			capturePaused.set( false );
 			autoFocusDone.set( false );
@@ -972,10 +979,18 @@ public abstract class KStarsCluster {
 			}
 		}
 
+		
+		private void startCapture() {
+			if( captureRunning.getAndSet( true ) == false ) {
+				this.capture.methods.start();
+			}
+		}
 		private void stopCapture() {
 			capturePaused.set( false );
-			captureRunning.set( false );
-			this.capture.methods.abort();
+			if( captureRunning.getAndSet( false ) == true ) {
+				//this.capture.methods.abort();
+				this.capture.methods.stop();
+			}
 		}
 		
 		public boolean canCapture() {
@@ -1000,7 +1015,7 @@ public abstract class KStarsCluster {
 					if( capturePaused.get() ) {
 						final int jobId = activeCaptureJob.get();
 						logMessage( "Resuming paused job " + jobId );
-						this.capture.methods.start();
+						this.startCapture();
 					}
 				}
 				else if( serverGudingRunning.get() && autoCapture.get() ) {
@@ -1011,7 +1026,7 @@ public abstract class KStarsCluster {
 						try {
 							logMessage( "Starting Autofocus process" );
 							
-							if( this.focus.methods.canAutoFocus() ) {
+							if( this.isAutoFocusEnabled() && this.focus.methods.canAutoFocus() ) {
 								this.focus.methods.start();
 								logMessage( "Done" );
 							}
@@ -1032,7 +1047,7 @@ public abstract class KStarsCluster {
 						
 						if( pendingJobCount > 0 ) {
 							logMessage( "Starting aborted capture, pending jobs " + pendingJobCount );
-							this.capture.methods.start();
+							this.startCapture();
 						}
 						else {
 							logMessage( "No Jobs to capture" );
