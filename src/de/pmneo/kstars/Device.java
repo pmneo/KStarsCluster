@@ -87,6 +87,7 @@ public class Device<T extends DBusInterface> {
 		}
 	}
 	
+	@SuppressWarnings("unchecked")
 	private void parseProperty( String key, Variant<?> value ) {
 		Class<?> p = dbusProperties.get( key );
 		
@@ -96,10 +97,22 @@ public class Device<T extends DBusInterface> {
 			v = ArrayUtils.arrayToList( v );
 		}
 		
-		if( p != null && p.isEnum() && v instanceof List ) {
-			@SuppressWarnings("unchecked")
-			final int s = ( ( List<Number> ) v ).get(0).intValue();
-	    	final Object[] values = p.getEnumConstants();
+		if( p != null && p.isEnum() ) {
+			
+			int s;
+			
+			if( v instanceof List ) {
+				s = ( ( List<Number> ) v ).get(0).intValue();
+			}
+			else if( v instanceof Number ) {
+				s = ((Number) v).intValue();
+			}
+			else {
+				s = -1;
+			}
+			
+			
+			final Object[] values = p.getEnumConstants();
 	    	if( s < 0 || s >= values.length ) {
 	    		v = null;
 	    	}

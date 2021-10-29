@@ -773,21 +773,28 @@ public abstract class KStarsCluster {
 			switch( state ) {
 				case FOCUS_COMPLETE:
 					autoFocusDone.set( true );
+					focusRunning.set( false );
+					checkState();
+				break;
+				
 				case FOCUS_ABORTED:
 				case FOCUS_FAILED:
+					autoFocusDone.set( false );
+					focusRunning.set( false );
+					checkState();
+				break;
+				
 				case FOCUS_IDLE:
 					focusRunning.set( false );
 					checkState();
 				break;
 				
-				case FOCUS_PROGRESS:
-					focusRunning.set( true );
-				break;
-
 				case FOCUS_FRAMING:
 				case FOCUS_WAITING:
 				case FOCUS_CHANGING_FILTER:
-					break;
+				case FOCUS_PROGRESS:
+					focusRunning.set( true );
+				break;
 			}
 		}
 		
@@ -926,8 +933,6 @@ public abstract class KStarsCluster {
 					capturePaused.set( false );
 					if( captureRunning.getAndSet( false ) ) {
 						logMessage( "Capture " + activeCaptureJob.get() + " was aborted");
-						logMessage( "Capture was aborted by user" );
-						autoCapture.set( false );
 					}
 					
 					checkState();
@@ -1014,8 +1019,7 @@ public abstract class KStarsCluster {
 					//check if we should resume
 					if( capturePaused.get() ) {
 						final int jobId = activeCaptureJob.get();
-						logMessage( "Resuming paused job " + jobId );
-						this.startCapture();
+						logMessage( "Warning: paused job " + jobId );
 					}
 				}
 				else if( serverGudingRunning.get() && autoCapture.get() ) {
@@ -1070,8 +1074,8 @@ public abstract class KStarsCluster {
 					}
 					else {
 						//always pause capture
-						logMessage( "Pausing job " + jobId );
-						this.capture.methods.pause();
+						//logMessage( "Pausing job " + jobId );
+						//this.capture.methods.pause();
 					}
 				}
 			}
