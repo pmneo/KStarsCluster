@@ -11,6 +11,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,7 +35,10 @@ import org.kde.kstars.ekos.Mount.MeridianFlipStatus;
 import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Mount.ParkStatus;
 import org.kde.kstars.ekos.Scheduler;
+import org.kde.kstars.ekos.Weather;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
+import org.kde.kstars.ekos.Weather.WeatherState;
+
 
 public abstract class KStarsCluster {
 	protected DBusConnection con;
@@ -45,6 +49,7 @@ public abstract class KStarsCluster {
 	protected final Device<Capture> capture;
 	protected final Device<Mount> mount;
 	protected final Device<Scheduler> scheduler;
+	protected final Device<Weather> weather;
 	
 	protected final List< Device<?> > mandatoryDevices = new ArrayList<Device<?>>();
 	protected final List< Device<?> > devices = new ArrayList<Device<?>>();
@@ -107,6 +112,12 @@ public abstract class KStarsCluster {
 		this.mandatoryDevices.add( this.scheduler );
 		this.scheduler.addNewStatusHandler( Scheduler.newStatus.class, status -> {
 			this.handleSchedulerStatus( status.getStatus() );
+		} );
+
+		this.weather = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Weather", Weather.class );
+		this.devices.add( this.weather );
+		this.weather.addNewStatusHandler( Weather.newStatus.class, status -> {
+			this.handleSchedulerWeatherStatus( status.getStatus() );
 		} );
 	}
 	
@@ -232,6 +243,10 @@ public abstract class KStarsCluster {
 	protected void handleSchedulerStatus( SchedulerState state ) {
 		//logMessage( "handleSchedulerStatus " + state );
 	}
+
+	protected void handleSchedulerWeatherStatus( WeatherState state ) {
+		//logMessage( "handleSchedulerStatus " + state );
+	}
 	
 	public static class SocketHandler {
 		public final Socket socket;
@@ -347,15 +362,38 @@ public abstract class KStarsCluster {
 			writeToAllClients( payload );
 		}
 		
+		protected final AtomicReference< SchedulerState > schedulerState = new AtomicReference< SchedulerState >( SchedulerState.SCHEDULER_IDLE );
 		protected final AtomicReference< Map<String,Object> > lastScheduleStatus = new AtomicReference< Map<String,Object> >();
 		@Override
 		protected void handleSchedulerStatus(SchedulerState state) {
 			super.handleSchedulerStatus(state);
+
+			this.schedulerState.set( state );
 			
 			final Map<String,Object> payload = scheduler.getParsedProperties();
 			payload.put( "action", "handleSchedulerStatus" );
 			lastScheduleStatus.set( payload );
 			writeToAllClients( payload );
+
+
+			
+		}
+
+		protected final AtomicReference< Map<String,Object> > lastScheduleWeatherStatus = new AtomicReference< Map<String,Object> >();
+		@Override
+		protected void handleSchedulerWeatherStatus(WeatherState state) {
+			super.handleSchedulerWeatherStatus(state);
+			
+			final Map<String,Object> payload = new HashMap<>();
+			payload.put( "action", "handleSchedulerWeatherStatus" );
+			payload.put( "status", state );
+			lastScheduleWeatherStatus.set( payload );
+			writeToAllClients( payload );
+			
+			if( state == WeatherState.WEATHER_OK && this.schedulerState.get() == SchedulerState.SCHEDULER_IDLE ) {
+				logMessage( "Weather is OK, Starting idle scheduler" );
+				scheduler.methods.start();
+			}
 		}
 		
 		protected final AtomicReference< Map<String,Object> > lastGuideStatus = new AtomicReference< Map<String,Object> >();
@@ -538,6 +576,10 @@ public abstract class KStarsCluster {
 					else if( "handleSchedulerStatus".equals( action ) ) {
 						final SchedulerState status = (SchedulerState) payload.get( "status" );
 						handleServerSchedulerStatus(status, payload);
+					}
+					else if( "handleSchedulerWeatherStatus".equals( action ) ) {
+						final WeatherState status = (WeatherState) payload.get( "status" );
+						handleServerSchedulerWeatherStatus(status, payload);
 					}
 				}
 			}
@@ -732,6 +774,11 @@ public abstract class KStarsCluster {
 				break;
 			}
 		}
+
+		protected void handleServerSchedulerWeatherStatus(WeatherState status, final Map<String, Object> payload) {
+			logMessage( "Server scheduler weather status " + status );
+		}
+		
 		
 		@Override
 		protected void handleSchedulerStatus(SchedulerState state) {

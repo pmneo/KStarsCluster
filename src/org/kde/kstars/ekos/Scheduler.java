@@ -16,14 +16,12 @@ import org.freedesktop.dbus.messages.DBusSignal;
 @DBusProperty(name = "status", type = Scheduler.SchedulerState.class, access = Access.READ)
 public interface Scheduler extends DBusInterface {
 
-
     public void start();
     public void stop();
     public void removeAllJobs();
     public boolean loadScheduler(String fileURL);
     public void setSequence(String sequenceFileURL);
     public void resetAllJobs();
-
     
     public static enum SchedulerState {
         SCHEDULER_IDLE,     /*< Scheduler is stopped. */
@@ -34,6 +32,7 @@ public interface Scheduler extends DBusInterface {
         SCHEDULER_ABORTED,  /*< Scheduler is stopped in error. */
         SCHEDULER_LOADING   /*< Scheduler is loading a schedule. */
     }
+
     public static class newStatus extends AbstractStateSignal<SchedulerState> {
 		public newStatus(String _path, Object[] _status) throws DBusException {
 			super(_path, SchedulerState.class, _status );
