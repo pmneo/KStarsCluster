@@ -57,9 +57,14 @@ public class Device<T extends DBusInterface> {
 	}
 	
 	public <S extends DBusSignal> void addSigHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
-		con.<S>addSigHandler( _type, this.methods,status -> {
+		con.<S>addSigHandler( _type, this.methods, status -> {
 			synchronized( this ) {
-				this.readAll();
+				try {
+					this.readAll();
+				}
+				catch( Throwable t ) {
+					t.printStackTrace();
+				}
 				_handler.handle( status );
 			}
 		} );
@@ -128,6 +133,9 @@ public class Device<T extends DBusInterface> {
 	public synchronized Map<String,Object> readAll() {
 		final Map<String,Variant<?>> all = this.properties.GetAll( interfaceName );
 		all.forEach( this::parseProperty );
+		if( all.size() == 0 ) {
+			throw new IllegalStateException( "No properties readed" );
+		}
 		return parsedProperties;
 	}
 	

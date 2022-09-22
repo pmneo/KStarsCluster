@@ -26,6 +26,12 @@ public interface Align extends DBusInterface {
     public boolean captureAndSolve();
     public boolean loadAndSlew(String fileURL);
     public void setSolverMode(UInt32 mode);
+    
+    
+    /** DBUS interface function.
+     * Select Solver Action after successfully solving an image.
+     * @param mode 0 for Sync, 1 for Slew To Target, 2 for Nothing (just display solution results)
+     */
     public void setSolverAction(int mode);
     public List<Double> cameraInfo();
     public List<Double> telescopeInfo();
@@ -35,6 +41,7 @@ public interface Align extends DBusInterface {
     public void setFOVTelescopeType(int index);
     public void setTargetCoords(double ra, double de);
     public void setTargetRotation(double rotation);
+    public void setTargetPositionAngle (double value);
 
     public static enum AlignState {
     	ALIGN_IDLE, 	

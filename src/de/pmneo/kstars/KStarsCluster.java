@@ -1,5 +1,6 @@
 package de.pmneo.kstars;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ObjectInputStream;
@@ -20,8 +21,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+
 import org.freedesktop.dbus.connections.impl.DBusConnection;
 import org.freedesktop.dbus.exceptions.DBusException;
+import org.kde.kstars.Ekos;
+import org.kde.kstars.Ekos.CommunicationStatus;
 import org.kde.kstars.ekos.Align;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture;
@@ -38,11 +44,14 @@ import org.kde.kstars.ekos.Scheduler;
 import org.kde.kstars.ekos.Weather;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
 import org.kde.kstars.ekos.Weather.WeatherState;
+import org.w3c.dom.Document;
+import org.w3c.dom.NodeList;
 
 
 public abstract class KStarsCluster {
 	protected DBusConnection con;
-	
+
+	protected final Device<Ekos> ekos;
 	protected final Device<Align> align;
 	protected final Device<Focus> focus;
 	protected final Device<Guide> guide;
@@ -61,6 +70,13 @@ public abstract class KStarsCluster {
 		/* Get a connection to the session bus so we can get data */
 		con = DBusConnection.getConnection( DBusConnection.DBusBusType.SESSION );
 		
+		this.ekos = new Device<>( con, "org.kde.kstars", "/KStars/Ekos", Ekos.class );
+		this.mandatoryDevices.add( this.ekos );
+		this.ekos.addSigHandler( Ekos.ekosStatusChanged.class, status -> {
+			this.handleEkosStatus( status.getStatus() );
+		} );
+
+
 		this.guide = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Guide", Guide.class );
 		this.devices.add( this.guide );
 		this.mandatoryDevices.add( this.guide );
@@ -120,7 +136,7 @@ public abstract class KStarsCluster {
 			this.handleSchedulerWeatherStatus( status.getStatus() );
 		} );
 	}
-	
+
 	protected void kStarsConnected() {
 		for( Device<?> d : devices ) {
 			try {
@@ -144,10 +160,14 @@ public abstract class KStarsCluster {
 	
 	public void logError( Object message, Throwable t ) {
 		System.err.println( sdf.format( new Date() ) + message );
-		t.printStackTrace();
+		
+		if( t != null ) {
+			t.printStackTrace();
+		}
 	}
 	
 	
+
 	private Thread kStarsMonitor = null;
 	public synchronized void connectToKStars() {
 		if( kStarsMonitor != null ) {
@@ -156,22 +176,104 @@ public abstract class KStarsCluster {
 			}
 		}
 		kStarsMonitor = new Thread( () -> {
-			boolean ready = true;
-			
+			boolean ekosAvailable = false;
+			boolean startKStars = false;
+			Process kstarsProcess = null;
+
+			Runtime.getRuntime().addShutdownHook(new Thread()
+			{
+				@Override
+				public void run()
+				{
+					System.out.println("Shutdown hook ran!");
+				}
+			});
+
+			Thread.currentThread().setName( "KStars Monitor Thread" );
+
 			while( true ) {
 				
-				while( isKStarsReady() == false ) {
-					if( ready ) {
-						ready = false;
-						logMessage( "Kstars is not ready yet" );
+				ekosAvailable = false;
+
+				while( !ekosAvailable ) {
+					//first check if ekos is started and available
+					try {
+						ekos.readAll();
+						ekosAvailable = true;
+						startKStars = false;
 					}
+					catch( Throwable t ) {
+						//ekos is not responding ... kstars may be crashed or not running
+
+						if( !startKStars ) {
+							startKStars = true;
+							ekosAvailable = false;
+
+							logMessage( "KStars/Ekos seems not to run, let's wait up to 15 Seconds it may be start soon" );
+							for( int wi = 0; wi < 15; wi++ ) {
+								try {
+									ekos.readAll();
+									ekosAvailable = true;
+									startKStars = false;
+									break;
+								}
+								catch( Throwable t2 ) {
+									sleep( 1000L );
+								}
+							}
+						}
+						else {
+
+							try {
+								logMessage( "Killing previous kstars processes" );
+								Process kill = Runtime.getRuntime().exec( new String[]{ "killall", "kstars" } );
+								
+								kill.waitFor();
+
+								logMessage( "Killed previous kstars processes" );
+								
+							}
+							catch( Throwable tt ) {
+								logError( "Failed to kill kstars", tt );
+							}
+							
+							try {
+								logMessage( "Starting kstars" );
+								kstarsProcess = Runtime.getRuntime().exec( new String[]{ "setsid", "nohup", "kstars" } );
+								
+								logMessage( "Started kstars with pid " + kstarsProcess.pid() );
+								startKStars = false;
+							}
+							catch( Throwable tt ) {
+								logError( "Failed to start kstars", tt );
+							}
+							
+						}
+					}
+				}
+
+				if( isKStarsReady() == false ) {
+					CommunicationStatus indiStatus = (CommunicationStatus)ekos.getParsedProperties().get( "indiStatus" );
+
+					logMessage( "Current indi status: " + indiStatus );
+					logMessage( "Ekos not started yet, starting now" );
+					try {
+						ekos.methods.start();
+					}
+					catch( Throwable t ) {
+						logError( "Faield to start ekos, is kstars running?", t );
+						continue; //repeat check
+					}
+				}
+
+				while( isKStarsReady() == false ) {
 					sleep( 1000L );
 				}
-				
-				ready = true;
 			
-				logMessage( "Kstars is ready" );
+				logMessage( "Ekos is ready" );
 				
+				ekosReady();
+
 				kStarsConnected.set(true);
 				kStarsConnected();
 				
@@ -180,7 +282,6 @@ public abstract class KStarsCluster {
 				}
 				
 				logMessage( "Kstars is has stopped, waiting to become ready again" );
-				ready = false;
 				
 				kStarsConnected.set(false);
 				kStarsDisconnected();
@@ -212,8 +313,15 @@ public abstract class KStarsCluster {
 		
 		return true;
 	}
+
+	protected void ekosReady() {
+
+	}
 	
-	
+	protected void handleEkosStatus( CommunicationStatus state ) {
+		//logMessage( "handleGuideStatus " + state );
+	}
+
 	protected void handleGuideStatus( GuideStatus state ) {
 		//logMessage( "handleGuideStatus " + state );
 	}
@@ -329,6 +437,59 @@ public abstract class KStarsCluster {
 			serverSocket = new ServerSocket( listenPort );
 		}
 		
+		protected String loadSchedule = "";
+
+		public void setLoadSchedule(String loadSchedule) {
+			if( loadSchedule != null ) {
+				loadSchedule = loadSchedule.replaceFirst("^~", System.getProperty("user.home"));
+			}
+			this.loadSchedule = loadSchedule;
+		}
+		
+		public void ekosReady() {
+			super.ekosReady();
+
+			if( loadSchedule != null && loadSchedule.isEmpty() == false ) {
+				File f = new File( loadSchedule );
+				if( f.exists() ) {
+
+					if( scheduler.getParsedProperties().get( "status" ) == SchedulerState.SCHEDULER_IDLE ) {
+						try {
+							f = f.getCanonicalFile();
+						}
+						catch( IOException e ) {
+							//ignore
+						}
+						logMessage( "loading schedule " + f.getPath() );
+						try {
+							scheduler.methods.loadScheduler( f.getPath() );
+						}
+						catch( Throwable t ) {
+							logError( "Failed to load schedule", t );
+						}
+						sleep(1000L);
+						logMessage( "starting schedule " + f.getPath() );
+						try {
+							scheduler.methods.start();
+						}
+						catch( Throwable t ) {
+							logError( "Failed to start schedule", t );
+						}
+						
+					}
+					else {
+						logMessage( "Scheduler is not idle: " + scheduler.getParsedProperties().get( "status" ) );
+					}
+				}
+				else {
+					logMessage( "Scheduler File does not exists: " + f.getPath() );
+				}
+			}
+			else {
+				logMessage( "No Scheduler File provided" );
+			}
+		}
+
 		protected final AtomicReference< Map<String,Object> > lastCaptureStatus = new AtomicReference< Map<String,Object> >();
 		@Override
 		protected void handleCaptureStatus(CaptureStatus state) {
@@ -345,10 +506,72 @@ public abstract class KStarsCluster {
 		protected void handleAlignStatus(AlignState state) {
 			super.handleAlignStatus(state);
 			
+			double pa = getPositionAngle();
+
 			final Map<String,Object> payload = align.getParsedProperties();
 			payload.put( "action", "handleAlignStatus" );
+			payload.put( "positionAngle", pa );
 			lastAlignStatus.set( payload );
 			writeToAllClients( payload );
+		}
+
+		protected double getPositionAngle() {
+			
+			Double pa = null;
+
+			try {
+				List<Double> result = this.align.methods.getSolutionResult();
+				pa = result.get( 0 ).doubleValue() + 180;
+
+				while( pa < 0.0 ) {
+					pa += 360.0;
+				}
+				while( pa >= 360.0 ) {
+					pa -= 360.0;
+				}
+			}
+			catch( Throwable t ) {
+				logError( "Failed to get pa from align module", t );
+			}
+			
+			if( pa == null ) {
+				File f = new File( loadSchedule );
+
+				if( f.exists() ) {
+					try {
+						logMessage( "Try resolve by scheduler" );
+						DocumentBuilder doc = DocumentBuilderFactory.newInstance().newDocumentBuilder();
+						Document d = doc.parse( f );
+						NodeList nl = d.getDocumentElement().getElementsByTagName( "PositionAngle" );
+						
+						for( int i=0; i<nl.getLength(); i++ ) {
+							String tmp = nl.item( i ).getTextContent();
+							if( tmp != null ) {
+								double tpa = Double.parseDouble( tmp.trim() );
+
+								if( pa == null ) {
+									pa =  tpa;
+								}
+								else if( pa.doubleValue() != pa ) {
+									logError( "Ombigous pa found: " + pa + " vs. " + tpa, null );
+								}
+							}
+						}
+					}
+					catch( Throwable t ) {
+						logError( "Failed to determine PositionAngle", t );
+					}
+				}
+			}
+
+			if( pa == null ) {
+				logMessage( "No PA found, falling back to 0.0" );
+				return 0.0;
+			}
+			else {
+				logMessage( "Found PA: " + pa );
+				return pa.doubleValue();
+			}
 		}
 		
 		protected final AtomicReference< Map<String,Object> > lastFocusStatus = new AtomicReference< Map<String,Object> >();
@@ -397,6 +620,7 @@ public abstract class KStarsCluster {
 		}
 		
 		protected final AtomicReference< Map<String,Object> > lastGuideStatus = new AtomicReference< Map<String,Object> >();
+		protected final AtomicBoolean guideCalibrating = new AtomicBoolean( false );
 		@Override
 		protected void handleGuideStatus(GuideStatus state) {
 			super.handleGuideStatus(state);
@@ -405,6 +629,69 @@ public abstract class KStarsCluster {
 			payload.put( "action", "handleGuideStatus" );
 			lastGuideStatus.set( payload );
 			writeToAllClients( payload );
+
+			/*
+			switch( state ) {
+				case GUIDE_ABORTED:
+					break;
+				case GUIDE_CALIBRATING:
+					guideCalibrating.set( true );
+					break;
+				case GUIDE_CALIBRATION_ERROR:
+					break;
+				case GUIDE_CALIBRATION_SUCESS:
+					guideCalibrating.set( false );
+					break;
+
+				case GUIDE_SUSPENDED:
+					break;
+
+				case GUIDE_GUIDING:
+					if( guideCalibrating.get() ) {
+						logMessage( "Calibration was not finished, but guiding was resumed ... clearing calibration and abort guiding" );
+						try {
+							guide.methods.clearCalibration();
+						}
+						catch( Throwable t ) {
+							logError( "Failed to clear calibration", t );
+						}
+
+						try {
+							guide.methods.abort();
+						}
+						catch( Throwable t ) {
+							logError( "Failed to abort guiding", t );
+						}
+					}
+				break;
+
+				case GUIDE_CAPTURE:
+				case GUIDE_CONNECTED:
+				case GUIDE_DARK:
+				case GUIDE_DISCONNECTED:
+				case GUIDE_DITHERING:
+					break;
+				case GUIDE_DITHERING_ERROR:
+				case GUIDE_DITHERING_SETTLE:
+				case GUIDE_DITHERING_SUCCESS:
+					break;
+				
+				case GUIDE_IDLE:
+				case GUIDE_LOOPING:
+				case GUIDE_MANUAL_DITHERING:
+				case GUIDE_REACQUIRE:
+				case GUIDE_STAR_SELECT:
+				case GUIDE_SUBFRAME:
+					break;
+				
+				
+				default:
+					break;
+
+			}
+
+			 */
+			
 		}
 		
 		protected final AtomicReference< Map<String,Object> > lastMountStatus = new AtomicReference< Map<String,Object> >();
@@ -521,7 +808,56 @@ public abstract class KStarsCluster {
 			this.host = host;
 			this.listenPort = listenPort;
 		}
+
+		protected String captureSequence = "";
 		
+		public void setCaptureSequence(String captureSequence) {
+			if( captureSequence != null ) {
+				captureSequence = captureSequence.replaceFirst("^~", System.getProperty("user.home"));
+			}
+			this.captureSequence = captureSequence;
+		}
+		
+		public void ekosReady() {
+			super.ekosReady();
+
+			loadSequence();
+		}
+		
+		public void loadSequence() {
+			if( captureSequence != null && captureSequence.isEmpty() == false ) {
+				File f = new File( captureSequence );
+				if( f.exists() ) {
+					Object status = capture.getParsedProperties().get( "status" );
+					if( status == CaptureStatus.CAPTURE_ABORTED || status == CaptureStatus.CAPTURE_COMPLETE || status == CaptureStatus.CAPTURE_IDLE ) {
+						try {
+							f = f.getCanonicalFile();
+						}
+						catch( IOException e ) {
+							//ignore
+						}
+						logMessage( "loading sequence " + f.getPath() );
+						try {
+							capture.methods.loadSequenceQueue( f.getPath() );
+						}
+						catch( Throwable t ) {
+							logError( "Failed to load sequence", t );
+						}
+						sleep(1000L);
+					}
+					else {
+						logMessage( "capture is not idle: " + status );
+					}
+				}
+				else {
+					logMessage( "capture File does not exists: " + f.getPath() );
+				}
+			}
+			else {
+				logMessage( "No sequence file provided" );
+			}
+		}
+
 		public void setSyncMount(boolean syncMount) {
 			this.syncMount = syncMount;
 		}
@@ -581,6 +917,10 @@ public abstract class KStarsCluster {
 						final WeatherState status = (WeatherState) payload.get( "status" );
 						handleServerSchedulerWeatherStatus(status, payload);
 					}
+					else if( "handleAlignStatus".equals( action ) ) {
+						final AlignState status = (AlignState) payload.get( "status" );
+						handleServerAlignStatus(status, payload);
+					}
 				}
 			}
 			catch( Throwable t ) {
@@ -589,12 +929,19 @@ public abstract class KStarsCluster {
 		}
 
 		
+		
+
 		protected AtomicBoolean serverSchedulerRunning = new AtomicBoolean( false );
 		protected AtomicBoolean serverFocusRunning = new AtomicBoolean( false );
 		protected AtomicBoolean serverCaptureRunning = new AtomicBoolean( false );
 		protected AtomicReference<String> serverCaptureTarget = new AtomicReference<>( null );
 		protected AtomicBoolean serverGudingRunning = new AtomicBoolean( false );
 		protected AtomicBoolean serverDitheringActive = new AtomicBoolean( false );
+
+		protected AtomicBoolean shouldAlign = new AtomicBoolean( false );
+		protected AtomicReference<Double> targetPositionAngle = new AtomicReference<Double>( 0.0 );
+		protected AtomicReference<AlignState> currentAlignStatus = new AtomicReference<AlignState>( AlignState.ALIGN_IDLE );
+		protected AtomicReference<MountStatus> currentMountStatus = new AtomicReference<MountStatus>( MountStatus.MOUNT_IDLE );
 		
 		protected AtomicBoolean serverMountTracking = new AtomicBoolean( false );
 		
@@ -679,6 +1026,7 @@ public abstract class KStarsCluster {
 			super.handleMountStatus(state);
 			
 			logMessage( "Client mount status " + state );
+			currentMountStatus.set( state );
 		}
 
 		
@@ -719,8 +1067,10 @@ public abstract class KStarsCluster {
 					break;
 				
 				
-				case GUIDE_CALIBRATING:
 				case GUIDE_CALIBRATION_ERROR:
+					//should be handled
+					break;
+				case GUIDE_CALIBRATING:
 				case GUIDE_CALIBRATION_SUCESS:
 					//no need to handle
 					break;
@@ -730,6 +1080,8 @@ public abstract class KStarsCluster {
 					break;
 					
 				case GUIDE_DITHERING_ERROR:
+					//should be handled
+					break;
 				case GUIDE_DITHERING_SETTLE:
 				case GUIDE_DITHERING_SUCCESS:
 					//no need to handle
@@ -760,11 +1112,15 @@ public abstract class KStarsCluster {
 			switch( status ) {
 				case SCHEDULER_ABORTED:
 				case SCHEDULER_IDLE:
+				case SCHEDULER_SHUTDOWN:
+					this.capture.write( "coolerControl", Boolean.FALSE );
+					
 				case SCHEDULER_LOADING:
 				case SCHEDULER_PAUSED:
-				case SCHEDULER_SHUTDOWN:
+				
 				case SCHEDULER_STARTUP:
 					serverSchedulerRunning.set( false );
+					
 					checkState();
 				break;
 					
@@ -779,6 +1135,18 @@ public abstract class KStarsCluster {
 			logMessage( "Server scheduler weather status " + status );
 		}
 		
+		protected void handleServerAlignStatus(AlignState status, Map<String, Object> payload) {
+			logMessage( "Server scheduler align status " + status );
+
+			targetPositionAngle.set( (Double) payload.get( "positionAngle" ) );
+
+			logMessage( "Server PA: " + targetPositionAngle.get() );
+
+			if( status == AlignState.ALIGN_COMPLETE ) {
+				shouldAlign.set( true );
+				checkState();
+			}
+		}
 		
 		@Override
 		protected void handleSchedulerStatus(SchedulerState state) {
@@ -1031,6 +1399,16 @@ public abstract class KStarsCluster {
 			}
 		}
 
+		protected void handleAlignStatus( AlignState state ) {
+			if( state == null ) {
+				state = AlignState.ALIGN_IDLE;
+			}
+
+			super.handleAlignStatus(state);
+			logMessage( "handleAlignStatus " + state );
+			currentAlignStatus.set( state );
+		}
+
 		
 		private void startCapture() {
 			if( captureRunning.getAndSet( true ) == false ) {
@@ -1092,10 +1470,40 @@ public abstract class KStarsCluster {
 							autoFocusDone.set( true );
 						}
 					}
+
+					if( shouldAlign.get() && this.targetPositionAngle.get() != null ) {
+						try {
+
+							waitForMountTracking();
+							logMessage( "Starting Align process to " + this.targetPositionAngle.get() );
+							this.align.methods.setSolverAction( 0 ); //SYNC
+							captureAndSolveAndWait();
+							List<Double> coords = this.align.methods.getSolutionResult();
+							logMessage( "Sync done: " + coords );
+							this.align.methods.setTargetPositionAngle( this.targetPositionAngle.get() );
+							//logMessage( "Set target corrds" );
+							this.align.methods.setTargetCoords( coords.get(1) / 15.0, coords.get(2) );
+							this.align.methods.setSolverAction( 1 ); //SYNC
+							captureAndSolveAndWait();
+							logMessage( "PA align done" );
+						}
+						catch( Throwable t ) {
+							//autofocus failed, this
+							logMessage( "Align module not present" );
+						}
+						finally {
+							shouldAlign.set( false );
+						}
+					}
 					
 					if( autoFocusDone.get() ) {
 						int pendingJobCount = this.capture.methods.getPendingJobCount();
 						
+						if( pendingJobCount == 0 ) {
+							loadSequence();
+							pendingJobCount = this.capture.methods.getPendingJobCount();
+						}
+
 						if( pendingJobCount > 0 ) {
 							logMessage( "Starting aborted capture, pending jobs " + pendingJobCount );
 							this.startCapture();
@@ -1128,6 +1536,79 @@ public abstract class KStarsCluster {
 			}
 		}
 
+		protected void waitForMountTracking() {
+			logMessage( "Wait for mount tracking: " + this.currentMountStatus.get() );
+			boolean mountTracking = false;
+			while( !mountTracking ) {
+				MountStatus state = this.currentMountStatus.get();
+				
+				switch( state ) {
+					case MOUNT_ERROR:
+						break;
+					case MOUNT_IDLE:
+						break;
+					case MOUNT_MOVING:
+						break;
+					case MOUNT_PARKED:
+						break;
+					case MOUNT_PARKING:
+						break;
+					case MOUNT_SLEWING:
+						break;
+					case MOUNT_TRACKING:
+						logMessage( "Mount is tracking now: " + state );
+						mountTracking = true;
+						break;
+					default:
+						break;
+				}
+
+				try {
+					Thread.sleep( 500 );
+				}
+				catch( Throwable t ) {
+					t.printStackTrace();
+				}
+			}
+		}
+		protected void captureAndSolveAndWait() {
+
+			this.currentAlignStatus.set( AlignState.ALIGN_IDLE );
+			this.align.methods.captureAndSolve();
+
+			boolean alignRunning = true;
+			while( alignRunning ) {
+				AlignState state = this.currentAlignStatus.get();
+				
+				switch( state ) {
+					case ALIGN_ABORTED:
+						alignRunning = false;
+						break;
+					case ALIGN_COMPLETE:
+						alignRunning = false;
+						break;
+					case ALIGN_FAILED:
+						alignRunning = false;
+						break;
+					
+					case ALIGN_PROGRESS:
+						break;
+					case ALIGN_SLEWING:
+						break;
+					case ALIGN_SYNCING:
+						break;
+					default:
+						break;
+				}
+
+				try {
+					Thread.sleep( 500 );
+				}
+				catch( Throwable t ) {
+					t.printStackTrace();
+				}
+			}
+		}
 
 		@Override
 		protected void kStarsConnected() {
@@ -1188,11 +1669,5 @@ public abstract class KStarsCluster {
 				sleep( 1000 );
 			}
 		}
-	}
-	
-	
-	public static void main(String[] args) throws Exception {
-		
-		ClientRunner.main(args);
 	}
 }

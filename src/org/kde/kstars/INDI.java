@@ -1,13 +1,15 @@
 package org.kde.kstars;
 
 import java.util.List;
+
+import org.freedesktop.dbus.annotations.DBusInterfaceName;
 import org.freedesktop.dbus.interfaces.DBusInterface;
 
 /**
  * Auto-generated class.
  */
+@DBusInterfaceName("org.kde.kstars.INDI")
 public interface INDI extends DBusInterface {
-
 
     public boolean start(String port, List<String> drivers);
     public boolean stop(String port);
