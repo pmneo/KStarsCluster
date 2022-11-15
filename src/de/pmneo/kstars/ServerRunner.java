@@ -32,22 +32,18 @@ public class ServerRunner {
 	@Argument(alias = "a", required = false, valuesProvider = BooleanProvider.class )
 	public static String autoFocus = "true";
 	
-	@Argument(alias = "s", required = false , valuesProvider = BooleanProvider.class)
-	public static String syncMount = "true";
-	
 	public static void main(String[] args) throws Exception {
 		Args.parseOrExit(ServerRunner.class, args);
 		
 		if( host != null && host.isEmpty() == false ) {
-			KStarsCluster.Client client = new KStarsCluster.Client( host, port );
-			client.setSyncMount( Boolean.valueOf(syncMount).booleanValue() );
+			KStarsClusterClient client = new KStarsClusterClient( host, port );
 			client.setAutoFocuseEnabled( Boolean.valueOf(autoFocus).booleanValue() );
 			client.setCaptureSequence( loadSequence );
 			client.connectToKStars();
 			client.listen();
 		}
 		else {
-			KStarsCluster.Server cluster = new KStarsCluster.Server(port);
+			KStarsClusterServer cluster = new KStarsClusterServer(port);
 			cluster.setLoadSchedule( loadSchedule );
 			cluster.connectToKStars();
 

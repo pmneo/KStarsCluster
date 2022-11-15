@@ -4,9 +4,9 @@ Requires Java 11
 
 Usage:
 
-run `KStarsCluster/server.sh` on the Master KStars Instance which is Guding and Dithering
+run `java -jar KStarsCluster.jar` on the Main KStars Instance which is Guding and Dithering
 
-run `KStarsCluster/client.sh -h {ip of master}` on the Client KStars Instance. 
+run `java -jar KStarsCluster.jar -h {ip of master}` on the Client KStars Instance. 
 
 Prepare your Capture Sequence on Master and Client(s). 
 

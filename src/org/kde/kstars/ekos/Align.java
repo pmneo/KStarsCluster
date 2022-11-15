@@ -50,7 +50,9 @@ public interface Align extends DBusInterface {
     	ALIGN_ABORTED,
     	ALIGN_PROGRESS, 	
     	ALIGN_SYNCING, 	
-    	ALIGN_SLEWING
+    	ALIGN_SLEWING,
+        ALIGN_ROTATING,
+        ALIGN_SUSPENDED
     }
     public static class newStatus extends AbstractStateSignal<AlignState> {
         public newStatus(String _path, Object[] _status) throws DBusException {

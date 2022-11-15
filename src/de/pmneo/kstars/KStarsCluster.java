@@ -1,33 +1,29 @@
 package de.pmneo.kstars;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.OutputStream;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
-
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
 
 import org.freedesktop.dbus.connections.impl.DBusConnection;
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.kde.kstars.Ekos;
+import org.kde.kstars.INDI;
 import org.kde.kstars.Ekos.CommunicationStatus;
+import org.kde.kstars.INDI.DriverInterface;
+import org.kde.kstars.INDI.IpsState;
 import org.kde.kstars.ekos.Align;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture;
@@ -41,11 +37,9 @@ import org.kde.kstars.ekos.Mount.MeridianFlipStatus;
 import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Mount.ParkStatus;
 import org.kde.kstars.ekos.Scheduler;
-import org.kde.kstars.ekos.Weather;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
+import org.kde.kstars.ekos.Weather;
 import org.kde.kstars.ekos.Weather.WeatherState;
-import org.w3c.dom.Document;
-import org.w3c.dom.NodeList;
 
 
 public abstract class KStarsCluster {
@@ -59,6 +53,7 @@ public abstract class KStarsCluster {
 	protected final Device<Mount> mount;
 	protected final Device<Scheduler> scheduler;
 	protected final Device<Weather> weather;
+	protected final Device<INDI> indi;
 	
 	protected final List< Device<?> > mandatoryDevices = new ArrayList<Device<?>>();
 	protected final List< Device<?> > devices = new ArrayList<Device<?>>();
@@ -76,6 +71,8 @@ public abstract class KStarsCluster {
 			this.handleEkosStatus( status.getStatus() );
 		} );
 
+		this.indi = new Device<>( con, "org.kde.kstars", "/KStars/INDI", INDI.class );
+		this.devices.add( this.indi );
 
 		this.guide = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Guide", Guide.class );
 		this.devices.add( this.guide );
@@ -130,11 +127,27 @@ public abstract class KStarsCluster {
 			this.handleSchedulerStatus( status.getStatus() );
 		} );
 
-		this.weather = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Weather", Weather.class );
-		this.devices.add( this.weather );
-		this.weather.addNewStatusHandler( Weather.newStatus.class, status -> {
-			this.handleSchedulerWeatherStatus( status.getStatus() );
-		} );
+		System.out.println( "Detecting INDI Weather Device" );
+		Device<Weather> weather = null;
+		for( int i=0; i<10; i++ ) {
+			weather = new Device<>( con, "org.kde.kstars", "/KStars/INDI/Weather/" + i, Weather.class );
+			try {
+				String name = (String) weather.read( "name" );
+				System.out.println( "Detected Weather device: " + name + " at " + "/KStars/INDI/Weather/" + i );
+				break;
+			}
+			catch( Throwable t ) {
+				//IGNORE
+				weather = null;
+			}
+		}
+		this.weather = weather;
+		if( this.weather != null ) {
+			this.devices.add( this.weather );
+			this.weather.addNewStatusHandler( Weather.newStatus.class, status -> {
+				this.handleSchedulerWeatherStatus( status.getStatus() );
+			} );
+		}
 	}
 
 	protected void kStarsConnected() {
@@ -191,8 +204,7 @@ public abstract class KStarsCluster {
 
 			Thread.currentThread().setName( "KStars Monitor Thread" );
 
-			while( true ) {
-				
+			while( true ) { try {
 				ekosAvailable = false;
 
 				while( !ekosAvailable ) {
@@ -266,7 +278,7 @@ public abstract class KStarsCluster {
 					}
 				}
 
-				while( isKStarsReady() == false ) {
+				while( checkKStarsReady() == false ) {
 					sleep( 1000L );
 				}
 			
@@ -277,7 +289,7 @@ public abstract class KStarsCluster {
 				kStarsConnected.set(true);
 				kStarsConnected();
 				
-				while( isKStarsReady() ) {
+				while( checkKStarsReady() ) {
 					sleep( 5000L );
 				}
 				
@@ -286,6 +298,9 @@ public abstract class KStarsCluster {
 				kStarsConnected.set(false);
 				kStarsDisconnected();
 			}
+			catch( Throwable t ) {
+				logError( "Unhandled error in KStars Monitor loop", t );
+			} }
 		} );
 		kStarsMonitor.setDaemon( true );
 		kStarsMonitor.start();
@@ -300,18 +315,25 @@ public abstract class KStarsCluster {
 		}
 	}
 
-	protected boolean isKStarsReady() {
+	protected final AtomicBoolean kStarsReady = new AtomicBoolean(false);
+
+	protected boolean checkKStarsReady() {
 		
 		for( Device<?> d : mandatoryDevices ) {
 			try {
 				d.readAll();
 			}
 			catch( Throwable t ) {
+				kStarsReady.set( false );
 				return false;
 			}
 		}
-		
+		kStarsReady.set( true );
 		return true;
+	}
+
+	protected boolean isKStarsReady() {
+		return kStarsReady.get();
 	}
 
 	protected void ekosReady() {
@@ -326,10 +348,6 @@ public abstract class KStarsCluster {
 		//logMessage( "handleGuideStatus " + state );
 	}
 	
-	protected void handleCaptureStatus( CaptureStatus state ) {
-		//logMessage( "handleCaptureStatus " + state );
-	}
-	
 	protected void handleMountStatus( MountStatus state ) {
 		//logMessage( "handleMountStatus " + state );
 	}
@@ -340,12 +358,157 @@ public abstract class KStarsCluster {
 		//logMessage( "handleMeridianFlipStatus " + state );
 	}
 	
-	
+	private final AtomicInteger alignProgressCounter = new AtomicInteger(0);
 	protected void handleAlignStatus( AlignState state ) {
 		//logMessage( "handleAlignStatus " + state );
+		if( state == null ) {
+			state = AlignState.ALIGN_IDLE;
+		}
+
+		switch( state ) {
+			case ALIGN_SYNCING:
+			break;
+			case ALIGN_PROGRESS:
+			break;
+			
+			case ALIGN_SLEWING:
+				if( alignProgressCounter.incrementAndGet() > 5 ) {
+					logMessage( "Resetting mount model" );
+					this.mount.methods.resetModel();
+					alignProgressCounter.set(0);
+				}
+			break;
+
+			case ALIGN_ABORTED:
+			case ALIGN_COMPLETE:
+			case ALIGN_FAILED:
+			alignProgressCounter.set( 0 );
+			case ALIGN_IDLE:
+			case ALIGN_ROTATING:
+			case ALIGN_SUSPENDED:
+				break;
+			default:
+				break;
+			
+		}
+	}
+
+	protected String findFirstDevice( int ofInterface) {
+		for( String device : this.indi.methods.getDevices() ) {
+			int driverInterface = Integer.parseInt( this.indi.methods.getText( device, "DRIVER_INFO", "DRIVER_INTERFACE" ) );
+
+			if( ( driverInterface & ofInterface ) != 0 ) {
+				return device;
+			}
+		}
+		return null;
+	}
+
+	/*
+	'ABS_ROTATOR_ANGLE.ANGLE',
+	'SYNC_ROTATOR_ANGLE.ANGLE',
+ 	*/
+
+	 private final AtomicReference<String> rotatorDevice = new AtomicReference<>();
+	 protected String getRotatorDevice() {
+		 if( rotatorDevice.get() == null ) {
+			rotatorDevice.set( findFirstDevice( DriverInterface.ROTATOR_INTERFACE ) );
+		 }
+		 return rotatorDevice.get();
+	 }
+	 protected double getRotatorPosition() {
+		 return this.indi.methods.getNumber( getRotatorDevice(), "ABS_ROTATOR_ANGLE", "ANGLE" );
+	 }
+	 protected IpsState getRotatorPositionStatus() {
+		 return IpsState.get( this.indi.methods.getPropertyState( getRotatorDevice(), "ABS_ROTATOR_ANGLE" ) );
+	 }
+	 protected void setRotatorPosition( double pos ) {
+		 this.indi.methods.setNumber( getRotatorDevice(), "ABS_ROTATOR_ANGLE", "ANGLE", pos );
+		 this.indi.methods.sendProperty( getRotatorDevice(), "ABS_ROTATOR_ANGLE" );
+	 }
+
+/*
+ 'FOCUS_MOTION.FOCUS_INWARD',
+ 'FOCUS_MOTION.FOCUS_OUTWARD',
+ 'REL_FOCUS_POSITION.FOCUS_RELATIVE_POSITION',
+ 'ABS_FOCUS_POSITION.FOCUS_ABSOLUTE_POSITION',
+ 'FOCUS_MAX.FOCUS_MAX_VALUE',
+ 'FOCUS_ABORT_MOTION.ABORT',
+ 'FOCUS_SYNC.FOCUS_SYNC_VALUE',
+ 'FOCUS_REVERSE_MOTION.INDI_ENABLED',
+ 'FOCUS_REVERSE_MOTION.INDI_DISABLED',
+ 'FOCUS_BACKLASH_TOGGLE.INDI_ENABLED',
+ 'FOCUS_BACKLASH_TOGGLE.INDI_DISABLED',
+ 'FOCUS_BACKLASH_STEPS.FOCUS_BACKLASH_VALUE',
+ 'FOCUS_SETTLE_BUFFER.SETTLE_BUFFER',
+ 'FOCUS_TEMPERATURE.TEMPERATURE'
+*/
+	
+	private final AtomicReference<String> focusDevice = new AtomicReference<>();
+	protected String getFocusDevice() {
+		if( focusDevice.get() == null ) {
+			focusDevice.set( (String) this.focus.read( "focuser" ) );
+		}
+		return focusDevice.get();
+	}
+	protected double getFocusPosition() {
+		return this.indi.methods.getNumber( getFocusDevice(), "ABS_FOCUS_POSITION", "FOCUS_ABSOLUTE_POSITION" );
+	}
+	protected IpsState getFocusPositionStatus() {
+		return IpsState.get( this.indi.methods.getPropertyState( getFocusDevice(), "ABS_FOCUS_POSITION" ) );
+	}
+	protected void setFocusPosition( double pos ) {
+		this.indi.methods.setNumber( getFocusDevice(), "ABS_FOCUS_POSITION", "FOCUS_ABSOLUTE_POSITION", pos );
+		this.indi.methods.sendProperty( getFocusDevice(), "ABS_FOCUS_POSITION" );
+	}
+
+	protected final AtomicReference<Double> lastFocusPos = new AtomicReference<>(null);
+
+	protected void handleCaptureStatus( CaptureStatus state ) {
+		//logMessage( "handleCaptureStatus " + state );
+
+		if( CaptureStatus.CAPTURE_CAPTURING == state || lastFocusPos.get() == null ) {
+			double focusPos = getFocusPosition();
+			logMessage( "Storing last focus pos ("+state+"): " + focusPos );
+			lastFocusPos.set(focusPos);
+		}
 	}
 	protected void handleFocusStatus( FocusState state ) {
 		//logMessage( "handleFocusStatus " + state );
+
+		try {
+			switch( state ) {
+				case FOCUS_ABORTED:
+					Double lastPos = lastFocusPos.get();
+					if( lastPos != null ) {
+						logMessage( "Restoring focuser position to " + lastPos );
+						setFocusPosition( lastPos.doubleValue() );
+					}
+					break;
+				case FOCUS_CHANGING_FILTER:
+					break;
+				case FOCUS_FAILED:
+					break;
+				case FOCUS_FRAMING:
+					break;
+				case FOCUS_IDLE:
+				case FOCUS_COMPLETE:
+					double focusPos = getFocusPosition();
+					logMessage( "Storing last focus pos ("+state+"): " + focusPos );
+					lastFocusPos.set(focusPos);
+				break;
+				case FOCUS_PROGRESS:
+					break;
+				case FOCUS_WAITING:
+					break;
+				default:
+					break;
+
+			}
+		}
+		catch( Throwable t ) {
+			logError( "Failed to handle focus state", t );
+		}
 	}
 	
 	protected void handleSchedulerStatus( SchedulerState state ) {
@@ -429,1244 +592,33 @@ public abstract class KStarsCluster {
 		disconnected.accept( socket, null );
 	}
 
-	public static class Server extends KStarsCluster {
-		protected final ServerSocket serverSocket;
-		
-		public Server( int listenPort ) throws IOException, DBusException {
-			super( );
-			serverSocket = new ServerSocket( listenPort );
-		}
-		
-		protected String loadSchedule = "";
-
-		public void setLoadSchedule(String loadSchedule) {
-			if( loadSchedule != null ) {
-				loadSchedule = loadSchedule.replaceFirst("^~", System.getProperty("user.home"));
-			}
-			this.loadSchedule = loadSchedule;
-		}
-		
-		public void ekosReady() {
-			super.ekosReady();
-
-			if( loadSchedule != null && loadSchedule.isEmpty() == false ) {
-				File f = new File( loadSchedule );
-				if( f.exists() ) {
-
-					if( scheduler.getParsedProperties().get( "status" ) == SchedulerState.SCHEDULER_IDLE ) {
-						try {
-							f = f.getCanonicalFile();
-						}
-						catch( IOException e ) {
-							//ignore
-						}
-						logMessage( "loading schedule " + f.getPath() );
-						try {
-							scheduler.methods.loadScheduler( f.getPath() );
-						}
-						catch( Throwable t ) {
-							logError( "Failed to load schedule", t );
-						}
-						sleep(1000L);
-						logMessage( "starting schedule " + f.getPath() );
-						try {
-							scheduler.methods.start();
-						}
-						catch( Throwable t ) {
-							logError( "Failed to start schedule", t );
-						}
-						
-					}
-					else {
-						logMessage( "Scheduler is not idle: " + scheduler.getParsedProperties().get( "status" ) );
-					}
-				}
-				else {
-					logMessage( "Scheduler File does not exists: " + f.getPath() );
-				}
-			}
-			else {
-				logMessage( "No Scheduler File provided" );
-			}
+	public static class WaitUntil {
+		private long endTime = -1;
+		private long maxWaitInSeconds = -1;
+		private final String timeoutMessage;
+		public WaitUntil( long maxWaitInSeconds, String timeoutMessage ) {
+			this.timeoutMessage = timeoutMessage;
+			this.reset( maxWaitInSeconds );
 		}
 
-		protected final AtomicReference< Map<String,Object> > lastCaptureStatus = new AtomicReference< Map<String,Object> >();
-		@Override
-		protected void handleCaptureStatus(CaptureStatus state) {
-			super.handleCaptureStatus(state);
-			
-			final Map<String,Object> payload = capture.getParsedProperties();
-			payload.put( "action", "handleCaptureStatus" );
-			lastCaptureStatus.set( payload );
-			writeToAllClients( payload );
-		}
-		
-		protected final AtomicReference< Map<String,Object> > lastAlignStatus = new AtomicReference< Map<String,Object> >();
-		@Override
-		protected void handleAlignStatus(AlignState state) {
-			super.handleAlignStatus(state);
-			
-			double pa = getPositionAngle();
-
-			final Map<String,Object> payload = align.getParsedProperties();
-			payload.put( "action", "handleAlignStatus" );
-			payload.put( "positionAngle", pa );
-			lastAlignStatus.set( payload );
-			writeToAllClients( payload );
+		public void reset( long maxWaitInSeconds ) {
+			this.maxWaitInSeconds = maxWaitInSeconds;
+			reset();
 		}
 
-		protected double getPositionAngle() {
-			
-			Double pa = null;
-
-			try {
-				List<Double> result = this.align.methods.getSolutionResult();
-				pa = result.get( 0 ).doubleValue() + 180;
-
-				while( pa < 0.0 ) {
-					pa += 360.0;
-				}
-				while( pa >= 360.0 ) {
-					pa -= 360.0;
-				}
-			}
-			catch( Throwable t ) {
-				logError( "Failed to get pa from align module", t );
-			}
-			
-			if( pa == null ) {
-				File f = new File( loadSchedule );
-
-				if( f.exists() ) {
-					try {
-						logMessage( "Try resolve by scheduler" );
-						DocumentBuilder doc = DocumentBuilderFactory.newInstance().newDocumentBuilder();
-						Document d = doc.parse( f );
-						NodeList nl = d.getDocumentElement().getElementsByTagName( "PositionAngle" );
-						
-						for( int i=0; i<nl.getLength(); i++ ) {
-							String tmp = nl.item( i ).getTextContent();
-							if( tmp != null ) {
-								double tpa = Double.parseDouble( tmp.trim() );
-
-								if( pa == null ) {
-									pa =  tpa;
-								}
-								else if( pa.doubleValue() != pa ) {
-									logError( "Ombigous pa found: " + pa + " vs. " + tpa, null );
-								}
-							}
-						}
-					}
-					catch( Throwable t ) {
-						logError( "Failed to determine PositionAngle", t );
-					}
-				}
-			}
-
-			if( pa == null ) {
-				logMessage( "No PA found, falling back to 0.0" );
-				return 0.0;
-			}
-			else {
-				logMessage( "Found PA: " + pa );
-				return pa.doubleValue();
-			}
-		}
-		
-		protected final AtomicReference< Map<String,Object> > lastFocusStatus = new AtomicReference< Map<String,Object> >();
-		@Override
-		protected void handleFocusStatus(FocusState state) {
-			super.handleFocusStatus(state);
-			
-			final Map<String,Object> payload = focus.getParsedProperties();
-			payload.put( "action", "handleFocusStatus" );
-			lastFocusStatus.set( payload );
-			writeToAllClients( payload );
-		}
-		
-		protected final AtomicReference< SchedulerState > schedulerState = new AtomicReference< SchedulerState >( SchedulerState.SCHEDULER_IDLE );
-		protected final AtomicReference< Map<String,Object> > lastScheduleStatus = new AtomicReference< Map<String,Object> >();
-		@Override
-		protected void handleSchedulerStatus(SchedulerState state) {
-			super.handleSchedulerStatus(state);
-
-			this.schedulerState.set( state );
-			
-			final Map<String,Object> payload = scheduler.getParsedProperties();
-			payload.put( "action", "handleSchedulerStatus" );
-			lastScheduleStatus.set( payload );
-			writeToAllClients( payload );
-
-
-			
+		public void reset() {
+			endTime = System.currentTimeMillis() + ( maxWaitInSeconds * 1000 );
 		}
 
-		protected final AtomicReference< Map<String,Object> > lastScheduleWeatherStatus = new AtomicReference< Map<String,Object> >();
-		@Override
-		protected void handleSchedulerWeatherStatus(WeatherState state) {
-			super.handleSchedulerWeatherStatus(state);
-			
-			final Map<String,Object> payload = new HashMap<>();
-			payload.put( "action", "handleSchedulerWeatherStatus" );
-			payload.put( "status", state );
-			lastScheduleWeatherStatus.set( payload );
-			writeToAllClients( payload );
-			
-			if( state == WeatherState.WEATHER_OK && this.schedulerState.get() == SchedulerState.SCHEDULER_IDLE ) {
-				logMessage( "Weather is OK, Starting idle scheduler" );
-				scheduler.methods.start();
-			}
-		}
-		
-		protected final AtomicReference< Map<String,Object> > lastGuideStatus = new AtomicReference< Map<String,Object> >();
-		protected final AtomicBoolean guideCalibrating = new AtomicBoolean( false );
-		@Override
-		protected void handleGuideStatus(GuideStatus state) {
-			super.handleGuideStatus(state);
-			
-			final Map<String,Object> payload = guide.getParsedProperties();
-			payload.put( "action", "handleGuideStatus" );
-			lastGuideStatus.set( payload );
-			writeToAllClients( payload );
-
-			/*
-			switch( state ) {
-				case GUIDE_ABORTED:
-					break;
-				case GUIDE_CALIBRATING:
-					guideCalibrating.set( true );
-					break;
-				case GUIDE_CALIBRATION_ERROR:
-					break;
-				case GUIDE_CALIBRATION_SUCESS:
-					guideCalibrating.set( false );
-					break;
-
-				case GUIDE_SUSPENDED:
-					break;
-
-				case GUIDE_GUIDING:
-					if( guideCalibrating.get() ) {
-						logMessage( "Calibration was not finished, but guiding was resumed ... clearing calibration and abort guiding" );
-						try {
-							guide.methods.clearCalibration();
-						}
-						catch( Throwable t ) {
-							logError( "Failed to clear calibration", t );
-						}
-
-						try {
-							guide.methods.abort();
-						}
-						catch( Throwable t ) {
-							logError( "Failed to abort guiding", t );
-						}
-					}
-				break;
-
-				case GUIDE_CAPTURE:
-				case GUIDE_CONNECTED:
-				case GUIDE_DARK:
-				case GUIDE_DISCONNECTED:
-				case GUIDE_DITHERING:
-					break;
-				case GUIDE_DITHERING_ERROR:
-				case GUIDE_DITHERING_SETTLE:
-				case GUIDE_DITHERING_SUCCESS:
-					break;
-				
-				case GUIDE_IDLE:
-				case GUIDE_LOOPING:
-				case GUIDE_MANUAL_DITHERING:
-				case GUIDE_REACQUIRE:
-				case GUIDE_STAR_SELECT:
-				case GUIDE_SUBFRAME:
-					break;
-				
-				
-				default:
-					break;
-
-			}
-
-			 */
-			
-		}
-		
-		protected final AtomicReference< Map<String,Object> > lastMountStatus = new AtomicReference< Map<String,Object> >();
-		@Override
-		protected void handleMountStatus(MountStatus state) {
-			super.handleMountStatus(state);
-			
-			final Map<String, Object> payload = updateLastMountStatus();
-			writeToAllClients( payload );
-		}
-
-		protected Map<String, Object> updateLastMountStatus() {
-			final Map<String,Object> payload = mount.getParsedProperties();
-			payload.put( "action", "handleMountStatus" );
-			lastMountStatus.set( payload );
-			return payload;
-		}
-		
-		@Override
-		protected void handleMeridianFlipStatus(MeridianFlipStatus state) {
-			super.handleMeridianFlipStatus(state);
-			
-			updateLastMountStatus();
-			
-			final Map<String,Object> payload = mount.getParsedProperties();
-			payload.put( "action", "handleMeridianFlipStatus" );
-			writeToAllClients( payload );
-		}
-		@Override
-		protected void handleMountParkStatus(ParkStatus state) {
-			super.handleMountParkStatus(state);
-			
-			updateLastMountStatus();
-			
-			final Map<String,Object> payload = mount.getParsedProperties();
-			payload.put( "action", "handleMountParkStatus" );
-			writeToAllClients( payload );
-		}
-		
-		protected void writeToAllClients( Map<String, Object> payload ) {
-			
-			payload.remove( "logText" ); 
-			
-			logMessage( "Sending " + payload.get( "action" ) + ": " + payload.get( "status" ) + " to " + clients.size() + " clients" );
-			
-			for( SocketHandler handler : clients.keySet() ) {
-				try {
-					handler.writeObject( payload );
-				} catch (IOException e) {
-					logError( "Failed to inform client " + handler, e );
-				}
-			}
-		}
-		
-		protected ConcurrentHashMap< SocketHandler, Thread > clients = new ConcurrentHashMap<SocketHandler, Thread>();
-		
-		protected void clientFrameReceived( SocketHandler client, Object frame ) {
-			//this should currently not happen?
-			logMessage( "Received Client Frame: " + frame );
-		}
-
-		public void listen() {
-			while( true ) {
-				try {
-					logMessage( "Listen" );
-					
-					final Socket client = this.serverSocket.accept();
-					
-					if( client != null ) {
-						logMessage( "Client from " + client.getRemoteSocketAddress() + " connected" );
-						
-						final SocketHandler clientHandler = new SocketHandler( client );
-						final Thread rThread = new Thread( () -> {
-							receive( clientHandler, this::clientFrameReceived, (c,t) -> {
-								clients.remove( c );
-							} );
-						} );
-						clients.put( clientHandler, rThread );
-								
-						rThread.start();
-						
-						synchronized ( clientHandler._output ) {
-							clientHandler.writeObject( "Hello Client" );
-							
-							//inform new client about the current state
-							clientHandler.writeNotNullObject( lastScheduleStatus.get() );
-							clientHandler.writeNotNullObject( lastMountStatus.get() );
-							clientHandler.writeNotNullObject( lastAlignStatus.get() );
-							clientHandler.writeNotNullObject( lastFocusStatus.get() );
-							clientHandler.writeNotNullObject( lastGuideStatus.get() );
-							clientHandler.writeNotNullObject( lastCaptureStatus.get() );
-						}
-					}
-				}
-				catch( Throwable t ) {
-					logError( "Failed to accept", t );
-				}
-			}
-		}
-	}
-	
-	public static class Client extends KStarsCluster {
-		
-		protected final String host;
-		protected final int listenPort; 
-		
-		protected boolean syncMount = true;
-		protected boolean autoFocusEnabled = true;
-		
-		protected String targetPostFix = "client";
-		
-		public Client( String host, int listenPort ) throws DBusException {
-			super( );
-			this.host = host;
-			this.listenPort = listenPort;
-		}
-
-		protected String captureSequence = "";
-		
-		public void setCaptureSequence(String captureSequence) {
-			if( captureSequence != null ) {
-				captureSequence = captureSequence.replaceFirst("^~", System.getProperty("user.home"));
-			}
-			this.captureSequence = captureSequence;
-		}
-		
-		public void ekosReady() {
-			super.ekosReady();
-
-			loadSequence();
-		}
-		
-		public void loadSequence() {
-			if( captureSequence != null && captureSequence.isEmpty() == false ) {
-				File f = new File( captureSequence );
-				if( f.exists() ) {
-					Object status = capture.getParsedProperties().get( "status" );
-					if( status == CaptureStatus.CAPTURE_ABORTED || status == CaptureStatus.CAPTURE_COMPLETE || status == CaptureStatus.CAPTURE_IDLE ) {
-						try {
-							f = f.getCanonicalFile();
-						}
-						catch( IOException e ) {
-							//ignore
-						}
-						logMessage( "loading sequence " + f.getPath() );
-						try {
-							capture.methods.loadSequenceQueue( f.getPath() );
-						}
-						catch( Throwable t ) {
-							logError( "Failed to load sequence", t );
-						}
-						sleep(1000L);
-					}
-					else {
-						logMessage( "capture is not idle: " + status );
-					}
-				}
-				else {
-					logMessage( "capture File does not exists: " + f.getPath() );
-				}
-			}
-			else {
-				logMessage( "No sequence file provided" );
-			}
-		}
-
-		public void setSyncMount(boolean syncMount) {
-			this.syncMount = syncMount;
-		}
-		public boolean isSyncMount() {
-			return syncMount;
-		}
-		
-		public void setAutoFocuseEnabled(boolean autoFocus) {
-			this.autoFocusEnabled = autoFocus;
-		}
-		public boolean isAutoFocusEnabled() {
-			return autoFocusEnabled;
-		}
-		
-		public void setTargetPostFix(String targetPostFix) {
-			this.targetPostFix = targetPostFix;
-		}
-		public String getTargetPostFix() {
-			return targetPostFix;
-		}
-		
-		protected void serverFrameReceived( SocketHandler client, Object frame ) {
-			try {
-				//this should currently not happen?
-				
-				if( kStarsConnected.get() == false ) {
-					logMessage( "Received a Server Frame, but KStars is not ready yet. Skipping.");
-					return;
-				}
-				
-				if( frame instanceof Map ) {
-					@SuppressWarnings("unchecked")
-					final Map<String, Object> payload = (Map<String, Object>) frame;
-					final String action = (String) payload.get( "action" );
-					
-					if( "handleMountStatus".equals( action ) ) {
-						final MountStatus status = (MountStatus) payload.get( "status" );
-						handleServerMountStatus(status, payload);
-					}
-					else if( "handleGuideStatus".equals( action ) ) {
-						final GuideStatus status = (GuideStatus) payload.get( "status" );
-						handleServerGuideStatus(status, payload);
-					}
-					else if( "handleCaptureStatus".equals( action ) ) {
-						final CaptureStatus status = (CaptureStatus) payload.get( "status" );
-						handleServerCaptureStatus(status, payload);
-					}
-					else if( "handleFocusStatus".equals( action ) ) {
-						final FocusState status = (FocusState) payload.get( "status" );
-						handleServerFocusStatus(status, payload);
-					}
-					else if( "handleSchedulerStatus".equals( action ) ) {
-						final SchedulerState status = (SchedulerState) payload.get( "status" );
-						handleServerSchedulerStatus(status, payload);
-					}
-					else if( "handleSchedulerWeatherStatus".equals( action ) ) {
-						final WeatherState status = (WeatherState) payload.get( "status" );
-						handleServerSchedulerWeatherStatus(status, payload);
-					}
-					else if( "handleAlignStatus".equals( action ) ) {
-						final AlignState status = (AlignState) payload.get( "status" );
-						handleServerAlignStatus(status, payload);
-					}
-				}
-			}
-			catch( Throwable t ) {
-				logError( "Error due handle server frame", t );
-			}
-		}
-
-		
-		
-
-		protected AtomicBoolean serverSchedulerRunning = new AtomicBoolean( false );
-		protected AtomicBoolean serverFocusRunning = new AtomicBoolean( false );
-		protected AtomicBoolean serverCaptureRunning = new AtomicBoolean( false );
-		protected AtomicReference<String> serverCaptureTarget = new AtomicReference<>( null );
-		protected AtomicBoolean serverGudingRunning = new AtomicBoolean( false );
-		protected AtomicBoolean serverDitheringActive = new AtomicBoolean( false );
-
-		protected AtomicBoolean shouldAlign = new AtomicBoolean( false );
-		protected AtomicReference<Double> targetPositionAngle = new AtomicReference<Double>( 0.0 );
-		protected AtomicReference<AlignState> currentAlignStatus = new AtomicReference<AlignState>( AlignState.ALIGN_IDLE );
-		protected AtomicReference<MountStatus> currentMountStatus = new AtomicReference<MountStatus>( MountStatus.MOUNT_IDLE );
-		
-		protected AtomicBoolean serverMountTracking = new AtomicBoolean( false );
-		
-		protected AtomicInteger activeCaptureJob = new AtomicInteger( 0 );
-		protected AtomicBoolean captureRunning = new AtomicBoolean( false );
-		protected AtomicBoolean capturePaused = new AtomicBoolean( false );
-		protected AtomicBoolean autoFocusDone = new AtomicBoolean( false );
-		protected AtomicBoolean focusRunning = new AtomicBoolean( false );
-		protected AtomicBoolean imageReceived = new AtomicBoolean( false );
-		
-		protected AtomicBoolean autoCapture = new AtomicBoolean( true );
-		
-		protected void resetValues() {
-			captureRunning.set( false );
-			capturePaused.set( false );
-			autoFocusDone.set( false );
-			focusRunning.set( false );
-			imageReceived.set( false );
-			autoCapture.set( true );
-		}
-		
-		protected void handleServerMountStatus( final MountStatus status, final Map<String, Object> payload ) {
-			logMessage( "Server mount status " + status );
-			
-			switch( status ) {
-				case MOUNT_ERROR:
-					serverMountTracking.set( false );
-					checkState();
-					break;
-				case MOUNT_IDLE:
-					serverMountTracking.set( false );
-					
-					if( isSyncMount() ) {
-						this.mount.methods.unpark();
-					}
-					
-					checkState();
-					break;
-				case MOUNT_MOVING:
-					serverMountTracking.set( false );
-					checkState();
-					break;
-				case MOUNT_PARKED:
-					serverMountTracking.set( false );
-					
-					if( isSyncMount() ) {
-						this.mount.methods.park();
-					}
-					
-					checkState();
-					break;
-				case MOUNT_PARKING:
-					serverMountTracking.set( false );
-					checkState();
-					break;
-				case MOUNT_SLEWING:
-					serverMountTracking.set( false );
-					
-					if( isSyncMount() ) {
-						this.mount.methods.unpark();
-					}
-					
-					checkState();
-					break;
-				case MOUNT_TRACKING:
-					serverMountTracking.set( true );
-					
-					if( isSyncMount() ) {
-						@SuppressWarnings("unchecked") 
-						final List<Double> pos = (List<Double>) payload.get( "equatorialCoords" );
-						this.mount.methods.slew( pos.get(0), pos.get(1) );
-					}
-					
-					checkState();
-					break;
-				default:
-					break;
-			}
-		}
-		@Override
-		protected void handleMountStatus( MountStatus state ) {
-			super.handleMountStatus(state);
-			
-			logMessage( "Client mount status " + state );
-			currentMountStatus.set( state );
-		}
-
-		
-		protected void handleServerGuideStatus(GuideStatus status, final Map<String, Object> payload) {
-			logMessage( "Server guide status " + status );
-			
-			switch( status ) {
-				case GUIDE_ABORTED:
-					serverGudingRunning.set( false );
-					
-				case GUIDE_MANUAL_DITHERING:
-				case GUIDE_DITHERING:
-					serverDitheringActive.set( true );
-					checkState();
-				break;
-					
-				case GUIDE_GUIDING:
-					serverGudingRunning.set( true );
-					serverDitheringActive.set( false );
-					
-					checkState();
-				break;
-				
-				case GUIDE_LOOPING:
-				case GUIDE_DISCONNECTED:
-					serverGudingRunning.set( false );
-					checkState();
-				break;
-				
-				case GUIDE_IDLE:
-					//Todo: should we handle this
-					break;
-				case GUIDE_REACQUIRE:
-					//Todo: should we handle this
-					break;
-				case GUIDE_SUSPENDED:
-					//Todo: should we handle this
-					break;
-				
-				
-				case GUIDE_CALIBRATION_ERROR:
-					//should be handled
-					break;
-				case GUIDE_CALIBRATING:
-				case GUIDE_CALIBRATION_SUCESS:
-					//no need to handle
-					break;
-					
-				case GUIDE_CAPTURE:
-					//no need to handle
-					break;
-					
-				case GUIDE_DITHERING_ERROR:
-					//should be handled
-					break;
-				case GUIDE_DITHERING_SETTLE:
-				case GUIDE_DITHERING_SUCCESS:
-					//no need to handle
-					break;
-					
-				case GUIDE_CONNECTED:
-				case GUIDE_DARK:
-					//no need to handle
-					break;
-					
-				case GUIDE_STAR_SELECT:
-				case GUIDE_SUBFRAME:
-					//no need to handle
-					break;
-				
-			}
-		}
-		@Override
-		protected void handleGuideStatus(GuideStatus state) {
-			super.handleGuideStatus(state);
-			
-			logMessage( "Client guide status " + state );
-		}
-
-		protected void handleServerSchedulerStatus(SchedulerState status, final Map<String, Object> payload) {
-			logMessage( "Server scheduler status " + status );
-			
-			switch( status ) {
-				case SCHEDULER_ABORTED:
-				case SCHEDULER_IDLE:
-				case SCHEDULER_SHUTDOWN:
-					this.capture.write( "coolerControl", Boolean.FALSE );
-					
-				case SCHEDULER_LOADING:
-				case SCHEDULER_PAUSED:
-				
-				case SCHEDULER_STARTUP:
-					serverSchedulerRunning.set( false );
-					
-					checkState();
-				break;
-					
-				case SCHEDULER_RUNNING:
-					serverSchedulerRunning.set( true );
-					checkState();
-				break;
-			}
-		}
-
-		protected void handleServerSchedulerWeatherStatus(WeatherState status, final Map<String, Object> payload) {
-			logMessage( "Server scheduler weather status " + status );
-		}
-		
-		protected void handleServerAlignStatus(AlignState status, Map<String, Object> payload) {
-			logMessage( "Server scheduler align status " + status );
-
-			targetPositionAngle.set( (Double) payload.get( "positionAngle" ) );
-
-			logMessage( "Server PA: " + targetPositionAngle.get() );
-
-			if( status == AlignState.ALIGN_COMPLETE ) {
-				shouldAlign.set( true );
-				checkState();
-			}
-		}
-		
-		@Override
-		protected void handleSchedulerStatus(SchedulerState state) {
-			super.handleSchedulerStatus(state);
-			
-			logMessage( "Client scheduler status " + state );
-		}
-
-		protected void handleServerFocusStatus(FocusState status, final Map<String, Object> payload) {
-			logMessage( "Server focus status " + status );
-			
-			switch( status ) {
-				case FOCUS_ABORTED:
-				case FOCUS_FAILED:
-				case FOCUS_IDLE:
-				case FOCUS_COMPLETE:
-					serverFocusRunning.set( false );
-					checkState();
-				break;
-					
-				case FOCUS_PROGRESS:
-					serverFocusRunning.set( true );
-					checkState();
-				break;
-					
-				case FOCUS_FRAMING:
-				case FOCUS_WAITING:
-					break;
-				case FOCUS_CHANGING_FILTER:
-					break;
-			}
-		}
-		@Override
-		protected void handleFocusStatus(FocusState state) {
-			super.handleFocusStatus(state);
-			
-			logMessage( "Client focus status " + state );
-			
-			switch( state ) {
-				case FOCUS_COMPLETE:
-					autoFocusDone.set( true );
-					focusRunning.set( false );
-					checkState();
-				break;
-				
-				case FOCUS_ABORTED:
-				case FOCUS_FAILED:
-					autoFocusDone.set( false );
-					focusRunning.set( false );
-					checkState();
-				break;
-				
-				case FOCUS_IDLE:
-					focusRunning.set( false );
-					checkState();
-				break;
-				
-				case FOCUS_FRAMING:
-				case FOCUS_WAITING:
-				case FOCUS_CHANGING_FILTER:
-				case FOCUS_PROGRESS:
-					focusRunning.set( true );
-				break;
-			}
-		}
-		
-		protected void handleServerCaptureStatus(CaptureStatus status, final Map<String, Object> payload) {
-			logMessage( "Server capture status " + status );
-			
-			String serverTarget = (String) payload.get( "targetName" );
-			
-			if( serverTarget == null ) {
-				serverTarget = "";
-			}
-			
-			if( serverTarget.equals( serverCaptureTarget.getAndSet( serverTarget ) ) == false ) {
-				logMessage( "Server target has changed: " + serverTarget );
-				this.capture.write( "targetName", serverTarget + "_" + targetPostFix );
-			}
-			
-			switch( status ) {
-				case CAPTURE_CAPTURING:
-				case CAPTURE_PROGRESS:
-					
-					serverCaptureRunning.set( true );
-					checkState();
-				break;
-				case CAPTURE_IMAGE_RECEIVED:
-					
-				break;
-				case CAPTURE_COMPLETE:
-				case CAPTURE_ABORTED:
-				case CAPTURE_SUSPENDED:
-					serverCaptureRunning.set( false );
-					checkState();
-				break;
-				case CAPTURE_IDLE:
-					//no need to handle
-					break;
-				
-				case CAPTURE_PAUSED:
-				case CAPTURE_PAUSE_PLANNED:
-					break;
-				
-				case CAPTURE_DITHERING:
-					serverDitheringActive.set( true );
-					checkState();
-					break;
-				case CAPTURE_GUIDER_DRIFT:
-					//Todo: should we handle this
-					break;
-				
-				case CAPTURE_SETTING_ROTATOR:
-				case CAPTURE_SETTING_TEMPERATURE:
-				case CAPTURE_WAITING:
-					//no need to handle
-					break;
-					
-				case CAPTURE_ALIGNING:
-				case CAPTURE_CALIBRATING:
-				case CAPTURE_CHANGING_FILTER:
-				case CAPTURE_MERIDIAN_FLIP:
-					//no need to handle
-					break;
-				
-				case CAPTURE_FILTER_FOCUS:
-				case CAPTURE_FOCUSING:
-					//no need to handle
-					break;
-				
-			}
-		}
-		@Override
-		protected void handleCaptureStatus(CaptureStatus state) {
-			super.handleCaptureStatus(state);
-			
-			logMessage( "Client capture status "+ state );
-			
-			String clientTarget = (String) capture.getParsedProperties().get( "targetName" );
-			
-			if( clientTarget == null ) {
-				clientTarget = "";
-			}
-			
-			String serverTarget = serverCaptureTarget.get( );
-			
-			if( serverTarget == null ) {
-				serverTarget = "";
-			}
-			
-			serverTarget = serverTarget + "_" + targetPostFix;
-			
-			if( serverTarget.equals( clientTarget ) == false ) {
-				logMessage( "Client target has changed: " + serverTarget );
-				this.capture.write( "targetName", serverTarget );
-			}
-			
-			switch (state) {
-			
-				case CAPTURE_CAPTURING:
-					imageReceived.set( false );
-					captureRunning.set( true );
-					capturePaused.set( false );
-					autoCapture.set( true );
-					
-					final int jobId = this.capture.methods.getActiveJobID();
-					activeCaptureJob.set( jobId );
-					
-					if( !canCapture() ) {
-						logMessage( "Capture not allowed yet, but was started ... aborting" );
-						stopCapture();
-					}
-					else {
-						double duration = this.capture.methods.getJobExposureDuration( jobId );
-						double timeLeft = this.capture.methods.getJobExposureProgress( jobId );
-						
-						if( timeLeft == 0 ) {
-							timeLeft = duration;
-						}
-						
-						double exposure = duration - timeLeft;
-						
-						int imageCount = this.capture.methods.getJobImageCount( jobId );
-						int imageProgress = this.capture.methods.getJobImageProgress( jobId );
-						
-						logMessage( "Capture started " + jobId + ": " + exposure + "/" + duration + "s, " + imageProgress + "/" + imageCount );
-					}
-					break;
-				case CAPTURE_PROGRESS:
-					//no need to handle
-				break;
-				
-				case CAPTURE_IMAGE_RECEIVED:
-					logMessage( "Capture finished: " + activeCaptureJob.get() );
-					imageReceived.set( true );
-				break;
-				
-				case CAPTURE_ABORTED:
-					capturePaused.set( false );
-					if( captureRunning.getAndSet( false ) ) {
-						logMessage( "Capture " + activeCaptureJob.get() + " was aborted");
-					}
-					
-					checkState();
-				break;
-				
-				case CAPTURE_COMPLETE:
-				case CAPTURE_SUSPENDED:
-					captureRunning.set( false );
-					capturePaused.set( false );
-					checkState();
-				break;
-				
-				case CAPTURE_PAUSED:
-					//running, but paused
-					capturePaused.set( true );
-				break;
-				
-				case CAPTURE_IDLE:
-					//no need to handle
-					break;
-				
-				case CAPTURE_PAUSE_PLANNED:
-					break;
-				
-				case CAPTURE_DITHERING:
-					//no need to handle
-					break;
-				case CAPTURE_GUIDER_DRIFT:
-					//no need to handle
-					break;
-				
-				case CAPTURE_SETTING_ROTATOR:
-				case CAPTURE_SETTING_TEMPERATURE:
-				case CAPTURE_WAITING:
-					//no need to handle
-					break;
-					
-				case CAPTURE_ALIGNING:
-				case CAPTURE_CALIBRATING:
-				case CAPTURE_CHANGING_FILTER:
-				case CAPTURE_MERIDIAN_FLIP:
-					//no need to handle
-					break;
-				
-				case CAPTURE_FILTER_FOCUS:
-				case CAPTURE_FOCUSING:
-					//no need to handle
-					break;				
-			}
-		}
-
-		protected void handleAlignStatus( AlignState state ) {
-			if( state == null ) {
-				state = AlignState.ALIGN_IDLE;
-			}
-
-			super.handleAlignStatus(state);
-			logMessage( "handleAlignStatus " + state );
-			currentAlignStatus.set( state );
-		}
-
-		
-		private void startCapture() {
-			if( captureRunning.getAndSet( true ) == false ) {
-				this.capture.methods.start();
-			}
-		}
-		private void stopCapture() {
-			capturePaused.set( false );
-			if( captureRunning.getAndSet( false ) == true ) {
-				//this.capture.methods.abort();
-				this.capture.methods.stop();
-			}
-		}
-		
-		public boolean canCapture() {
-			//capture is allowed, when mount is tracking and NO dithering is active
-			if( serverMountTracking.get() && serverDitheringActive.get() == false ) {
+		public boolean check() {
+			if( System.currentTimeMillis() < endTime ) {
 				return true;
 			}
-			else {
+			else {	
+				if( timeoutMessage != null ) {
+					System.out.println( "Wait timed out: " + timeoutMessage );
+				}
 				return false;
-			}
-		}
-
-		protected synchronized void checkState() {
-			if( canCapture() ) {
-				if( focusRunning.get() ) {
-					//can't start capture, when focus process is active
-					return;
-				}
-				
-				if( captureRunning.get() ) { 
-					//check if we should resume
-					if( capturePaused.get() ) {
-						final int jobId = activeCaptureJob.get();
-						logMessage( "Warning: paused job " + jobId );
-					}
-				}
-				else if( serverGudingRunning.get() && autoCapture.get() ) {
-					//if server is tracking AND guiding, we can start capture
-					logMessage( "Server is Guding, but no capture or focus is in progress" );
-					
-					if( autoFocusDone.get() == false ) {
-						try {
-							logMessage( "Starting Autofocus process" );
-							
-							if( this.isAutoFocusEnabled() && this.focus.methods.canAutoFocus() ) {
-								this.focus.methods.start();
-								logMessage( "Done" );
-							}
-							else {
-								logMessage( "Autofocus is disabled" );
-								autoFocusDone.set( true );
-							}
-						}
-						catch( Throwable t ) {
-							//autofocus failed, this
-							logMessage( "Focus module not present" );
-							autoFocusDone.set( true );
-						}
-					}
-
-					if( shouldAlign.get() && this.targetPositionAngle.get() != null ) {
-						try {
-
-							waitForMountTracking();
-							logMessage( "Starting Align process to " + this.targetPositionAngle.get() );
-							this.align.methods.setSolverAction( 0 ); //SYNC
-							captureAndSolveAndWait();
-							List<Double> coords = this.align.methods.getSolutionResult();
-							logMessage( "Sync done: " + coords );
-							this.align.methods.setTargetPositionAngle( this.targetPositionAngle.get() );
-							//logMessage( "Set target corrds" );
-							this.align.methods.setTargetCoords( coords.get(1) / 15.0, coords.get(2) );
-							this.align.methods.setSolverAction( 1 ); //SYNC
-							captureAndSolveAndWait();
-							logMessage( "PA align done" );
-						}
-						catch( Throwable t ) {
-							//autofocus failed, this
-							logMessage( "Align module not present" );
-						}
-						finally {
-							shouldAlign.set( false );
-						}
-					}
-					
-					if( autoFocusDone.get() ) {
-						int pendingJobCount = this.capture.methods.getPendingJobCount();
-						
-						if( pendingJobCount == 0 ) {
-							loadSequence();
-							pendingJobCount = this.capture.methods.getPendingJobCount();
-						}
-
-						if( pendingJobCount > 0 ) {
-							logMessage( "Starting aborted capture, pending jobs " + pendingJobCount );
-							this.startCapture();
-						}
-						else {
-							logMessage( "No Jobs to capture" );
-						}
-					}
-				}
-			}
-			else {
-				//no capture possible, check if we have to abort
-				
-				if( captureRunning.get() ) {
-					final int jobId = activeCaptureJob.get();
-					
-					final double timeLeft = this.capture.methods.getJobExposureProgress( jobId );
-					
-					//if more than 2 seconds left in exposure, abort
-					if( timeLeft >= 2.0 ) {
-						logMessage( "Aborting job " + jobId + " with " + timeLeft + "s left" );
-						stopCapture();
-					}
-					else {
-						//always pause capture
-						//logMessage( "Pausing job " + jobId );
-						//this.capture.methods.pause();
-					}
-				}
-			}
-		}
-
-		protected void waitForMountTracking() {
-			logMessage( "Wait for mount tracking: " + this.currentMountStatus.get() );
-			boolean mountTracking = false;
-			while( !mountTracking ) {
-				MountStatus state = this.currentMountStatus.get();
-				
-				switch( state ) {
-					case MOUNT_ERROR:
-						break;
-					case MOUNT_IDLE:
-						break;
-					case MOUNT_MOVING:
-						break;
-					case MOUNT_PARKED:
-						break;
-					case MOUNT_PARKING:
-						break;
-					case MOUNT_SLEWING:
-						break;
-					case MOUNT_TRACKING:
-						logMessage( "Mount is tracking now: " + state );
-						mountTracking = true;
-						break;
-					default:
-						break;
-				}
-
-				try {
-					Thread.sleep( 500 );
-				}
-				catch( Throwable t ) {
-					t.printStackTrace();
-				}
-			}
-		}
-		protected void captureAndSolveAndWait() {
-
-			this.currentAlignStatus.set( AlignState.ALIGN_IDLE );
-			this.align.methods.captureAndSolve();
-
-			boolean alignRunning = true;
-			while( alignRunning ) {
-				AlignState state = this.currentAlignStatus.get();
-				
-				switch( state ) {
-					case ALIGN_ABORTED:
-						alignRunning = false;
-						break;
-					case ALIGN_COMPLETE:
-						alignRunning = false;
-						break;
-					case ALIGN_FAILED:
-						alignRunning = false;
-						break;
-					
-					case ALIGN_PROGRESS:
-						break;
-					case ALIGN_SLEWING:
-						break;
-					case ALIGN_SYNCING:
-						break;
-					default:
-						break;
-				}
-
-				try {
-					Thread.sleep( 500 );
-				}
-				catch( Throwable t ) {
-					t.printStackTrace();
-				}
-			}
-		}
-
-		@Override
-		protected void kStarsConnected() {
-			resetValues();
-			
-			super.kStarsConnected();
-		}
-		
-		@Override
-		protected void kStarsDisconnected() {
-			super.kStarsDisconnected();
-			
-			synchronized ( this ) {
-				try {
-					clientHandler.socket.close();
-				} catch (IOException e) {
-					//ignore
-				}
-				clientHandler = null;
-			}
-		}
-		
-		private SocketHandler clientHandler;
-		
-		public void listen()  {
-			
-			while( true ) {
-				while( kStarsConnected.get() ) {
-					try {
-						synchronized ( this ) {
-							clientHandler = new SocketHandler( new Socket( host, listenPort ) );
-						}
-						clientHandler.writeObject( "Hello Server" );
-						logMessage( "Connected to " + host + " ...");
-						receive( 
-							clientHandler, 
-							this::serverFrameReceived, 
-							(c,t) -> {
-							
-							} 
-						);
-					}
-					catch( Throwable t ) {
-						sleep( 1000 );
-					}
-				}
-				
-				synchronized ( this ) {
-					if( clientHandler != null ) {
-						try {
-							clientHandler.socket.close();
-						} catch (IOException e) {
-							//ignore
-						}
-						clientHandler = null;
-					}
-				}
-				sleep( 1000 );
 			}
 		}
 	}
