@@ -12,6 +12,9 @@ public class ServerRunner {
 	
 	@Argument(alias = "p", required = false)
 	public static int port = 8888;
+
+	@Argument(alias = "pc", required = false)
+	public static int preCoolTemp = -15;
 	
 	@Argument(alias = "ls", required = false )
 	public static String loadSchedule = "~/current_schedule.esl";
@@ -37,6 +40,7 @@ public class ServerRunner {
 		
 		if( host != null && host.isEmpty() == false ) {
 			KStarsClusterClient client = new KStarsClusterClient( host, port );
+			client.setPreCoolTemp(preCoolTemp);
 			client.setAutoFocuseEnabled( Boolean.valueOf(autoFocus).booleanValue() );
 			client.setCaptureSequence( loadSequence );
 			client.connectToKStars();
@@ -44,6 +48,7 @@ public class ServerRunner {
 		}
 		else {
 			KStarsClusterServer cluster = new KStarsClusterServer(port);
+			cluster.setPreCoolTemp(preCoolTemp);
 			cluster.setLoadSchedule( loadSchedule );
 			cluster.connectToKStars();
 

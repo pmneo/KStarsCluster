@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.kde.kstars.ParkStatus;
+import org.kde.kstars.INDI.IpsState;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus.FocusState;
@@ -68,7 +69,7 @@ public class KStarsClusterClient extends KStarsCluster {
             }
         }
 
-        loadSequence();
+        //loadSequence();
     }
     
     public void loadSequence() {
@@ -82,7 +83,8 @@ public class KStarsClusterClient extends KStarsCluster {
                 System.out.println( "Try to resolve sequence by target: " + targetName );
 
                 for( File ff : f.getParentFile().listFiles() ) {
-                    if( ff.getName().equalsIgnoreCase( targetName ) ) {
+                    String fName = ff.getName().toLowerCase().replaceAll( "[ -]", "_" );
+                    if( fName.equalsIgnoreCase( targetName ) ) {
                         f = ff;
                         System.out.println( "Using by target sequence: " + ff.getPath() );
                         break;
@@ -221,8 +223,12 @@ public class KStarsClusterClient extends KStarsCluster {
 
     protected AtomicReference< List<Double> > serverCoords = new AtomicReference<>( Arrays.asList( Double.valueOf(0), Double.valueOf(0) ) ); 
     
+    protected final AtomicReference<MountStatus> serverMountStatus = new AtomicReference<>( MountStatus.MOUNT_PARKED );
+
     protected void handleServerMountStatus( final MountStatus status, final Map<String, Object> payload ) {
         logMessage( "Server mount status " + status );
+    
+        serverMountStatus.set( status );
         
         @SuppressWarnings("unchecked") 
         List<Double> pos = (List<Double>) payload.get( "equatorialCoords" );
@@ -255,6 +261,8 @@ public class KStarsClusterClient extends KStarsCluster {
             default:
                 break;
         }
+
+        checkCameraCooling( serverSchedulerState.get(), serverMountStatus.get() );
     }
 
     @Override
@@ -338,14 +346,16 @@ public class KStarsClusterClient extends KStarsCluster {
         logMessage( "Client guide status " + state );
     }
 
+    private final AtomicReference< SchedulerState > serverSchedulerState = new AtomicReference<>( SchedulerState.SCHEDULER_IDLE );
     protected void handleServerSchedulerStatus(SchedulerState status, final Map<String, Object> payload) {
         logMessage( "Server scheduler status " + status );
         
+        serverSchedulerState.set( status );
+
         switch( status ) {
             case SCHEDULER_ABORTED:
             case SCHEDULER_IDLE:
             case SCHEDULER_SHUTDOWN:
-                this.capture.write( "coolerControl", Boolean.FALSE );
                 
             case SCHEDULER_LOADING:
             case SCHEDULER_PAUSED:
@@ -358,6 +368,8 @@ public class KStarsClusterClient extends KStarsCluster {
                 serverSchedulerRunning.set( true );
             break;
         }
+
+        this.checkCameraCooling( serverSchedulerState.get(), serverMountStatus.get() );
     }
 
     protected void handleServerSchedulerWeatherStatus(WeatherState status, final Map<String, Object> payload) {
@@ -729,7 +741,7 @@ public class KStarsClusterClient extends KStarsCluster {
 
                             logMessage( "Starting Align process to " + pa );
                             this.align.methods.setTargetPositionAngle( pa );
-                            this.align.methods.setSolverAction( 1 ); //NOTHING
+                            this.align.methods.setSolverAction( 2 ); //NOTHING
                             
                             captureAndSolveAndWait( false );
                             List<Double> coords = this.align.methods.getSolutionResult();
@@ -831,13 +843,26 @@ public class KStarsClusterClient extends KStarsCluster {
         this.currentAlignStatus.set( AlignState.ALIGN_IDLE );
 
         //rotation of 180deg takes 65 seconds, so 130 seconds should be fine 
-        WaitUntil maxWait = new WaitUntil( 130, "Capture and Solve" );
+        WaitUntil maxWait = new WaitUntil( 20, "Capture and Solve" );
 
         this.align.methods.captureAndSolve();
+
+        IpsState rotatorState = IpsState.IPS_IDLE;
 
         boolean alignRunning = true;
         while( alignRunning && maxWait.check() ) {
             AlignState state = this.currentAlignStatus.get();
+
+            IpsState cRotatorState = getRotatorDevice().getRotatorPositionStatus();
+            if( cRotatorState == IpsState.IPS_BUSY ) {
+                maxWait.reset();
+            }
+
+            if( cRotatorState != rotatorState ) {
+                rotatorState = cRotatorState;
+
+                logMessage( "Rotator is " + cRotatorState );
+            }
             
             switch( state ) {
                 case ALIGN_ABORTED:
@@ -869,7 +894,7 @@ public class KStarsClusterClient extends KStarsCluster {
 
                 case ALIGN_ROTATING:
                     maxWait.reset();
-                    break;
+                break;
 
                 
                 case ALIGN_SYNCING:

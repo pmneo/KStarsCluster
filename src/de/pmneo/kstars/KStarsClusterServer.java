@@ -174,6 +174,7 @@ public class KStarsClusterServer extends KStarsCluster {
         writeToAllClients( payload );
     }
     
+    protected final AtomicReference< MountStatus > mountStatus = new AtomicReference< MountStatus >( MountStatus.MOUNT_PARKED );
     protected final AtomicReference< SchedulerState > schedulerState = new AtomicReference< SchedulerState >( SchedulerState.SCHEDULER_IDLE );
     protected final AtomicReference< WeatherState > weatherState = new AtomicReference< WeatherState >( WeatherState.WEATHER_IDLE );
     protected final AtomicReference< Map<String,Object> > lastScheduleStatus = new AtomicReference< Map<String,Object> >();
@@ -190,7 +191,7 @@ public class KStarsClusterServer extends KStarsCluster {
                     autoStartScheduler.set( false );
                 }
                 
-                break;
+            break;
 
             case SCHEDULER_PAUSED:
                 manualSchedulerAbort.reset();
@@ -207,6 +208,8 @@ public class KStarsClusterServer extends KStarsCluster {
             default:
                 break;
         }
+
+        checkCameraCooling( schedulerState.get(), mountStatus.get() );
 
         
         final Map<String,Object> payload = scheduler.getParsedProperties();
@@ -246,6 +249,10 @@ public class KStarsClusterServer extends KStarsCluster {
     protected void handleMountStatus(MountStatus state) {
         super.handleMountStatus(state);
         
+        mountStatus.set( state );
+
+        checkCameraCooling( schedulerState.get(), mountStatus.get() );
+
         final Map<String, Object> payload = updateLastMountStatus();
         writeToAllClients( payload );
     }

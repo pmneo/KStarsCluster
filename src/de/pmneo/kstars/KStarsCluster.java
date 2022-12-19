@@ -13,7 +13,6 @@ import java.util.Date;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
@@ -23,7 +22,6 @@ import org.kde.kstars.Ekos;
 import org.kde.kstars.INDI;
 import org.kde.kstars.Ekos.CommunicationStatus;
 import org.kde.kstars.INDI.DriverInterface;
-import org.kde.kstars.INDI.IpsState;
 import org.kde.kstars.ekos.Align;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture;
@@ -61,6 +59,17 @@ public abstract class KStarsCluster {
 	
 	protected final AtomicBoolean kStarsConnected = new AtomicBoolean(false);
 	
+    private double preCoolTemp = -15;
+    public void setPreCoolTemp(double preCoolTemp) {
+		if( this.cameraDevice.get() != null ) {
+			this.cameraDevice.get().setPreCoolTemp(preCoolTemp);
+		}
+        this.preCoolTemp = preCoolTemp;
+    }
+    public double getPreCoolTemp() {
+        return preCoolTemp;
+    }
+
 	public KStarsCluster( ) throws DBusException {
 		/* Get a connection to the session bus so we can get data */
 		con = DBusConnection.getConnection( DBusConnection.DBusBusType.SESSION );
@@ -151,6 +160,10 @@ public abstract class KStarsCluster {
 	}
 
 	protected void kStarsConnected() {
+		this.getCameraDevice();
+		this.getFocusDevice();
+		this.getRotatorDevice();
+
 		for( Device<?> d : devices ) {
 			try {
 				d.determineAndDispatchCurrentState();
@@ -393,73 +406,35 @@ public abstract class KStarsCluster {
 		}
 	}
 
-	protected String findFirstDevice( int ofInterface) {
-		for( String device : this.indi.methods.getDevices() ) {
-			int driverInterface = Integer.parseInt( this.indi.methods.getText( device, "DRIVER_INFO", "DRIVER_INTERFACE" ) );
-
-			if( ( driverInterface & ofInterface ) != 0 ) {
-				return device;
-			}
+	private final AtomicReference< IndiRotator > rotatorDevice = new AtomicReference<>();
+	protected IndiRotator getRotatorDevice() {
+		if( rotatorDevice.get() == null ) {
+			String foundRotator = IndiRotator.findFirstDevice(indi, DriverInterface.ROTATOR_INTERFACE);
+			rotatorDevice.compareAndSet(null, new IndiRotator(foundRotator, indi) );
+			rotatorDevice.get().start();
 		}
-		return null;
+		return rotatorDevice.get();
 	}
-
-	/*
-	'ABS_ROTATOR_ANGLE.ANGLE',
-	'SYNC_ROTATOR_ANGLE.ANGLE',
- 	*/
-
-	 private final AtomicReference<String> rotatorDevice = new AtomicReference<>();
-	 protected String getRotatorDevice() {
-		 if( rotatorDevice.get() == null ) {
-			rotatorDevice.set( findFirstDevice( DriverInterface.ROTATOR_INTERFACE ) );
-		 }
-		 return rotatorDevice.get();
-	 }
-	 protected double getRotatorPosition() {
-		 return this.indi.methods.getNumber( getRotatorDevice(), "ABS_ROTATOR_ANGLE", "ANGLE" );
-	 }
-	 protected IpsState getRotatorPositionStatus() {
-		 return IpsState.get( this.indi.methods.getPropertyState( getRotatorDevice(), "ABS_ROTATOR_ANGLE" ) );
-	 }
-	 protected void setRotatorPosition( double pos ) {
-		 this.indi.methods.setNumber( getRotatorDevice(), "ABS_ROTATOR_ANGLE", "ANGLE", pos );
-		 this.indi.methods.sendProperty( getRotatorDevice(), "ABS_ROTATOR_ANGLE" );
-	 }
-
-/*
- 'FOCUS_MOTION.FOCUS_INWARD',
- 'FOCUS_MOTION.FOCUS_OUTWARD',
- 'REL_FOCUS_POSITION.FOCUS_RELATIVE_POSITION',
- 'ABS_FOCUS_POSITION.FOCUS_ABSOLUTE_POSITION',
- 'FOCUS_MAX.FOCUS_MAX_VALUE',
- 'FOCUS_ABORT_MOTION.ABORT',
- 'FOCUS_SYNC.FOCUS_SYNC_VALUE',
- 'FOCUS_REVERSE_MOTION.INDI_ENABLED',
- 'FOCUS_REVERSE_MOTION.INDI_DISABLED',
- 'FOCUS_BACKLASH_TOGGLE.INDI_ENABLED',
- 'FOCUS_BACKLASH_TOGGLE.INDI_DISABLED',
- 'FOCUS_BACKLASH_STEPS.FOCUS_BACKLASH_VALUE',
- 'FOCUS_SETTLE_BUFFER.SETTLE_BUFFER',
- 'FOCUS_TEMPERATURE.TEMPERATURE'
-*/
 	
-	private final AtomicReference<String> focusDevice = new AtomicReference<>();
-	protected String getFocusDevice() {
+	private final AtomicReference<IndiFocuser> focusDevice = new AtomicReference<>();
+	protected IndiFocuser getFocusDevice() {
 		if( focusDevice.get() == null ) {
-			focusDevice.set( (String) this.focus.read( "focuser" ) );
+			String foundFocuser = (String) this.focus.read( "focuser" );
+			focusDevice.compareAndSet(null, new IndiFocuser(foundFocuser, indi) );
+			focusDevice.get().start();
 		}
 		return focusDevice.get();
 	}
-	protected double getFocusPosition() {
-		return this.indi.methods.getNumber( getFocusDevice(), "ABS_FOCUS_POSITION", "FOCUS_ABSOLUTE_POSITION" );
-	}
-	protected IpsState getFocusPositionStatus() {
-		return IpsState.get( this.indi.methods.getPropertyState( getFocusDevice(), "ABS_FOCUS_POSITION" ) );
-	}
-	protected void setFocusPosition( double pos ) {
-		this.indi.methods.setNumber( getFocusDevice(), "ABS_FOCUS_POSITION", "FOCUS_ABSOLUTE_POSITION", pos );
-		this.indi.methods.sendProperty( getFocusDevice(), "ABS_FOCUS_POSITION" );
+
+	private final AtomicReference<IndiCamera> cameraDevice = new AtomicReference<>();
+	protected IndiCamera getCameraDevice() {
+		if( cameraDevice.get() == null ) {
+			String foundCamera = (String) this.capture.read( "camera" );
+			cameraDevice.compareAndSet(null, new IndiCamera(foundCamera, indi) );
+			cameraDevice.get().setPreCoolTemp( getPreCoolTemp() );
+			cameraDevice.get().start();
+		}
+		return cameraDevice.get();
 	}
 
 	protected final AtomicReference<Double> lastFocusPos = new AtomicReference<>(null);
@@ -468,7 +443,7 @@ public abstract class KStarsCluster {
 		//logMessage( "handleCaptureStatus " + state );
 
 		if( CaptureStatus.CAPTURE_CAPTURING == state || lastFocusPos.get() == null ) {
-			double focusPos = getFocusPosition();
+			double focusPos = getFocusDevice().getFocusPosition();
 			logMessage( "Storing last focus pos ("+state+"): " + focusPos );
 			lastFocusPos.set(focusPos);
 		}
@@ -482,7 +457,7 @@ public abstract class KStarsCluster {
 					Double lastPos = lastFocusPos.get();
 					if( lastPos != null ) {
 						logMessage( "Restoring focuser position to " + lastPos );
-						setFocusPosition( lastPos.doubleValue() );
+						getFocusDevice().setFocusPosition( lastPos.doubleValue() );
 					}
 					break;
 				case FOCUS_CHANGING_FILTER:
@@ -493,7 +468,7 @@ public abstract class KStarsCluster {
 					break;
 				case FOCUS_IDLE:
 				case FOCUS_COMPLETE:
-					double focusPos = getFocusPosition();
+					double focusPos = getFocusDevice().getFocusPosition();
 					logMessage( "Storing last focus pos ("+state+"): " + focusPos );
 					lastFocusPos.set(focusPos);
 				break;
@@ -592,34 +567,52 @@ public abstract class KStarsCluster {
 		disconnected.accept( socket, null );
 	}
 
-	public static class WaitUntil {
-		private long endTime = -1;
-		private long maxWaitInSeconds = -1;
-		private final String timeoutMessage;
-		public WaitUntil( long maxWaitInSeconds, String timeoutMessage ) {
-			this.timeoutMessage = timeoutMessage;
-			this.reset( maxWaitInSeconds );
-		}
 
-		public void reset( long maxWaitInSeconds ) {
-			this.maxWaitInSeconds = maxWaitInSeconds;
-			reset();
-		}
 
-		public void reset() {
-			endTime = System.currentTimeMillis() + ( maxWaitInSeconds * 1000 );
-		}
+	private final Object[] checkCameraCoolingStates = new Object[2];
+    protected void checkCameraCooling( SchedulerState schedulerStatus, MountStatus mountStatus ) {
 
-		public boolean check() {
-			if( System.currentTimeMillis() < endTime ) {
-				return true;
+		synchronized( checkCameraCoolingStates ) {
+			if( checkCameraCoolingStates[0] == schedulerStatus && checkCameraCoolingStates[1] == mountStatus ) {
+				return;
 			}
-			else {	
-				if( timeoutMessage != null ) {
-					System.out.println( "Wait timed out: " + timeoutMessage );
+
+			checkCameraCoolingStates[0] = schedulerStatus;
+			checkCameraCoolingStates[1] = mountStatus;
+		}
+
+		switch( mountStatus ) {
+			case MOUNT_PARKED:
+			case MOUNT_PARKING:
+				this.getCameraDevice().warm();
+			break;
+			default:
+				break;
+		}
+
+        switch( schedulerStatus ) {
+            case SCHEDULER_ABORTED:
+            case SCHEDULER_IDLE:
+            case SCHEDULER_SHUTDOWN:
+				this.getCameraDevice().warm();
+			break;
+                
+            case SCHEDULER_LOADING:
+            case SCHEDULER_PAUSED:
+            case SCHEDULER_STARTUP:
+            break;
+                
+            case SCHEDULER_RUNNING:
+				switch( mountStatus ) {
+					case MOUNT_SLEWING:
+					case MOUNT_TRACKING:
+						this.getCameraDevice().preCool();
+					break;
+
+					default:
+						break;
 				}
-				return false;
-			}
-		}
-	}
+            break;
+        }
+    }
 }
