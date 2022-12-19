@@ -1,14 +1,27 @@
 package de.pmneo.kstars;
 
+import java.net.URI;
+import java.net.URL;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.Callable;
 
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.servlet.DefaultServlet;
+import org.eclipse.jetty.servlet.ServletContextHandler;
+import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.websocket.jakarta.server.config.JakartaWebSocketServletContainerInitializer;
+
 import com.sampullara.cli.Args;
 import com.sampullara.cli.Argument;
 
+import de.pmneo.kstars.web.LoggingSocket;
+import de.pmneo.kstars.web.StatusServlet;
+
 public class ServerRunner {
 		
+	@Argument(alias = "wp", required = false)
+	public static int webPort = 8080;
 	
 	@Argument(alias = "p", required = false)
 	public static int port = 8888;
@@ -38,21 +51,61 @@ public class ServerRunner {
 	public static void main(String[] args) throws Exception {
 		Args.parseOrExit(ServerRunner.class, args);
 		
+		KStarsCluster cluster = null;
+
 		if( host != null && host.isEmpty() == false ) {
 			KStarsClusterClient client = new KStarsClusterClient( host, port );
-			client.setPreCoolTemp(preCoolTemp);
 			client.setAutoFocuseEnabled( Boolean.valueOf(autoFocus).booleanValue() );
 			client.setCaptureSequence( loadSequence );
-			client.connectToKStars();
-			client.listen();
+			cluster = client;
 		}
 		else {
-			KStarsClusterServer cluster = new KStarsClusterServer(port);
-			cluster.setPreCoolTemp(preCoolTemp);
-			cluster.setLoadSchedule( loadSchedule );
-			cluster.connectToKStars();
-
-			cluster.listen();
+			KStarsClusterServer server = new KStarsClusterServer(port);
+			server.setLoadSchedule( loadSchedule );
+			cluster = server;
 		}
+
+		cluster.setPreCoolTemp(preCoolTemp);
+		cluster.connectToKStars();
+
+		startServer( cluster );
+
+		cluster.listen();
 	}
+
+	public static void startServer( KStarsCluster cluster ) throws Exception
+    {
+        Server server = new Server( );
+
+        URL webRootLocation = ServerRunner.class.getResource("/webroot/index.html");
+        if (webRootLocation == null)
+        {
+            throw new IllegalStateException("Unable to determine webroot URL location");
+        }
+
+        URI webRootUri = URI.create( webRootLocation.toURI().toASCIIString().replaceFirst("/index.html$", "/") );
+        System.err.printf("Web Root URI: %s%n", webRootUri);
+
+        ServletContextHandler contextHandler = new ServletContextHandler();
+        contextHandler.setContextPath("/");
+        contextHandler.setBaseResource(Resource.newResource(webRootUri));
+        contextHandler.setWelcomeFiles(new String[]{"index.html"});
+
+		contextHandler.setAttribute( "cluster", cluster );
+
+        contextHandler.getMimeTypes().addMimeMapping("txt", "text/plain;charset=utf-8");
+
+        server.setHandler(contextHandler);
+
+        // Add WebSocket endpoints
+        JakartaWebSocketServletContainerInitializer.configure(contextHandler, (context, wsContainer) ->
+            wsContainer.addEndpoint(LoggingSocket.class) );
+
+        // Add Servlet endpoints
+        contextHandler.addServlet(StatusServlet.class, "/status");
+        contextHandler.addServlet(DefaultServlet.class, "/");
+
+        // Start Server
+        server.start();
+    }
 }

@@ -437,6 +437,16 @@ public abstract class KStarsCluster {
 		return cameraDevice.get();
 	}
 
+	private final AtomicReference<IndiFilterWheel> filterDevice = new AtomicReference<>();
+	protected IndiFilterWheel getFilterDevice() {
+		if( cameraDevice.get() == null ) {
+			String foundFilterWheel = (String) this.capture.read( "filterWheel" );
+			filterDevice.compareAndSet(null, new IndiFilterWheel(foundFilterWheel, indi) );
+			filterDevice.get().start();
+		}
+		return filterDevice.get();
+	}
+
 	protected final AtomicReference<Double> lastFocusPos = new AtomicReference<>(null);
 
 	protected void handleCaptureStatus( CaptureStatus state ) {
@@ -615,4 +625,6 @@ public abstract class KStarsCluster {
             break;
         }
     }
+
+	public abstract void listen();
 }
