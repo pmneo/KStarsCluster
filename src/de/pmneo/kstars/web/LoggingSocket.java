@@ -1,11 +1,9 @@
 package de.pmneo.kstars.web;
 
 import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.TimeZone;
-import java.util.concurrent.TimeUnit;
 
+import de.pmneo.kstars.SimpleLogger;
+import de.pmneo.kstars.SimpleLogger.LogListener;
 import jakarta.websocket.CloseReason;
 import jakarta.websocket.OnClose;
 import jakarta.websocket.OnOpen;
@@ -13,40 +11,32 @@ import jakarta.websocket.Session;
 import jakarta.websocket.server.ServerEndpoint;
 
 @ServerEndpoint("/logging/")
-public class LoggingSocket implements Runnable
-{
-    private TimeZone timezone;
+public class LoggingSocket implements LogListener {
     private Session session;
 
     @OnOpen
     public void onOpen(Session session)
     {
         this.session = session;
-        this.timezone = TimeZone.getTimeZone("UTC");
-        new Thread(this).start();
+        SimpleLogger.getLogger().addListener( this );
     }
 
     @OnClose
     public void onClose(CloseReason close)
     {
         this.session = null;
+        SimpleLogger.getLogger().removeListener( this );
     }
 
     @Override
-    public void run()
-    {
-        while (this.session != null)
+    public void logMessage(String message) {
+        if (this.session != null)
         {
             try
             {
-                SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ");
-                dateFormat.setTimeZone(timezone);
-
-                String timestamp = dateFormat.format(new Date());
-                this.session.getBasicRemote().sendText(timestamp);
-                TimeUnit.SECONDS.sleep(1);
+                this.session.getBasicRemote().sendText( message );
             }
-            catch (InterruptedException | IOException e)
+            catch (IOException e)
             {
                 e.printStackTrace();
             }

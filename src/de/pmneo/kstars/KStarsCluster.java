@@ -6,11 +6,11 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import java.net.Socket;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -22,6 +22,7 @@ import org.kde.kstars.Ekos;
 import org.kde.kstars.INDI;
 import org.kde.kstars.Ekos.CommunicationStatus;
 import org.kde.kstars.INDI.DriverInterface;
+import org.kde.kstars.INDI.IpsState;
 import org.kde.kstars.ekos.Align;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture;
@@ -39,26 +40,47 @@ import org.kde.kstars.ekos.Scheduler.SchedulerState;
 import org.kde.kstars.ekos.Weather;
 import org.kde.kstars.ekos.Weather.WeatherState;
 
+import de.pmneo.kstars.web.CommandServlet.Action;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+
 
 public abstract class KStarsCluster {
 	protected DBusConnection con;
 
-	protected final Device<Ekos> ekos;
-	protected final Device<Align> align;
-	protected final Device<Focus> focus;
-	protected final Device<Guide> guide;
-	protected final Device<Capture> capture;
-	protected final Device<Mount> mount;
-	protected final Device<Scheduler> scheduler;
-	protected final Device<Weather> weather;
-	protected final Device<INDI> indi;
+	public final Device<Ekos> ekos;
+	public final Device<Align> align;
+	public final Device<Focus> focus;
+	public final Device<Guide> guide;
+	public final Device<Capture> capture;
+	public final Device<Mount> mount;
+	public final Device<Scheduler> scheduler;
+	public final Device<Weather> weather;
+	public final Device<INDI> indi;
 	
 	protected final List< Device<?> > mandatoryDevices = new ArrayList<Device<?>>();
 	protected final List< Device<?> > devices = new ArrayList<Device<?>>();
 	
 	
 	protected final AtomicBoolean kStarsConnected = new AtomicBoolean(false);
-	
+
+	public final AtomicBoolean captureRunning = new AtomicBoolean( false );
+    public final AtomicBoolean capturePaused = new AtomicBoolean( false );
+    public final AtomicBoolean focusRunning = new AtomicBoolean( false );
+	public final AtomicBoolean autoFocusDone = new AtomicBoolean( false );
+	public final AtomicReference<AlignState> currentAlignStatus = new AtomicReference<AlignState>( AlignState.ALIGN_IDLE );
+    public final AtomicReference<MountStatus> currentMountStatus = new AtomicReference<MountStatus>( MountStatus.MOUNT_IDLE );
+	public final AtomicInteger activeCaptureJob = new AtomicInteger( 0 );
+    
+	protected void resetValues() {
+        
+		autoFocusDone.set( false );
+		captureRunning.set( false );
+		capturePaused.set( false );
+		focusRunning.set( false );
+	}
+		
+
     private double preCoolTemp = -15;
     public void setPreCoolTemp(double preCoolTemp) {
 		if( this.cameraDevice.get() != null ) {
@@ -178,21 +200,13 @@ public abstract class KStarsCluster {
 		
 	}
 	
-	private final SimpleDateFormat sdf = new SimpleDateFormat( "[HH:mm:ss.SSS] " );
-	
 	public void logMessage( Object message ) {
-		System.out.println( sdf.format( new Date() ) + message );
+		SimpleLogger.getLogger().logMessage( message );
 	}
 	
 	public void logError( Object message, Throwable t ) {
-		System.err.println( sdf.format( new Date() ) + message );
-		
-		if( t != null ) {
-			t.printStackTrace();
-		}
-	}
-	
-	
+        SimpleLogger.getLogger().logError( message, t );
+	}	
 
 	private Thread kStarsMonitor = null;
 	public synchronized void connectToKStars() {
@@ -362,7 +376,7 @@ public abstract class KStarsCluster {
 	}
 	
 	protected void handleMountStatus( MountStatus state ) {
-		//logMessage( "handleMountStatus " + state );
+        currentMountStatus.set( state );
 	}
 	protected void handleMountParkStatus( ParkStatus state ) {
 		//logMessage( "handleMountParkStatus " + state );
@@ -407,7 +421,7 @@ public abstract class KStarsCluster {
 	}
 
 	private final AtomicReference< IndiRotator > rotatorDevice = new AtomicReference<>();
-	protected IndiRotator getRotatorDevice() {
+	public IndiRotator getRotatorDevice() {
 		if( rotatorDevice.get() == null ) {
 			String foundRotator = IndiRotator.findFirstDevice(indi, DriverInterface.ROTATOR_INTERFACE);
 			rotatorDevice.compareAndSet(null, new IndiRotator(foundRotator, indi) );
@@ -417,7 +431,7 @@ public abstract class KStarsCluster {
 	}
 	
 	private final AtomicReference<IndiFocuser> focusDevice = new AtomicReference<>();
-	protected IndiFocuser getFocusDevice() {
+	public IndiFocuser getFocusDevice() {
 		if( focusDevice.get() == null ) {
 			String foundFocuser = (String) this.focus.read( "focuser" );
 			focusDevice.compareAndSet(null, new IndiFocuser(foundFocuser, indi) );
@@ -427,7 +441,7 @@ public abstract class KStarsCluster {
 	}
 
 	private final AtomicReference<IndiCamera> cameraDevice = new AtomicReference<>();
-	protected IndiCamera getCameraDevice() {
+	public IndiCamera getCameraDevice() {
 		if( cameraDevice.get() == null ) {
 			String foundCamera = (String) this.capture.read( "camera" );
 			cameraDevice.compareAndSet(null, new IndiCamera(foundCamera, indi) );
@@ -438,8 +452,8 @@ public abstract class KStarsCluster {
 	}
 
 	private final AtomicReference<IndiFilterWheel> filterDevice = new AtomicReference<>();
-	protected IndiFilterWheel getFilterDevice() {
-		if( cameraDevice.get() == null ) {
+	public IndiFilterWheel getFilterDevice() {
+		if( filterDevice.get() == null ) {
 			String foundFilterWheel = (String) this.capture.read( "filterWheel" );
 			filterDevice.compareAndSet(null, new IndiFilterWheel(foundFilterWheel, indi) );
 			filterDevice.get().start();
@@ -457,9 +471,99 @@ public abstract class KStarsCluster {
 			logMessage( "Storing last focus pos ("+state+"): " + focusPos );
 			lastFocusPos.set(focusPos);
 		}
+
+		switch (state) {
+        
+            case CAPTURE_CAPTURING:
+                captureRunning.set( true );
+                capturePaused.set( false );
+
+				final int jobId = this.capture.methods.getActiveJobID();
+                activeCaptureJob.set( jobId );
+            
+			break;
+            case CAPTURE_PROGRESS:
+                //no need to handle
+            break;
+            
+            case CAPTURE_IMAGE_RECEIVED:
+            break;
+            
+            case CAPTURE_ABORTED:
+                capturePaused.set( false );
+                if( captureRunning.getAndSet( false ) ) {
+                    logMessage( "Capture " + activeCaptureJob.get() + " was aborted");
+                }
+            break;
+            
+            case CAPTURE_COMPLETE:
+            case CAPTURE_SUSPENDED:
+                captureRunning.set( false );
+                capturePaused.set( false );
+            break;
+            
+            case CAPTURE_PAUSED:
+                //running, but paused
+                capturePaused.set( true );
+            break;
+            
+            case CAPTURE_IDLE:
+                //no need to handle
+                break;
+            
+            case CAPTURE_PAUSE_PLANNED:
+                break;
+            
+            case CAPTURE_DITHERING:
+                //no need to handle
+                break;
+            case CAPTURE_GUIDER_DRIFT:
+                //no need to handle
+                break;
+            
+            case CAPTURE_SETTING_ROTATOR:
+            case CAPTURE_SETTING_TEMPERATURE:
+            case CAPTURE_WAITING:
+                //no need to handle
+                break;
+                
+            case CAPTURE_ALIGNING:
+            case CAPTURE_CALIBRATING:
+            case CAPTURE_CHANGING_FILTER:
+            case CAPTURE_MERIDIAN_FLIP:
+                //no need to handle
+                break;
+            
+            case CAPTURE_FILTER_FOCUS:
+            case CAPTURE_FOCUSING:
+                //no need to handle
+                break;				
+        }
 	}
 	protected void handleFocusStatus( FocusState state ) {
-		//logMessage( "handleFocusStatus " + state );
+		switch( state ) {
+            case FOCUS_COMPLETE:
+                autoFocusDone.set( true );
+                focusRunning.set( false );
+            break;
+            
+            case FOCUS_ABORTED:
+            case FOCUS_FAILED:
+                autoFocusDone.set( false );
+                focusRunning.set( false );
+            break;
+            
+            case FOCUS_IDLE:
+                focusRunning.set( false );
+            break;
+            
+            case FOCUS_FRAMING:
+            case FOCUS_WAITING:
+            case FOCUS_CHANGING_FILTER:
+            case FOCUS_PROGRESS:
+                focusRunning.set( true );
+            break;
+        }
 
 		try {
 			switch( state ) {
@@ -577,10 +681,14 @@ public abstract class KStarsCluster {
 		disconnected.accept( socket, null );
 	}
 
-
+	private boolean disableCameraWarming = true;
 
 	private final Object[] checkCameraCoolingStates = new Object[2];
     protected void checkCameraCooling( SchedulerState schedulerStatus, MountStatus mountStatus ) {
+
+		if( disableCameraWarming ) {
+			return;
+		}
 
 		synchronized( checkCameraCoolingStates ) {
 			if( checkCameraCoolingStates[0] == schedulerStatus && checkCameraCoolingStates[1] == mountStatus ) {
@@ -626,5 +734,180 @@ public abstract class KStarsCluster {
         }
     }
 
+
+	public int runAutoFocus() {
+		if( focusRunning.get() == false ) {
+			this.focus.methods.start();
+		}
+
+		final WaitUntil maxWait = new WaitUntil( 5, "Focusing" );
+
+		while( !focusRunning.get() && maxWait.check() ) {
+			try { Thread.sleep( 10 ); } catch( Throwable t ) {};
+		}
+
+		logMessage( "Focus process has started" );
+
+		maxWait.reset( 300 );
+
+		while( focusRunning.get() && maxWait.check() ) {
+			try { Thread.sleep( 10 ); } catch( Throwable t ) {};
+		}
+
+		logMessage( "Focus process has finished" );
+
+		double pos = this.getFocusDevice().getFocusPosition();
+		return (int) pos;
+		
+	}
+
 	public abstract void listen();
+
+
+	public void addActions( Map<String, Action> actions ) {
+		actions.put( "calibrateFilters", this::calibrateFiltersAction );
+        actions.put( "status", this::statusAction );
+	}
+
+	public Object statusAction( String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
+		Map<String,Object> res = new HashMap<>();
+        
+		res.put( "cameraDevice", this.getCameraDevice().deviceName );
+
+		List<String> filters = this.getFilterDevice().getFilters() ;
+		
+		res.put( "filters", filters );
+		res.put( "currentFilter", filters.get( this.getFilterDevice().getFilterSlot() - 1 ) );
+		res.put( "focusPosition", this.getFocusDevice().getFocusPosition() );
+		res.put( "rotatorAngle", this.getRotatorDevice().getRotatorPosition() );
+
+
+		res.put( "captureRunning", captureRunning.get() );
+		res.put( "capturePaused", capturePaused.get() );
+		res.put( "focusRunning", focusRunning.get() );
+		res.put( "autoFocusDone", autoFocusDone.get() );
+
+		res.put( "currentAlignStatus", currentAlignStatus.get() );
+		res.put( "currentMountStatus", currentMountStatus.get() );
+
+		res.put( "calibrateFilterInProgress", calibrateFilterInProgress.get() );
+
+		if( captureRunning.get() ) {
+			int jobId = activeCaptureJob.get();
+
+			double duration = this.capture.methods.getJobExposureDuration( jobId );
+			double timeLeft = this.capture.methods.getJobExposureProgress( jobId );
+			
+			if( timeLeft == 0 ) {
+				timeLeft = duration;
+			}
+			
+			double exposure = duration - timeLeft;
+			
+			int imageCount = this.capture.methods.getJobImageCount( jobId );
+			int imageProgress = this.capture.methods.getJobImageProgress( jobId );
+			
+			Map<String,Object> capture = new HashMap<>();
+			capture.put( "jobId", jobId );
+			capture.put( "exposure", exposure );
+			capture.put( "duration", duration );
+			capture.put( "imageProgress", imageProgress );
+			capture.put( "imageCount", imageCount );
+
+			res.put( "capture", capture ); 
+		}
+
+		List<Double> serverSolution = this.align.methods.getSolutionResult();
+		
+		res.put( "serverSolution", serverSolution );
+
+        double pa = serverSolution.get( 0 ).doubleValue();
+                            
+		pa = Math.round( pa * 100.0 ) / 100.0;
+		while( pa < 0.0 ) {
+			pa += 180.0;
+		}
+		while( pa >= 180.0 ) {
+			pa -= 180.0;
+		}
+		pa = Math.round( pa * 100.0 ) / 100.0;
+
+		res.put( "pa", pa );
+		
+		double ra = serverSolution.get(1) / 15.0;
+		double dec = serverSolution.get(2);
+        res.put( "ra", ra );
+		res.put( "dec", dec );
+		
+		return res;
+	}
+    
+
+	private AtomicBoolean calibrateFilterInProgress = new AtomicBoolean( false );
+    public Object calibrateFiltersAction( String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        Map<String,Object> res = new HashMap<>();
+
+        if( calibrateFilterInProgress.getAndSet( true ) ) {
+            res.put( "result", "Filter calibration is already in progress" );            
+        }
+        else {
+            res.put( "result", "Filter calibration started" );
+
+            new Thread( () -> {
+                try {
+                    SimpleLogger logger = SimpleLogger.getLogger();
+                    logger.logMessage( "starting filter calibration" );
+
+                    List<String> filters = this.getFilterDevice().getFilters();
+                    int n = 1;
+
+                    StringBuilder result = new StringBuilder( );
+
+
+                    WaitUntil maxWait = new WaitUntil( 20, "changeFilter" );
+
+                    //skip first filter
+                    for( int i=1; i<=filters.size(); i++ ) {
+                        if( i == n  ) {
+                            continue;
+                        }
+
+                        logger.logMessage( "Starting focus procedure of filter " + filters.get(n-1) + " as reference" );
+                        
+                        maxWait.reset();
+                        this.getFilterDevice().setFilterSlot( n ); //switch to first filter as reference
+                        while( this.getFilterDevice().getFilterSlotStatus() != IpsState.IPS_OK && maxWait.check() );
+
+                        int refPos = this.runAutoFocus();
+                        logger.logMessage( "Reference Position: " + refPos );
+
+                        logger.logMessage( "Starting focus procedure of filter " + filters.get(i-1) + " for calibration" );
+
+                        maxWait.reset();
+                        this.getFilterDevice().setFilterSlot( i ); //switch to filter for calibration
+                        while( this.getFilterDevice().getFilterSlotStatus() != IpsState.IPS_OK && maxWait.check() );
+
+                        int calPos = this.runAutoFocus();
+
+                        int offset = calPos - refPos;
+
+                        result.append( filters.get(i-1) ).append( ": " ).append( offset ).append( "\n" );
+
+                        logger.logMessage( "Found solution for " + filters.get(i-1) + ": " + refPos + " > " + calPos + " = " + offset );
+
+                        logger.logMessage( "Current soltions: " + result.toString() );
+                    }
+
+                    logger.logMessage( "Calibration finished" );
+
+                    calibrateFilterInProgress.set( false );
+                }
+                catch( Throwable t ) {
+                    t.printStackTrace();
+                }
+            }, "filterCalibration").start();
+        }
+
+        return res;
+    }
 }

@@ -1,0 +1,623 @@
+<html>
+
+<body>
+<script>
+	var inputEl, outputEl, poutputEl, configEl, durationEl, infoEl;
+  var downloadUrl = void 0;
+  var fileName = "";
+  var cam = "";
+
+  var laterTimeout = void 0;
+  function updateLater() {
+    if( laterTimeout ) {
+      clearTimeout( laterTimeout );
+      laterTimeout = void 0;
+    }
+
+    laterTimeout = setTimeout( update, 500 );
+  }
+
+  function update() {
+    if( laterTimeout ) {
+      clearTimeout( laterTimeout );
+      laterTimeout = void 0;
+    }
+
+    if( downloadUrl ) {
+      URL.revokeObjectURL( downloadUrl );
+      downloadUrl = null;
+    }
+
+  console.log("update");
+  inputEl = inputEl || document.getElementById("input");
+  configEl = configEl || document.getElementById("config");
+  durationEl = durationEl || document.getElementById("duration");
+  outputEl = outputEl || document.getElementById("output");
+  infoEl = infoEl || document.getElementById("info");
+
+  let src = (inputEl.value || "").trim();
+
+  let jobStart = src.indexOf("<Job>");
+  let jobEnd = src.indexOf("</Job>");
+
+  let job = src.substring(jobStart, jobEnd + 6);
+
+  let out = src.substring(0, jobStart).trim();
+  let post = src.substring(jobEnd + 6);
+  let targetDuration = parseFloat(durationEl.value) * 60 * 60;
+
+  console.log("targetDuration", targetDuration);
+
+  let seq;
+  try {
+  	seq = JSON.parse(configEl.value );
+  }
+  catch( e ) {
+	  return;
+  }
+
+  let n = 0;
+
+  let duration = 0;
+  let perFilter = {};
+  let amount = 0;
+
+  fileName = "";
+  
+  let camRemoves = ["ZWO", "CCD", "Pro" ];
+  cam = src.match(/<CCD>(.*?)<\/CCD>/)[1].trim();
+  for( let cr of camRemoves ) {
+	  cam = cam.replace( cr, "" ).trim();
+  }
+  cam = cam.replace( /(\s)+/g, "_")
+
+  console.log( "cam:", cam );
+
+  while (duration < targetDuration) {
+      amount++;
+      for (let s of seq) {
+
+          let sjob = job.replace(/<Filter>(.*?)<\/Filter>/, "<Filter>" + s.filter + "</Filter>");
+
+/*
+          if (n > 0) {
+              sjob = sjob.replace("<Temperature force='true'>", "<Temperature force='false'>");
+          }
+*/
+          let d = 0;
+
+          if (s.exposure > 0) {
+              sjob = sjob.replace(/<Exposure>(.*?)<\/Exposure>/, "<Exposure>" + s.exposure + "</Exposure>");
+              d = parseFloat(s.exposure);
+          } else {
+              d = parseFloat(sjob.match(/<Exposure>(.*?)<\/Exposure>/)[1]);
+          }
+
+          let count;
+
+          if (s.count > 0) {
+              sjob = sjob.replace(/<Count>(.*?)<\/Count>/, "<Count>" + s.count + "</Count>");
+              count = parseInt(s.count);
+          } 
+          else {
+              count = parseInt(sjob.match(/<Count>(.*?)<\/Count>/)[1]);
+          }
+
+		  if (s.bin > 0) {
+			let binningStart = sjob.indexOf("<Binning>");
+ 			let binningEnd = sjob.indexOf("</Binning>");
+			let binning = sjob.substring( binningStart, binningEnd );
+			
+			binning = binning.replace(/<X>(.*?)<\/X>/, "<X>" + s.bin + "</X>");
+			binning = binning.replace(/<Y>(.*?)<\/Y>/, "<Y>" + s.bin + "</Y>");
+
+			sjob = sjob.substring( 0, binningStart ) + binning + sjob.substring( binningEnd );
+              
+          } 
+
+		  if (s.gain >= 0) {
+			  //<OneNumber name='Gain'>0</OneNumber>
+              sjob = sjob.replace(/<OneNumber name='Gain'>(.*?)<\/OneNumber>/, "<OneNumber name='Gain'>" + s.gain + "</OneNumber>");
+          } 
+		  if (s.offset >= 0) {
+			  //<OneNumber name='Offset'>0</OneNumber>
+              sjob = sjob.replace(/<OneNumber name='Offset'>(.*?)<\/OneNumber>/, "<OneNumber name='Offset'>" + s.offset + "</OneNumber>");
+          } 
+
+
+          duration += (d * count);
+
+
+          if (amount == 1) {
+              for (let x = 0; x < count; x++) {
+                  fileName += "_" + s.filter;
+              }
+          }
+
+          if (typeof perFilter[ s.filter ] !== "number") {
+              perFilter[ s.filter ] = 0;
+          }
+
+          perFilter[ s.filter ] += (d * count);
+
+          out += "\n" + sjob;
+
+          n++;
+      }
+
+      out += "\n";
+  }
+
+  out += post.trim();
+
+  outputEl.value = out;
+
+  let infoOut = "Amount: " + (amount) + ", ";
+  infoOut += "Duration: " + (duration / 60) + "m";
+
+  for (let f in perFilter) {
+      infoOut += ", " + f + "=" + (perFilter[f] / 60) + "m";
+  }
+
+  infoOut += " / Duration: " + (duration / 60 / 60) + "h";
+
+  fileName = cam + "_" + (Math.round((duration / 60 / 60) * 100) / 100) + "h" + fileName + ".esq";
+
+  for (let f in perFilter) {
+      infoOut += ", " + f + "=" + (perFilter[f] / 60 / 60) + "h";
+  }
+
+  infoEl.innerHTML = infoOut;
+
+  var blob = new Blob([out], {
+      type: "text/plain",
+  });
+  blob.name = fileName;
+
+  downloadUrl = URL.createObjectURL(blob);
+  var downloadLink = document.getElementById( "downloadLink" );
+  downloadLink.href = downloadUrl;
+  downloadLink.download = fileName;
+  
+}
+
+var asi1600Value = `<?xml version="1.0" encoding="UTF-8"?>
+<SequenceQueue version='2.1'>
+<CCD>ZWO CCD ASI1600MM Pro</CCD>
+<FilterWheel>ASI EFW</FilterWheel>
+<GuideDeviation enabled='false'>2</GuideDeviation>
+<GuideStartDeviation enabled='false'>2</GuideStartDeviation>
+<Autofocus enabled='false'>0</Autofocus>
+<RefocusOnTemperatureDelta enabled='true'>0.5</RefocusOnTemperatureDelta>
+<RefocusEveryN enabled='false'>60</RefocusEveryN>
+<Job>
+<Exposure>300</Exposure>
+<Binning>
+<X>1</X>
+<Y>1</Y>
+</Binning>
+<Temperature force='true'>-20</Temperature>
+<Filter>Ha</Filter>
+<Type>Light</Type>
+<Prefix>
+<RawPrefix></RawPrefix>
+<FilterEnabled>1</FilterEnabled>
+<ExpEnabled>1</ExpEnabled>
+<TimeStampEnabled>0</TimeStampEnabled>
+</Prefix>
+<Count>1</Count>
+<Delay>0</Delay>
+<FITSDirectory>/home/stellarmate/Pictures</FITSDirectory>
+<UploadMode>0</UploadMode>
+<FormatIndex>0</FormatIndex>
+<Properties>
+<NumberVector name='CCD_CONTROLS'>
+<OneNumber name='Gain'>0</OneNumber>
+<OneNumber name='Offset'>10</OneNumber>
+</NumberVector>
+</Properties>
+<Calibration>
+<FlatSource>
+<Type>Manual</Type>
+</FlatSource>
+<FlatDuration>
+<Type>ADU</Type>
+<Value>29000</Value>
+<Tolerance>50</Tolerance>
+</FlatDuration>
+<PreMountPark>False</PreMountPark>
+<PreDomePark>False</PreDomePark>
+</Calibration>
+</Job>
+</SequenceQueue>`;
+
+var asi2600Value = `<?xml version="1.0" encoding="UTF-8"?>
+<SequenceQueue version='2.1'>
+<CCD>ZWO CCD ASI2600MM Pro</CCD>
+<FilterWheel>ASI EFW</FilterWheel>
+<GuideDeviation enabled='false'>2</GuideDeviation>
+<GuideStartDeviation enabled='false'>2</GuideStartDeviation>
+<Autofocus enabled='false'>0</Autofocus>
+<RefocusOnTemperatureDelta enabled='true'>0.5</RefocusOnTemperatureDelta>
+<RefocusEveryN enabled='false'>60</RefocusEveryN>
+<Job>
+<Exposure>300</Exposure>
+<Binning>
+<X>1</X>
+<Y>1</Y>
+</Binning>
+<Temperature force='true'>-15</Temperature>
+<Filter>L</Filter>
+<Type>Light</Type>
+<Prefix>
+<RawPrefix></RawPrefix>
+<FilterEnabled>1</FilterEnabled>
+<ExpEnabled>1</ExpEnabled>
+<TimeStampEnabled>0</TimeStampEnabled>
+</Prefix>
+<Count>1</Count>
+<Delay>0</Delay>
+<FITSDirectory>/home/stellarmate/Pictures</FITSDirectory>
+<UploadMode>0</UploadMode>
+<FormatIndex>0</FormatIndex>
+<Properties>
+<NumberVector name='CCD_CONTROLS'>
+<OneNumber name='Gain'>0</OneNumber>
+<OneNumber name='Offset'>50</OneNumber>
+</NumberVector>
+</Properties>
+<Calibration>
+<FlatSource>
+<Type>Manual</Type>
+</FlatSource>
+<FlatDuration>
+<Type>ADU</Type>
+<Value>29000</Value>
+<Tolerance>50</Tolerance>
+</FlatDuration>
+<PreMountPark>False</PreMountPark>
+<PreDomePark>False</PreDomePark>
+</Calibration>
+</Job>
+</SequenceQueue>`;
+
+var defaultConfigs = {
+	"HSO_ASI2600": [
+		{
+			filter: "Ha",
+			exposure: 300,
+			gain: 100,
+			offset: 50,
+			count: 1,
+			bin: 1
+		},
+		{
+			filter: "SII",
+			exposure: 300,
+			gain: 100,
+			offset: 50,
+			count: 1,
+			bin: 1
+		},
+		{
+			filter: "OIII",
+			exposure: 300,
+			gain: 100,
+			offset: 50,
+			count: 1,
+			bin: 1
+		}
+	],
+	"LRGB_ASI2600": [
+		{
+			filter: "L",
+			exposure: 120,
+			gain: 100,
+			offset: 50,
+			count: 2,
+			bin: 1
+		},
+		{
+			filter: "R",
+			exposure: 180,
+			gain: 100,
+			offset: 50,
+			count: 1,
+			bin: 1
+		},
+		{
+			filter: "G",
+			exposure: 120,
+			gain: 100,
+			offset: 50,
+			count: 1,
+			bin: 1
+		},
+		{
+			filter: "B",
+			exposure: 120,
+			gain: 100,
+			offset: 50,
+			count: 1,
+			bin: 1
+		}
+	],
+    "ASI1600_LRGB_short": [
+{
+		"filter": "L",
+		"exposure": 30,
+		"gain": 0,
+		"offset": 10,
+		"count": 4,
+		"bin": 1
+	},
+	{
+		"filter": "R",
+		"exposure": 60,
+		"gain": 0,
+		"offset": 10,
+		"count": 2,
+		"bin": 1
+	},
+	{
+		"filter": "G",
+		"exposure": 60,
+		"gain": 0,
+		"offset": 10,
+		"count": 2,
+		"bin": 1
+	},
+	{
+		"filter": "B",
+		"exposure": 30,
+		"gain": 0,
+		"offset": 10,
+		"count": 4,
+		"bin": 1
+	}
+],
+"ASI1600_SHO": [
+	{
+		"filter": "Ha",
+		"exposure": 300,
+		"gain": 139,
+		"offset": 21,
+		"count": 1,
+		"bin": 1
+	},
+	{
+		"filter": "SII",
+		"exposure": 300,
+		"gain": 139,
+		"offset": 21,
+		"count": 1,
+		"bin": 1
+	},
+	{
+		"filter": "OIII",
+		"exposure": 300,
+		"gain": 139,
+		"offset": 21,
+		"count": 1,
+		"bin": 1
+	}
+]
+};
+	</script>
+	<div>
+    <textarea id="input" style="width: 45%; height: 400px;" onkeyup="updateLater()"></textarea>
+	<textarea id="config" style="width: 45%; height: 400px;" onkeyup="updateLater()"></textarea>
+		<select id="configSelector" size="20"  onchange="configSelectionChanged()">
+		
+	  </select>
+	</div>
+    <button onclick="inputEl.value = asi1600Value; update();">Asi1600</button>
+    <button onclick="inputEl.value = asi2600Value; update();">Asi2600</button>
+    <a href="about:blank" target="_blank" id="downloadLink">Download</a>
+    Duration: <input id="duration" onchange="update()" value="8"></input>
+    <span id="info"></span>
+    <br>
+	<textarea id="output" style="width: 100%; height: 400px;"></textarea>
+
+    <script>
+    inputEl = inputEl || document.getElementById( "input" );
+    configEl = configEl || document.getElementById( "config" );
+
+	var configSelector = document.getElementById( "configSelector");
+
+	for( let cfgName in defaultConfigs ) {
+		let o = document.createElement( "option" );
+		o.innerText = cfgName;
+		configSelector.appendChild( o );
+	}
+
+	function configSelectionChanged() {
+		configEl.value = JSON.stringify( defaultConfigs[ configSelector.value ], void 0, "\t" );
+		update();
+	}
+
+    inputEl.value = asi2600Value;
+	configEl.value = JSON.stringify( defaultConfigs.HSO_ASI2600, void 0, "\t" );
+
+    update();
+    </script>
+
+
+
+
+<script>
+    (function(){
+    /*
+    * FileSaver.js
+    * A saveAs() FileSaver implementation.
+    *
+    * By Eli Grey, http://eligrey.com
+    *
+    * License : https://github.com/eligrey/FileSaver.js/blob/master/LICENSE.md (MIT)
+    * source  : http://purl.eligrey.com/github/FileSaver.js
+    */
+    
+    // The one and only way of getting global scope in all environments
+    // https://stackoverflow.com/q/3277182/1008999
+    var _global = typeof window === 'object' && window.window === window
+      ? window : typeof self === 'object' && self.self === self
+      ? self : typeof global === 'object' && global.global === global
+      ? global
+      : this
+    
+    function bom (blob, opts) {
+      if (typeof opts === 'undefined') opts = { autoBom: false }
+      else if (typeof opts !== 'object') {
+        console.warn('Deprecated: Expected third argument to be a object')
+        opts = { autoBom: !opts }
+      }
+    
+      // prepend BOM for UTF-8 XML and text/* types (including HTML)
+      // note: your browser will automatically convert UTF-16 U+FEFF to EF BB BF
+      if (opts.autoBom && /^\s*(?:text\/\S*|application\/xml|\S*\/\S*\+xml)\s*;.*charset\s*=\s*utf-8/i.test(blob.type)) {
+        return new Blob([String.fromCharCode(0xFEFF), blob], { type: blob.type })
+      }
+      return blob
+    }
+    
+    function download (url, name, opts) {
+      var xhr = new XMLHttpRequest()
+      xhr.open('GET', url)
+      xhr.responseType = 'blob'
+      xhr.onload = function () {
+        saveAs(xhr.response, name, opts)
+      }
+      xhr.onerror = function () {
+        console.error('could not download file')
+      }
+      xhr.send()
+    }
+    
+    function corsEnabled (url) {
+      var xhr = new XMLHttpRequest()
+      // use sync to avoid popup blocker
+      xhr.open('HEAD', url, false)
+      try {
+        xhr.send()
+      } catch (e) {}
+      return xhr.status >= 200 && xhr.status <= 299
+    }
+    
+    // `a.click()` doesn't work for all browsers (#465)
+    function click (node) {
+      try {
+        node.dispatchEvent(new MouseEvent('click'))
+      } catch (e) {
+        var evt = document.createEvent('MouseEvents')
+        evt.initMouseEvent('click', true, true, window, 0, 0, 0, 80,
+                              20, false, false, false, false, 0, null)
+        node.dispatchEvent(evt)
+      }
+    }
+    
+    // Detect WebView inside a native macOS app by ruling out all browsers
+    // We just need to check for 'Safari' because all other browsers (besides Firefox) include that too
+    // https://www.whatismybrowser.com/guides/the-latest-user-agent/macos
+    var isMacOSWebView = _global.navigator && /Macintosh/.test(navigator.userAgent) && /AppleWebKit/.test(navigator.userAgent) && !/Safari/.test(navigator.userAgent)
+    
+    var saveAs = _global.saveAs || (
+      // probably in some web worker
+      (typeof window !== 'object' || window !== _global)
+        ? function saveAs () { /* noop */ }
+    
+      // Use download attribute first if possible (#193 Lumia mobile) unless this is a macOS WebView
+      : ('download' in HTMLAnchorElement.prototype && !isMacOSWebView)
+      ? function saveAs (blob, name, opts) {
+        var URL = _global.URL || _global.webkitURL
+        var a = document.createElement('a')
+        name = name || blob.name || 'download'
+    
+        a.download = name
+        a.rel = 'noopener' // tabnabbing
+    
+        // TODO: detect chrome extensions & packaged apps
+        // a.target = '_blank'
+    
+        if (typeof blob === 'string') {
+          // Support regular links
+          a.href = blob
+          if (a.origin !== location.origin) {
+            corsEnabled(a.href)
+              ? download(blob, name, opts)
+              : click(a, a.target = '_blank')
+          } else {
+            click(a)
+          }
+        } else {
+          // Support blobs
+          a.href = URL.createObjectURL(blob)
+          setTimeout(function () { URL.revokeObjectURL(a.href) }, 4E4) // 40s
+          setTimeout(function () { click(a) }, 0)
+        }
+      }
+    
+      // Use msSaveOrOpenBlob as a second approach
+      : 'msSaveOrOpenBlob' in navigator
+      ? function saveAs (blob, name, opts) {
+        name = name || blob.name || 'download'
+    
+        if (typeof blob === 'string') {
+          if (corsEnabled(blob)) {
+            download(blob, name, opts)
+          } else {
+            var a = document.createElement('a')
+            a.href = blob
+            a.target = '_blank'
+            setTimeout(function () { click(a) })
+          }
+        } else {
+          navigator.msSaveOrOpenBlob(bom(blob, opts), name)
+        }
+      }
+    
+      // Fallback to using FileReader and a popup
+      : function saveAs (blob, name, opts, popup) {
+        // Open a popup immediately do go around popup blocker
+        // Mostly only available on user interaction and the fileReader is async so...
+        popup = popup || open('', '_blank')
+        if (popup) {
+          popup.document.title =
+          popup.document.body.innerText = 'downloading...'
+        }
+    
+        if (typeof blob === 'string') return download(blob, name, opts)
+    
+        var force = blob.type === 'application/octet-stream'
+        var isSafari = /constructor/i.test(_global.HTMLElement) || _global.safari
+        var isChromeIOS = /CriOS\/[\d]+/.test(navigator.userAgent)
+    
+        if ((isChromeIOS || (force && isSafari) || isMacOSWebView) && typeof FileReader !== 'undefined') {
+          // Safari doesn't allow downloading of blob URLs
+          var reader = new FileReader()
+          reader.onloadend = function () {
+            var url = reader.result
+            url = isChromeIOS ? url : url.replace(/^data:[^;]*;/, 'data:attachment/file;')
+            if (popup) popup.location.href = url
+            else location = url
+            popup = null // reverse-tabnabbing #460
+          }
+          reader.readAsDataURL(blob)
+        } else {
+          var URL = _global.URL || _global.webkitURL
+          var url = URL.createObjectURL(blob)
+          if (popup) popup.location = url
+          else location.href = url
+          popup = null // reverse-tabnabbing #460
+          setTimeout(function () { URL.revokeObjectURL(url) }, 4E4) // 40s
+        }
+      }
+    )
+    
+    _global.saveAs = saveAs.saveAs = saveAs;
+    })();
+        </script>
+</body>
+
+
+
+</html>

@@ -7,7 +7,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.freedesktop.dbus.exceptions.DBusException;
@@ -196,27 +195,16 @@ public class KStarsClusterClient extends KStarsCluster {
 
     protected AtomicBoolean shouldAlign = new AtomicBoolean( false );
     protected AtomicReference< List<Double> > serverSolutionResult = new AtomicReference<>();
-    
-    protected AtomicReference<AlignState> currentAlignStatus = new AtomicReference<AlignState>( AlignState.ALIGN_IDLE );
-    
-    protected AtomicReference<MountStatus> currentMountStatus = new AtomicReference<MountStatus>( MountStatus.MOUNT_IDLE );
-    
+        
     protected AtomicBoolean serverMountTracking = new AtomicBoolean( false );
     
-    protected AtomicInteger activeCaptureJob = new AtomicInteger( 0 );
-    protected AtomicBoolean captureRunning = new AtomicBoolean( false );
-    protected AtomicBoolean capturePaused = new AtomicBoolean( false );
-    protected AtomicBoolean autoFocusDone = new AtomicBoolean( false );
-    protected AtomicBoolean focusRunning = new AtomicBoolean( false );
     protected AtomicBoolean imageReceived = new AtomicBoolean( false );
     
     protected AtomicBoolean autoCapture = new AtomicBoolean( true );
     
     protected void resetValues() {
-        captureRunning.set( false );
-        capturePaused.set( false );
-        autoFocusDone.set( false );
-        focusRunning.set( false );
+        super.resetValues();
+
         imageReceived.set( false );
         autoCapture.set( true );
     }
@@ -268,12 +256,9 @@ public class KStarsClusterClient extends KStarsCluster {
     @Override
     protected void handleMountStatus( MountStatus state ) {
         super.handleMountStatus(state);
-        
         logMessage( "Client mount status " + state );
-        currentMountStatus.set( state );
     }
 
-    
     protected void handleServerGuideStatus(GuideStatus status, final Map<String, Object> payload) {
         logMessage( "Server guide status " + status );
         
@@ -336,13 +321,12 @@ public class KStarsClusterClient extends KStarsCluster {
             case GUIDE_SUBFRAME:
                 //no need to handle
                 break;
-            
         }
     }
     @Override
     protected void handleGuideStatus(GuideStatus state) {
         super.handleGuideStatus(state);
-        
+
         logMessage( "Client guide status " + state );
     }
 
@@ -420,30 +404,6 @@ public class KStarsClusterClient extends KStarsCluster {
         super.handleFocusStatus(state);
         
         logMessage( "Client focus status " + state );
-        
-        switch( state ) {
-            case FOCUS_COMPLETE:
-                autoFocusDone.set( true );
-                focusRunning.set( false );
-            break;
-            
-            case FOCUS_ABORTED:
-            case FOCUS_FAILED:
-                autoFocusDone.set( false );
-                focusRunning.set( false );
-            break;
-            
-            case FOCUS_IDLE:
-                focusRunning.set( false );
-            break;
-            
-            case FOCUS_FRAMING:
-            case FOCUS_WAITING:
-            case FOCUS_CHANGING_FILTER:
-            case FOCUS_PROGRESS:
-                focusRunning.set( true );
-            break;
-        }
     }
     
     protected void handleServerCaptureStatus(CaptureStatus status, final Map<String, Object> payload) {
@@ -519,13 +479,10 @@ public class KStarsClusterClient extends KStarsCluster {
         
             case CAPTURE_CAPTURING:
                 imageReceived.set( false );
-                captureRunning.set( true );
-                capturePaused.set( false );
                 autoCapture.set( true );
                 
-                final int jobId = this.capture.methods.getActiveJobID();
-                activeCaptureJob.set( jobId );
-                
+                int jobId = activeCaptureJob.get();
+
                 if( !canCapture() ) {
                     logMessage( "Capture not allowed yet, but was started ... aborting" );
                     stopCapture();
@@ -556,21 +513,13 @@ public class KStarsClusterClient extends KStarsCluster {
             break;
             
             case CAPTURE_ABORTED:
-                capturePaused.set( false );
-                if( captureRunning.getAndSet( false ) ) {
-                    logMessage( "Capture " + activeCaptureJob.get() + " was aborted");
-                }
             break;
             
             case CAPTURE_COMPLETE:
             case CAPTURE_SUSPENDED:
-                captureRunning.set( false );
-                capturePaused.set( false );
             break;
             
             case CAPTURE_PAUSED:
-                //running, but paused
-                capturePaused.set( true );
             break;
             
             case CAPTURE_IDLE:
@@ -679,22 +628,7 @@ public class KStarsClusterClient extends KStarsCluster {
                         logMessage( "Starting Autofocus process" );
                         
                         if( this.isAutoFocusEnabled() && this.focus.methods.canAutoFocus() ) {
-                            if( focusRunning.get() == false ) {
-                                this.focus.methods.start();
-                            }
-
-                            final WaitUntil maxWait = new WaitUntil( 5, "Focusing" );
-                            while( !focusRunning.get() && maxWait.check() ) {
-                                Thread.sleep( 10 );
-                            }
-                            logMessage( "Focus process has started" );
-
-                            maxWait.reset( 300 );
-                            while( focusRunning.get() && maxWait.check() ) {
-                                Thread.sleep( 10 );
-                            }
-
-                            logMessage( "Focus process has finished" );
+                            runAutoFocus();
                         }
                         else {
                             logMessage( "Autofocus is disabled" );

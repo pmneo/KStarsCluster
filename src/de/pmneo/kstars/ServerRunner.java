@@ -1,5 +1,6 @@
 package de.pmneo.kstars;
 
+import java.io.File;
 import java.net.URI;
 import java.net.URL;
 import java.util.Arrays;
@@ -15,8 +16,9 @@ import org.eclipse.jetty.websocket.jakarta.server.config.JakartaWebSocketServlet
 import com.sampullara.cli.Args;
 import com.sampullara.cli.Argument;
 
+import de.pmneo.kstars.web.CommandServlet;
 import de.pmneo.kstars.web.LoggingSocket;
-import de.pmneo.kstars.web.StatusServlet;
+
 
 public class ServerRunner {
 		
@@ -75,9 +77,19 @@ public class ServerRunner {
 
 	public static void startServer( KStarsCluster cluster ) throws Exception
     {
-        Server server = new Server( );
+        Server server = new Server( webPort );
 
-        URL webRootLocation = ServerRunner.class.getResource("/webroot/index.html");
+        URL webRootLocation = null;
+		
+		File devWeb = new File( "./src/web/index.html" );
+
+		if( devWeb.exists() ) {
+			webRootLocation = devWeb.getCanonicalFile().toURI().toURL();
+		}
+		
+		if( webRootLocation == null ) {
+			webRootLocation = ServerRunner.class.getResource("/web/index.html");
+		}
         if (webRootLocation == null)
         {
             throw new IllegalStateException("Unable to determine webroot URL location");
@@ -102,7 +114,8 @@ public class ServerRunner {
             wsContainer.addEndpoint(LoggingSocket.class) );
 
         // Add Servlet endpoints
-        contextHandler.addServlet(StatusServlet.class, "/status");
+
+		contextHandler.addServlet(CommandServlet.class, "/cmd/*");
         contextHandler.addServlet(DefaultServlet.class, "/");
 
         // Start Server

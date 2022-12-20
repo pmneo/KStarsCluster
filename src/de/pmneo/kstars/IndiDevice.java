@@ -1,7 +1,5 @@
 package de.pmneo.kstars;
 
-import java.text.SimpleDateFormat;
-import java.util.Date;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.freedesktop.dbus.errors.ServiceUnknown;
@@ -29,18 +27,13 @@ public class IndiDevice {
         this.indi = indi;
     }
 
-    private final SimpleDateFormat sdf = new SimpleDateFormat( "[HH:mm:ss.SSS] " );
-	
+
 	public void logMessage( Object message ) {
-		System.out.println( sdf.format( new Date() ) + message );
+		SimpleLogger.getLogger().logMessage( message );
 	}
 	
 	public void logError( Object message, Throwable t ) {
-		System.err.println( sdf.format( new Date() ) + message );
-		
-		if( t != null ) {
-			t.printStackTrace();
-		}
+        SimpleLogger.getLogger().logError( message, t );
 	}
 	
 

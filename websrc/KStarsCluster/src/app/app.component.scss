@@ -1,0 +1,21 @@
+:host {
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+    width: 100vw;
+    position: absolute;
+    left: 0;
+    top: 0;
+    padding: 1em;
+    box-sizing: border-box;
+
+    div.status {
+        flex: 1 0 auto;
+        overflow: auto;
+    }
+
+    div.logs {
+        flex: 1 0 auto;
+        overflow: auto;
+    }
+}
