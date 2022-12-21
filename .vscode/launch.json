@@ -16,6 +16,14 @@
             "request": "launch",
             "mainClass": "de.pmneo.kstars.ServerRunner",
             "projectName": "KStarsCluster_5a695d30"
+        },
+        {
+            "type": "java",
+            "name": "Launch ServerRunner as client",
+            "request": "launch",
+            "mainClass": "de.pmneo.kstars.ServerRunner",
+            "projectName": "KStarsCluster_5a695d30",
+            "args": "-h 192.168.0.104"
         }
     ]
 }

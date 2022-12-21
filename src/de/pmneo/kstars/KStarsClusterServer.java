@@ -26,7 +26,7 @@ public class KStarsClusterServer extends KStarsCluster {
     protected final ServerSocket serverSocket;
     
     public KStarsClusterServer( int listenPort ) throws IOException, DBusException {
-        super( );
+        super( "Server" );
         serverSocket = new ServerSocket( listenPort );
     }
     
@@ -49,7 +49,7 @@ public class KStarsClusterServer extends KStarsCluster {
                 serverWorker = new Thread( () -> {
                     while( true ) {
                         try {
-                            if( isKStarsReady() ) {
+                            if( isKStarsReady() && automationSuspended.get() == false ) {
                                 checkServerState();
                             }
                             Thread.sleep( 100 );
@@ -111,6 +111,7 @@ public class KStarsClusterServer extends KStarsCluster {
 
     private final WaitUntil manualSchedulerAbort = new WaitUntil( 5, null ); 
     private AtomicBoolean autoStartScheduler = new AtomicBoolean( true );
+
     protected synchronized void checkServerState() {
         try {
             if( autoStartScheduler.get() ) {
@@ -125,30 +126,31 @@ public class KStarsClusterServer extends KStarsCluster {
         }
     }
 
-    protected final AtomicReference< Map<String,Object> > lastCaptureStatus = new AtomicReference< Map<String,Object> >();
     @Override
-    protected void handleCaptureStatus(CaptureStatus state) {
-        super.handleCaptureStatus(state);
+    public CaptureStatus handleCaptureStatus(CaptureStatus state) {
+        state = super.handleCaptureStatus(state);
         
         final Map<String,Object> payload = capture.getParsedProperties();
         payload.put( "action", "handleCaptureStatus" );
-        lastCaptureStatus.set( payload );
+        payload.put( "status", state);
+
         writeToAllClients( payload );
+
+        return state;
     }
     
-    protected final AtomicReference< Map<String,Object> > lastAlignStatus = new AtomicReference< Map<String,Object> >();
     @Override
-    protected void handleAlignStatus(AlignState state) {
-        super.handleAlignStatus(state);
+    public AlignState handleAlignStatus(AlignState state) {
+        state = super.handleAlignStatus(state);
         
-        List<Double> solutionResult = getSolutionResult();
-
         final Map<String,Object> payload = align.getParsedProperties();
         payload.put( "action", "handleAlignStatus" );
-        payload.put( "solutionResult", solutionResult );
-        lastAlignStatus.set( payload );
+        payload.put( "solutionResult", getSolutionResult() );
+        payload.put( "status", state);
 
         writeToAllClients( payload );
+
+        return state;
     }
 
     protected List<Double> getSolutionResult() {
@@ -163,139 +165,149 @@ public class KStarsClusterServer extends KStarsCluster {
         }
     }
     
-    protected final AtomicReference< Map<String,Object> > lastFocusStatus = new AtomicReference< Map<String,Object> >();
     @Override
-    protected void handleFocusStatus(FocusState state) {
-        super.handleFocusStatus(state);
+    public FocusState handleFocusStatus(FocusState state) {
+        state = super.handleFocusStatus(state);
         
         final Map<String,Object> payload = focus.getParsedProperties();
         payload.put( "action", "handleFocusStatus" );
-        lastFocusStatus.set( payload );
+        payload.put( "status", state);
+
         writeToAllClients( payload );
+
+        return state;
     }
     
-    protected final AtomicReference< MountStatus > mountStatus = new AtomicReference< MountStatus >( MountStatus.MOUNT_PARKED );
-    protected final AtomicReference< SchedulerState > schedulerState = new AtomicReference< SchedulerState >( SchedulerState.SCHEDULER_IDLE );
-    protected final AtomicReference< WeatherState > weatherState = new AtomicReference< WeatherState >( WeatherState.WEATHER_IDLE );
-    protected final AtomicReference< Map<String,Object> > lastScheduleStatus = new AtomicReference< Map<String,Object> >();
     @Override
-    protected void handleSchedulerStatus(SchedulerState state) {
-        super.handleSchedulerStatus(state);
+    public SchedulerState handleSchedulerStatus(SchedulerState state) {
+        state = super.handleSchedulerStatus(state);
 
-        this.schedulerState.set( state );
-
-        switch( state ) {
-            case SCHEDULER_IDLE:
-                //if scheduler paused and aborted within 5 seconds, disable auto scheduler start
-                if( manualSchedulerAbort.check() ) {
-                    autoStartScheduler.set( false );
-                }
-                
-            break;
-
-            case SCHEDULER_PAUSED:
-                manualSchedulerAbort.reset();
-            break;
-            
-            case SCHEDULER_RUNNING:
-                autoStartScheduler.set( true );
-            break;
-
-            case SCHEDULER_STARTUP:
-            case SCHEDULER_LOADING:
-            case SCHEDULER_SHUTDOWN:
-            case SCHEDULER_ABORTED:
-            default:
+        if( this.automationSuspended.get() == false ) {
+            switch( state ) {
+                case SCHEDULER_IDLE:
+                    //if scheduler paused and aborted within 5 seconds, disable auto scheduler start
+                    if( manualSchedulerAbort.check() ) {
+                        autoStartScheduler.set( false );
+                    }
                 break;
+
+                case SCHEDULER_PAUSED:
+                    manualSchedulerAbort.reset();
+                break;
+                
+                case SCHEDULER_RUNNING:
+                    autoStartScheduler.set( true );
+                break;
+
+                case SCHEDULER_STARTUP:
+                case SCHEDULER_LOADING:
+                case SCHEDULER_SHUTDOWN:
+                case SCHEDULER_ABORTED:
+                default:
+                    break;
+            }
         }
 
-        checkCameraCooling( schedulerState.get(), mountStatus.get() );
+        checkCameraCooling( this );
 
         
         final Map<String,Object> payload = scheduler.getParsedProperties();
         payload.put( "action", "handleSchedulerStatus" );
-        lastScheduleStatus.set( payload );
+        payload.put( "status", state);
+
         writeToAllClients( payload );
+
+        return state;
     }
 
-    protected final AtomicReference< Map<String,Object> > lastScheduleWeatherStatus = new AtomicReference< Map<String,Object> >();
+    
     @Override
-    protected void handleSchedulerWeatherStatus(WeatherState state) {
-        super.handleSchedulerWeatherStatus(state);
+    public WeatherState handleSchedulerWeatherStatus(WeatherState state) {
+        state = super.handleSchedulerWeatherStatus(state);
         
         this.weatherState.set( state );
 
         final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleSchedulerWeatherStatus" );
         payload.put( "status", state );
-        lastScheduleWeatherStatus.set( payload );
+
         writeToAllClients( payload );
+
+        return state;
     }
     
-    protected final AtomicReference< Map<String,Object> > lastGuideStatus = new AtomicReference< Map<String,Object> >();
     protected final AtomicBoolean guideCalibrating = new AtomicBoolean( false );
+    
     @Override
-    protected void handleGuideStatus(GuideStatus state) {
-        super.handleGuideStatus(state);
+    public GuideStatus handleGuideStatus(GuideStatus state) {
+        state = super.handleGuideStatus(state);
         
         final Map<String,Object> payload = guide.getParsedProperties();
         payload.put( "action", "handleGuideStatus" );
-        lastGuideStatus.set( payload );
+        payload.put( "status", state);
+
         writeToAllClients( payload );
+
+        return state;
     }
     
-    protected final AtomicReference< Map<String,Object> > lastMountStatus = new AtomicReference< Map<String,Object> >();
     @Override
-    protected void handleMountStatus(MountStatus state) {
-        super.handleMountStatus(state);
+    public MountStatus handleMountStatus(MountStatus state) {
+        state = super.handleMountStatus(state);
         
-        mountStatus.set( state );
+        checkCameraCooling( this );
 
-        checkCameraCooling( schedulerState.get(), mountStatus.get() );
-
-        final Map<String, Object> payload = updateLastMountStatus();
-        writeToAllClients( payload );
-    }
-
-    protected Map<String, Object> updateLastMountStatus() {
         final Map<String,Object> payload = mount.getParsedProperties();
         payload.put( "action", "handleMountStatus" );
-        lastMountStatus.set( payload );
-        return payload;
+        payload.put( "status", state);
+
+        writeToAllClients( payload );
+
+        return state;
     }
+
     
     @Override
-    protected void handleMeridianFlipStatus(MeridianFlipStatus state) {
-        super.handleMeridianFlipStatus(state);
-        
-        updateLastMountStatus();
+    public MeridianFlipStatus handleMeridianFlipStatus(MeridianFlipStatus state) {
+        state = super.handleMeridianFlipStatus(state);
         
         final Map<String,Object> payload = mount.getParsedProperties();
         payload.put( "action", "handleMeridianFlipStatus" );
+        payload.put( "status", state);
+
         writeToAllClients( payload );
+
+        return state;
     }
     @Override
-    protected void handleMountParkStatus(ParkStatus state) {
-        super.handleMountParkStatus(state);
-        
-        updateLastMountStatus();
+    public ParkStatus handleMountParkStatus(ParkStatus state) {
+        state = super.handleMountParkStatus(state);
         
         final Map<String,Object> payload = mount.getParsedProperties();
         payload.put( "action", "handleMountParkStatus" );
+        payload.put( "status", state);
+
         writeToAllClients( payload );
+
+        return state;
     }
     
+
+    protected final Map<String, Map<String, Object> > actionCache = new HashMap<>();
     protected void writeToAllClients( Map<String, Object> payload ) {
-        
-        payload.remove( "logText" ); 
-        
-        logMessage( "Sending " + payload.get( "action" ) + ": " + payload.get( "status" ) + " to " + clients.size() + " clients" );
-        
-        for( SocketHandler handler : clients.keySet() ) {
-            try {
-                handler.writeObject( payload );
-            } catch (IOException e) {
-                logError( "Failed to inform client " + handler, e );
+
+        synchronized( actionCache ) {
+            String action = (String) payload.get( "action" );
+            actionCache.put( action, payload );
+
+            payload.remove( "logText" ); 
+            logMessage( "Sending " + action + ": " + payload.get( "status" ) + " to " + clients.size() + " clients" );
+            for( SocketHandler handler : clients.keySet() ) {
+                try {
+                    handler.writeObject( payload );
+                } catch (IOException e) {
+                    logError( "Failed to inform client " + handler, e );
+                }
             }
         }
     }
@@ -319,7 +331,7 @@ public class KStarsClusterServer extends KStarsCluster {
                     
                     final SocketHandler clientHandler = new SocketHandler( client );
                     final Thread rThread = new Thread( () -> {
-                        receive( clientHandler, this::clientFrameReceived, (c,t) -> {
+                        clientHandler.receive( this::clientFrameReceived, (c,t) -> {
                             clients.remove( c );
                         } );
                     } );
@@ -328,15 +340,15 @@ public class KStarsClusterServer extends KStarsCluster {
                     rThread.start();
                     
                     synchronized ( clientHandler._output ) {
-                        clientHandler.writeObject( "Hello Client" );
-                        
-                        //inform new client about the current state
-                        clientHandler.writeNotNullObject( lastScheduleStatus.get() );
-                        clientHandler.writeNotNullObject( lastMountStatus.get() );
-                        clientHandler.writeNotNullObject( lastAlignStatus.get() );
-                        clientHandler.writeNotNullObject( lastFocusStatus.get() );
-                        clientHandler.writeNotNullObject( lastGuideStatus.get() );
-                        clientHandler.writeNotNullObject( lastCaptureStatus.get() );
+                        clientHandler.writeObject( "Begin init" );
+
+                        synchronized( actionCache ) {
+                            for( Map<String,Object> payload : actionCache.values() ) {
+                                clientHandler.writeNotNullObject( payload );
+                            }
+                        }
+
+                        clientHandler.writeObject( "Init done" );
                     }
                 }
             }

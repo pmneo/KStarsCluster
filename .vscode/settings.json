@@ -25,7 +25,8 @@
         "libs/log4j-slf4j-impl-2.11.2.jar",
         "libs/slf4j-api-1.7.30.jar",
         "libs/embedded-jetty.jar",
-        "libs/gson-2.10.jar"
+        "libs/gson-2.10.jar",
+        "libs/bsh-3.0.0-SNAPSHOT.jar"
     ],
     "workbench.colorTheme": "Eclipse Light",
     "editor.codeLens": true,

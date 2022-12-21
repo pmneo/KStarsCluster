@@ -5,7 +5,12 @@ import { AfterViewChecked, Component, DoCheck, ElementRef, ViewChild } from '@an
   selector: 'app-root',
   template: `
     <div class="status">
-      <a href="#status" (click)="status()">Update Status</a>
+      <div>
+        <a href="#status" (click)="status()">Update Status</a>&nbsp;
+
+        <a *ngIf="statusInfo.automationSuspended" href="#resume" (click)="resume()">Resume</a> 
+        <a *ngIf="!statusInfo.automationSuspended" ref="#suspend" (click)="suspend()">Suspend</a> 
+      </div>
       <pre>{{statusText}}</pre>
     </div>
 
@@ -18,6 +23,8 @@ import { AfterViewChecked, Component, DoCheck, ElementRef, ViewChild } from '@an
 export class AppComponent implements AfterViewChecked, DoCheck {
 
   public statusText = "";
+
+  public statusInfo: any = {};
 
   @ViewChild( "logs", {read: ElementRef} )
   private logs: ElementRef; 
@@ -40,6 +47,13 @@ export class AppComponent implements AfterViewChecked, DoCheck {
   constructor(private http: HttpClient ) { 
     this.status();
     this.logginService.connect();
+
+    console.log( "http", http );
+
+    
+    setInterval( () => {
+      this.status();
+    }, 5000 );
   }
 
   private scrollDown = false;
@@ -61,8 +75,24 @@ export class AppComponent implements AfterViewChecked, DoCheck {
 
   public status() {
     this.http.get( "cmd/status" ).subscribe( value => {
-      this.statusText = JSON.stringify( value, void 0, "\t" );
+      this.statusUpdated( value );
     })
+  }
+
+  public resume() {
+    this.http.get( "cmd/resume" ).subscribe( value => {
+      this.statusUpdated( value );
+    })
+  }
+  public suspend() {
+    this.http.get( "cmd/suspend" ).subscribe( value => {
+      this.statusUpdated( value );
+    })
+  }
+
+  protected statusUpdated( statusInfo: Object ) {
+    this.statusInfo = statusInfo;
+    this.statusText = JSON.stringify( statusInfo, void 0, "\t" );
   }
 
   

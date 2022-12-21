@@ -87,6 +87,10 @@ public class SimpleLogger {
 	public void logMessage( Object message ) {
 		System.out.println( log( message, null ) );
 	}
+
+    public void logDebug( Object message ) {
+		System.out.println( log( message, null ) );
+	}
 	
 	public void logError( Object message, Throwable t ) {
 		System.err.println( log( message, t ) );
