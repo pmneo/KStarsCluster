@@ -6,10 +6,13 @@ import { AfterViewChecked, Component, DoCheck, ElementRef, ViewChild } from '@an
   template: `
     <div class="status">
       <div>
-        <a href="#status" (click)="status()">Update Status</a>&nbsp;
-
-        <a *ngIf="statusInfo.automationSuspended" href="#resume" (click)="resume()">Resume</a> 
-        <a *ngIf="!statusInfo.automationSuspended" ref="#suspend" (click)="suspend()">Suspend</a> 
+        <button href="#status" (click)="status()">Update Status</button>
+        &nbsp;
+        <button *ngIf="statusInfo?.automationSuspended" href="#resume" (click)="cmd('cmd/resume')">Resume</button> 
+        <button *ngIf="!statusInfo?.automationSuspended" ref="#suspend" (click)="cmd('cmd/suspend')">Suspend</button> 
+        &nbsp;
+        <button *ngIf="!statusInfo?.camera?.isCooling" ref="#isCooling" (click)="cmd('cmd/camera/preCool')">CCD Pre Cool</button> 
+        <button *ngIf="statusInfo?.camera?.isCooling" ref="#suspend" (click)="cmd('cmd/camera/warm')">CCD Warm</button> 
       </div>
       <pre>{{statusText}}</pre>
     </div>
@@ -79,14 +82,15 @@ export class AppComponent implements AfterViewChecked, DoCheck {
     })
   }
 
-  public resume() {
-    this.http.get( "cmd/resume" ).subscribe( value => {
-      this.statusUpdated( value );
-    })
-  }
-  public suspend() {
-    this.http.get( "cmd/suspend" ).subscribe( value => {
-      this.statusUpdated( value );
+
+  public cmd( cmd: string ) {
+    this.http.get( cmd ).subscribe( value => {
+      if( typeof value === "object" && typeof (value as any ["currentFilter"]) === "string" ) {
+        this.statusUpdated( value );
+      }
+      else {
+        this.status();
+      }
     })
   }
 

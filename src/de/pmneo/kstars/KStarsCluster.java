@@ -3,12 +3,12 @@ package de.pmneo.kstars;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.freedesktop.dbus.connections.impl.DBusConnection;
@@ -35,6 +35,7 @@ import bsh.Interpreter;
 
 import org.kde.kstars.ekos.Weather;
 
+import de.pmneo.kstars.utils.RaDecUtils;
 import de.pmneo.kstars.web.CommandServlet.Action;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -100,8 +101,6 @@ public abstract class KStarsCluster extends KStarsState {
 	
 	protected final AtomicBoolean kStarsConnected = new AtomicBoolean(false);
 
-	public final AtomicInteger activeCaptureJob = new AtomicInteger( 0 );
-    
     private double preCoolTemp = -15;
     public void setPreCoolTemp(double preCoolTemp) {
 		if( this.cameraDevice.get() != null ) {
@@ -164,7 +163,7 @@ public abstract class KStarsCluster extends KStarsState {
 			this.handleAlignStatus( status.getStatus() );
 		} );
 		this.align.addSigHandler( Align.newSolution.class, status -> {
-			logMessage( "newSolution: " + Arrays.toString( status.getSolution() ) );
+			logMessage( "newSolution: " + status.getSolution() );
 		} );
 
 		
@@ -421,6 +420,8 @@ public abstract class KStarsCluster extends KStarsState {
 
 
 	protected final AtomicReference<Double> lastFocusPos = new AtomicReference<>(null);
+	protected final AtomicInteger activeCaptureJob = new AtomicInteger( -1 );
+	protected final AtomicLong activeCaptureJobStarted = new AtomicLong( -1 );
 
 	public CaptureStatus handleCaptureStatus( CaptureStatus state ) {
 		boolean captureWasRunning = captureRunning.get();
@@ -436,10 +437,18 @@ public abstract class KStarsCluster extends KStarsState {
 
 		if( captureWasRunning == false && captureRunning.get() ) {
 			final int jobId = this.capture.methods.getActiveJobID();
+
 			activeCaptureJob.set( jobId );
+			activeCaptureJobStarted.set( System.currentTimeMillis() );
+
+			final CaptureDetails details = getCaptureDetails( jobId );
+			logMessage( "Capture started " + details );
 		}
 		else if( captureWasRunning == true && captureRunning.get() == false ) {
-			logMessage( "Capture " + activeCaptureJob.get() + " was aborted");
+			logMessage( "Capture " + activeCaptureJob.get() + " stopped");
+
+			this.activeCaptureJob.set( -1 );
+			this.activeCaptureJobStarted.set( -1 );
 		}
 
 		return state;
@@ -485,26 +494,10 @@ public abstract class KStarsCluster extends KStarsState {
 		return state;
 	}
 	
-	private boolean disableCameraWarming = true;
-
-	private final Object[] checkCameraCoolingStates = new Object[2];
     protected void checkCameraCooling( KStarsState state ) {
-
-		if( disableCameraWarming ) {
-			return;
-		}
 
 		SchedulerState schedulerStatus = state.schedulerState.get();
 		MountStatus mountStatus = state.mountStatus.get();
-
-		synchronized( checkCameraCoolingStates ) {
-			if( checkCameraCoolingStates[0] == schedulerStatus && checkCameraCoolingStates[1] == mountStatus ) {
-				return;
-			}
-
-			checkCameraCoolingStates[0] = schedulerStatus;
-			checkCameraCoolingStates[1] = mountStatus;
-		}
 
 		switch( mountStatus ) {
 			case MOUNT_PARKED:
@@ -555,14 +548,14 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	public int runAutoFocus() {
-		if( this.focusRunning.get() == false ) {
-			this.focus.methods.start();
-		}
+		this.focus.methods.abort();
+		sleep( 1000 );
+		this.focus.methods.start();
 
 		final WaitUntil maxWait = new WaitUntil( 5, "Focusing" );
 
 		while( !this.focusRunning.get() && maxWait.check() ) {
-			try { Thread.sleep( 10 ); } catch( Throwable t ) {};
+			sleep( 10 );
 		}
 
 		logMessage( "Focus process has started" );
@@ -570,7 +563,7 @@ public abstract class KStarsCluster extends KStarsState {
 		maxWait.reset( 300 );
 
 		while( this.focusRunning.get() && maxWait.check() ) {
-			try { Thread.sleep( 10 ); } catch( Throwable t ) {};
+			sleep(10);
 		}
 
 		double pos = this.getFocusDevice().getFocusPosition();
@@ -599,6 +592,20 @@ public abstract class KStarsCluster extends KStarsState {
 			return this.statusAction(parts, req, resp);
 		} );
 
+		actions.put( "camera", ( parts, req, resp ) -> {
+			if( parts.length > 1 ) {
+				if( parts[1].equals( "preCool" ) ) {
+					this.getCameraDevice().preCool();
+				}
+				else if( parts[1].equals( "warm" ) ) {
+					this.getCameraDevice().warm();
+				}
+			}
+			
+			return true;
+		} );
+
+
 		actions.put( "exec", ( parts, req, resp ) -> {
 			
 			int len = req.getContentLength();
@@ -625,14 +632,22 @@ public abstract class KStarsCluster extends KStarsState {
 	public Map<String,Object> statusAction( String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
 		Map<String,Object> res = new HashMap<>();
         
-		res.put( "cameraDevice", this.getCameraDevice().deviceName );
-
 		List<String> filters = this.getFilterDevice().getFilters() ;
 		
 		res.put( "filters", filters );
 		res.put( "currentFilter", filters.get( this.getFilterDevice().getFilterSlot() - 1 ) );
 		res.put( "focusPosition", this.getFocusDevice().getFocusPosition() );
 		res.put( "rotatorAngle", this.getRotatorDevice().getRotatorPosition() );
+
+
+		Map<String,Object> camera = new HashMap<>();
+
+		camera.put( "name", this.getCameraDevice().deviceName );
+		camera.put( "temperature", this.getCameraDevice().getCcdTemparatur() );
+		camera.put( "antiDewHeaterOn", this.getCameraDevice().isAntiDewHeaterOn() );
+		camera.put( "isCooling", this.getCameraDevice().isWarming() ? false : this.getCameraDevice().isCooling() );
+
+		res.put( "camera", camera );
 
 		res.put( "automationSuspended", this.automationSuspended.get() );
 		
@@ -671,14 +686,20 @@ public abstract class KStarsCluster extends KStarsState {
 	public Map<String, Object> fillAlignment(Map<String, Object> res, List<Double> alignSolution) {
 		res.put( "solutionResult", alignSolution );
 
-        double pa = normalizePa( alignSolution.get( 0 ).doubleValue() );
-                            
-		res.put( "pa", pa );
-		
-		double ra = alignSolution.get(1) / 15.0;
-		double dec = alignSolution.get(2);
-        res.put( "ra", ra );
-		res.put( "dec", dec );
+		if( alignSolution != null && alignSolution.size() == 3 ) {
+			double pa = normalizePa( alignSolution.get( 0 ).doubleValue() );
+								
+			res.put( "pa", pa );
+			
+			try {
+				res.put( "ra", RaDecUtils.degreesToRA( alignSolution.get(1) ) );
+				res.put( "dec", RaDecUtils.degreesToDEC( alignSolution.get(2) )  );
+			}
+			catch( Throwable t ) {
+
+				//SILENT CATCH
+			}
+		}
 
 		return res;
 	}
@@ -690,30 +711,36 @@ public abstract class KStarsCluster extends KStarsState {
 		public double exposure;
 		public double duration;
 		public double timeLeft;
-		public int imageProgress;
-		public int imageCount;
+		public int imageProgress = -1;
+		public int imageCount = -1;
 
 		public String toString() {
-			return jobId + ": " + exposure + "/" + duration + "s, " + imageProgress + "/" + imageCount;
+			return jobId + ": " + exposure + "/" + timeLeft + "/" + duration + "s" + ( imageProgress >= 0 ? ( ", " + imageProgress + "/" + imageCount ) : "" );
 		}
 	}
 
-	public CaptureDetails getCaptureDetails(int jobId) {
+	public CaptureDetails getCaptureDetails(int jobId ) {
+		return getCaptureDetails(jobId, true );
+	}
+	public CaptureDetails getCaptureDetails(int jobId, boolean withCnt ) {
 		CaptureDetails c = new CaptureDetails();
 
 		c.jobId = jobId;
 		c.duration = this.capture.methods.getJobExposureDuration( jobId );
 		c.timeLeft = this.capture.methods.getJobExposureProgress( jobId );
-		
+		/*
 		if( c.timeLeft == 0 ) {
 			c.timeLeft = c.duration;
 		}
+		*/
 		
 		c.exposure = c.duration - c.timeLeft;
 		
-		c.imageCount = this.capture.methods.getJobImageCount( jobId );
-		c.imageProgress = this.capture.methods.getJobImageProgress( jobId );
-		
+		if( withCnt ) {
+			c.imageCount = this.capture.methods.getJobImageCount( jobId );
+			c.imageProgress = this.capture.methods.getJobImageProgress( jobId );
+		}
+
 		return c;
 	}
     
@@ -790,84 +817,111 @@ public abstract class KStarsCluster extends KStarsState {
         return res;
     }
 
-	protected void captureAndSolveAndWait( boolean autoSync ) {
+	public boolean captureAndSolveAndWait( boolean autoSync ) {
 
-        this.alignStatus.set( AlignState.ALIGN_IDLE );
 
-        //rotation of 180deg takes 65 seconds, so 130 seconds should be fine 
-        WaitUntil maxWait = new WaitUntil( 20, "Capture and Solve" );
+        final AtomicBoolean alignRunning = new AtomicBoolean( true );
 
-        this.align.methods.captureAndSolve();
+		final AtomicBoolean alignFailed = new AtomicBoolean( false );
 
-        IpsState rotatorState = IpsState.IPS_IDLE;
+		final List<Runnable> unsub = new ArrayList<>();
+		
+		try {
 
-        boolean alignRunning = true;
-        while( alignRunning && maxWait.check() ) {
-            AlignState state = this.alignStatus.get();
+			//max wait 20 seconds
+			final WaitUntil maxWait = new WaitUntil( 20, "Capture and Solve" );
 
-            IpsState cRotatorState = getRotatorDevice().getRotatorPositionStatus();
-            if( cRotatorState == IpsState.IPS_BUSY ) {
-                maxWait.reset();
-            }
+			IpsState rotatorState = getRotatorDevice().getRotatorPositionStatus();
 
-            if( cRotatorState != rotatorState ) {
-                rotatorState = cRotatorState;
+			unsub.add( this.align.addNewStatusHandler( Align.newStatus.class, ( status ) -> {
+				logDebug( "captureAndSolveAndWait(" + status.getStatus() + ")");
+				switch( status.getStatus() ) {
+					case ALIGN_ABORTED:
+						alignRunning.set( false );
+						break;
 
-                logMessage( "Rotator is " + cRotatorState );
-            }
-            
-            switch( state ) {
-                case ALIGN_ABORTED:
-                    alignRunning = false;
-                    break;
+					case ALIGN_COMPLETE:
+						alignRunning.set( false );
+						break;
+				
+					case ALIGN_FAILED:
+						alignFailed.set( true );	
+						alignRunning.set( false );
+						
+						break;
+					
+					case ALIGN_PROGRESS:
+						alignFailed.set( false );
+						maxWait.reset();
+					break;
 
-                case ALIGN_COMPLETE:
-                    alignRunning = false;
-                    break;
-               
-                case ALIGN_FAILED:
-                    alignRunning = false;
-                    break;
-                
-                case ALIGN_PROGRESS:
-                    maxWait.reset();
-                    this.alignStatus.set( AlignState.ALIGN_IDLE );
-                    
-                    if( autoSync ) {
-                        List<Double> coords = this.align.methods.getSolutionResult();
-                        this.align.methods.setTargetCoords( coords.get(1) / 15.0, coords.get(2) );
-                        logMessage( "Sync done: " + coords );
-                    }
-                break;
+					case ALIGN_SLEWING:
+						maxWait.reset();
+						break;
 
-                case ALIGN_SLEWING:
-                    maxWait.reset();
-                    break;
+					case ALIGN_ROTATING:
+						maxWait.reset();
+					break;
+					
+					case ALIGN_SYNCING:
+						maxWait.reset();
+						break;
 
-                case ALIGN_ROTATING:
-                    maxWait.reset();
-                break;
+					case ALIGN_SUCCESSFUL:
+						alignFailed.set( false );
+						maxWait.reset();
+					break;
 
-                
-                case ALIGN_SYNCING:
-                    maxWait.reset();
+					case ALIGN_SUSPENDED:
+						maxWait.reset();
+						break;
 
-                    if( autoSync ) {
-                        List<Double> coords = this.align.methods.getSolutionResult();
-                        this.align.methods.setTargetCoords( coords.get(1) / 15.0, coords.get(2) );
-                        logMessage( "Sync done: " + coords );
-                    }
-                    break;
-                default:
-                    break;
-            }
+					default:
+						break;
+				}
+			} ) );
 
-            try {
-                Thread.sleep( 500 );
-            }
-            catch( Throwable t ) {
-                t.printStackTrace();
-            }
-        }
+			if( autoSync ) {
+				unsub.add( this.align.addSigHandler( Align.newSolution.class, status -> {
+					List<Double> coords = this.align.methods.getSolutionResult();
+					this.align.methods.setTargetCoords( coords.get(1) / 15.0, coords.get(2) );
+					logMessage( "Sync done: " + coords );
+				} ) );
+			}
+
+			this.align.methods.captureAndSolve();
+
+			while( alignRunning.get() && maxWait.check() ) {
+				IpsState cRotatorState = getRotatorDevice().getRotatorPositionStatus();
+
+				if( cRotatorState == IpsState.IPS_BUSY ) {
+					maxWait.reset();
+				}
+
+				if( cRotatorState != rotatorState ) {
+					rotatorState = cRotatorState;
+
+					logMessage( "Rotator is " + cRotatorState );
+				}
+
+				try {
+					Thread.sleep( 500 );
+				}
+				catch( Throwable t ) {
+					t.printStackTrace();
+				}
+			}
+
+			return alignFailed.get();
+		}
+		catch( Throwable t ) {
+			logError( "error in capture an solve", t);
+			return false;
+		}
+		finally {
+			for( Runnable u : unsub ) {
+				u.run();
+			}
+		}
     }
 }

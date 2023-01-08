@@ -1,6 +1,9 @@
 package de.pmneo.kstars;
 
 import java.io.ByteArrayOutputStream;
+import java.io.FileOutputStream;
+import java.io.IOError;
+import java.io.IOException;
 import java.io.PrintStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -9,42 +12,61 @@ import java.util.LinkedList;
 
 public class SimpleLogger {
     private final SimpleDateFormat sdf = new SimpleDateFormat( "[HH:mm:ss.SSS] " );
-	
+
+    
     private static SimpleLogger instance = new SimpleLogger();
 
     public static SimpleLogger getLogger() {
         return instance;
     }
 
+    private static class FileLogger implements LogListener {
+
+        private final SimpleDateFormat fnf = new SimpleDateFormat( "YYYY-MM-dd" );
+	
+        private String fileDate = "init";
+        private FileOutputStream logFile = null;
+
+        public synchronized FileOutputStream getLogFile() throws IOException {
+            String now = fnf.format( new Date() );
+
+            if( now.equals( fileDate ) == false ) {
+                if( logFile != null ) {
+                    logFile.flush();
+                    logFile.close();
+                }
+
+                fileDate = now;
+
+                logFile = new FileOutputStream( "./KStarsLog_" + fileDate + ".log", true );
+            }
+
+            return logFile;
+        }
+
+        @Override
+        public void logMessage(String message) {
+            try {
+                FileOutputStream out = getLogFile();
+                out.write( message.getBytes( "UTF-8" ) );
+                out.write( '\n' );
+            }
+            catch( Throwable t ) {
+                //SILENT_CATCH
+            }
+        }
+
+    }
+
+    static {
+        getLogger().addListener( new FileLogger() );
+    }
+
     public static interface LogListener {
         public void logMessage( String message );
     }
 
-    public SimpleLogger() {
-        new Thread( () -> {
-            while( true ) {
-                try {
-                    synchronized( logsToSend ) {
-                        if( logsToSend.size() == 0 ) {
-                            logsToSend.wait();
-                        }
-
-                        synchronized( listeners ) {
-                            for( LogListener l : listeners ) {
-                                l.logMessage( logsToSend.removeFirst() );
-                            }
-                        }
-                    }
-                }
-                catch( Throwable t ) {
-                    //SILENT
-                }
-            }
-        }, "logSender").start();
-    }
-
     private LinkedList<String> logHistory = new LinkedList<>();
-    private LinkedList<String> logsToSend = new LinkedList<>();
 
     protected String log( Object message, Throwable t ) {
         final ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -70,9 +92,10 @@ public class SimpleLogger {
                 }
             }
 
-            synchronized( logsToSend ) {
-                logsToSend.add( log );
-                logsToSend.notify();
+            synchronized( listeners ) {
+                for( LogListener l : listeners ) {
+                    l.logMessage( log );
+                }
             }
 
             return log;
@@ -80,7 +103,7 @@ public class SimpleLogger {
         catch( Throwable tt ) {
             //SILENT_CATCH
 
-            return "Somithing went terrible wrong";
+            return "Something went terrible wrong";
         }
 	}
 

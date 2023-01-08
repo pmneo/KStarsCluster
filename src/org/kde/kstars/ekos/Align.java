@@ -2,6 +2,7 @@ package org.kde.kstars.ekos;
 
 import java.util.List;
 
+import org.freedesktop.dbus.DBusMap;
 import org.freedesktop.dbus.annotations.DBusInterfaceName;
 import org.freedesktop.dbus.annotations.DBusProperty;
 import org.freedesktop.dbus.annotations.DBusProperty.Access;
@@ -44,15 +45,16 @@ public interface Align extends DBusInterface {
     public void setTargetPositionAngle (double value);
 
     public static enum AlignState {
-    	ALIGN_IDLE, 	
-    	ALIGN_COMPLETE, 	
-    	ALIGN_FAILED, 	
-    	ALIGN_ABORTED,
-    	ALIGN_PROGRESS, 	
-    	ALIGN_SYNCING, 	
-    	ALIGN_SLEWING,
-        ALIGN_ROTATING,
-        ALIGN_SUSPENDED
+        ALIGN_IDLE,                 /**< No ongoing operations */
+        ALIGN_COMPLETE,             /**< Alignment successfully completed. No operations pending. */
+        ALIGN_FAILED,               /**< Alignment failed. No operations pending. */
+        ALIGN_ABORTED,              /**< Alignment aborted by user or agent. */
+        ALIGN_PROGRESS,             /**< Alignment operation in progress. This include capture and sovling. */
+        ALIGN_SUCCESSFUL,           /**< Alignment Astrometry solver successfully solved the image. */
+        ALIGN_SYNCING,              /**< Syncing mount to solution coordinates. */
+        ALIGN_SLEWING,              /**< Slewing mount to target coordinates.  */
+        ALIGN_ROTATING,             /**< Rotating (Automatic or Manual) to target position angle. */
+        ALIGN_SUSPENDED             /**< Alignment operations suspended. */
     }
     public static class newStatus extends AbstractStateSignal<AlignState> {
         public newStatus(String _path, Object[] _status) throws DBusException {
@@ -61,12 +63,12 @@ public interface Align extends DBusInterface {
     }
 
     public static class newSolution extends DBusSignal {
-        private final Object[] solution;
-        public newSolution(String _path, Object[] _solution) throws DBusException {
+        private final DBusMap<String,Object> solution;
+        public newSolution(String _path, DBusMap<String,Object> dbusMap) throws DBusException {
             super(_path);
-            this.solution = _solution;
+            this.solution = dbusMap;
         }
-        public Object[] getSolution() {
+        public DBusMap<String,Object> getSolution() {
             return solution;
         }
     }

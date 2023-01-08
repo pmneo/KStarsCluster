@@ -1,5 +1,8 @@
 package de.pmneo.kstars;
 
+import java.util.concurrent.locks.Condition;
+import java.util.function.Predicate;
+
 public class WaitUntil {
     private long endTime = -1;
     private long maxWaitInSeconds = -1;
@@ -31,6 +34,29 @@ public class WaitUntil {
                 System.out.println( "Wait timed out: " + timeoutMessage );
             }
             return false;
+        }
+    }
+
+
+    public static interface WaitCondition {
+        public boolean isInvalid();
+    }
+    public static boolean waitUntil( String timeoutMessage, int maxWait, WaitCondition condition ) {
+        final WaitUntil waitUntil = new WaitUntil( 5, timeoutMessage );
+        while( true ) {
+            if( waitUntil.check() == false ) {
+                return false;
+            } 
+            if( condition.isInvalid() == false ) {
+                return true;
+            }
+
+            try {
+                Thread.sleep( 100 );
+            }
+            catch( Throwable t ) {
+                //SILENT_CATCH
+            }
         }
     }
 }

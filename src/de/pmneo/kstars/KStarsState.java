@@ -1,7 +1,6 @@
 package de.pmneo.kstars;
 
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.kde.kstars.Ekos.CommunicationStatus;
@@ -15,17 +14,17 @@ import org.kde.kstars.ekos.Mount.ParkStatus;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
 import org.kde.kstars.ekos.Weather.WeatherState;
 
+import de.pmneo.kstars.utils.DirtyBoolean;
+
 public class KStarsState {
 		
-    public final AtomicBoolean captureRunning = new AtomicBoolean( false );
-    public final AtomicBoolean capturePaused = new AtomicBoolean( false );
-    public final AtomicBoolean focusRunning = new AtomicBoolean( false );
-    public final AtomicBoolean autoFocusDone = new AtomicBoolean( false );
-    public final AtomicBoolean schedulerRunning = new AtomicBoolean( false );
-    public final AtomicBoolean gudingRunning = new AtomicBoolean( false );
-    public final AtomicBoolean ditheringActive = new AtomicBoolean( false );
+    public final DirtyBoolean captureRunning = new DirtyBoolean( false );
+    public final DirtyBoolean focusRunning = new DirtyBoolean( false );
+    public final DirtyBoolean schedulerRunning = new DirtyBoolean( false );
+    public final DirtyBoolean gudingRunning = new DirtyBoolean( false );
+    public final DirtyBoolean mountIsTracking = new DirtyBoolean( false );
+    public final DirtyBoolean ditheringActive = new DirtyBoolean( false );
 
-    
     private final String logPrefix;
 
     public KStarsState( String logPrefix ) {
@@ -47,9 +46,7 @@ public class KStarsState {
 
     public void resetValues() {
         captureRunning.set( false );
-        capturePaused.set( false );
         focusRunning.set( false );
-        autoFocusDone.set( false );
         schedulerRunning.set(false);
         gudingRunning.set(false);
         ditheringActive.set(false);
@@ -80,6 +77,7 @@ public class KStarsState {
             
             case GUIDE_DITHERING:
                 gudingRunning.set( true );
+                ditheringActive.set( true );
             break;
 
             case GUIDE_MANUAL_DITHERING:
@@ -112,7 +110,25 @@ public class KStarsState {
         }
 
         logMessage( "handleMountStatus(" + state + ")" );
-        return mountStatus.get( );
+        state = mountStatus.get( );
+
+        switch( state ) {
+            case MOUNT_ERROR:
+            case MOUNT_IDLE:
+            case MOUNT_MOVING:
+            case MOUNT_PARKED:
+            case MOUNT_PARKING:
+            case MOUNT_SLEWING:
+                mountIsTracking.set( false );
+                break;
+            case MOUNT_TRACKING:
+                mountIsTracking.set( true );
+                break;
+            default:
+                break;
+        }
+
+        return state;
     }
 
     public final AtomicReference<ParkStatus> mountParkStatus = new AtomicReference<ParkStatus>( ParkStatus.PARK_UNKNOWN );
@@ -142,7 +158,8 @@ public class KStarsState {
         }
 
         logMessage( "handleAlignStatus(" + state + ")" );
-        return alignStatus.get();
+        state = alignStatus.get();
+        return state;
     }
 
     
@@ -157,13 +174,11 @@ public class KStarsState {
 
         switch( state ) {
             case FOCUS_COMPLETE:
-                autoFocusDone.set( true );
                 focusRunning.set( false );
             break;
             
             case FOCUS_ABORTED:
             case FOCUS_FAILED:
-                autoFocusDone.set( false );
                 focusRunning.set( false );
             break;
             
@@ -171,11 +186,14 @@ public class KStarsState {
                 focusRunning.set( false );
             break;
             
+            case FOCUS_PROGRESS:
+                focusRunning.set( true );
+            break;
+
             case FOCUS_FRAMING:
             case FOCUS_WAITING:
             case FOCUS_CHANGING_FILTER:
-            case FOCUS_PROGRESS:
-                focusRunning.set( true );
+
             break;
         }
         
@@ -194,7 +212,6 @@ public class KStarsState {
         switch (state) {
             case CAPTURE_CAPTURING:
                 captureRunning.set( true );
-                capturePaused.set( false );
             break;
             
             case CAPTURE_PROGRESS:
@@ -205,24 +222,20 @@ public class KStarsState {
             break;
             
             case CAPTURE_ABORTED:
-                capturePaused.set( false );
                 captureRunning.set( false );
             break;
             
             case CAPTURE_COMPLETE:
             case CAPTURE_SUSPENDED:
                 captureRunning.set( false );
-                capturePaused.set( false );
             break;
             
             case CAPTURE_PAUSED:
-                //running, but paused
-                capturePaused.set( true );
             break;
             
             case CAPTURE_IDLE:
-                //no need to handle
-                break;
+                captureRunning.set( false );
+            break;
             
             case CAPTURE_PAUSE_PLANNED:
                 break;
@@ -279,7 +292,7 @@ public class KStarsState {
             break;
                 
             case SCHEDULER_RUNNING:
-                schedulerRunning.getAndSet( true );
+                schedulerRunning.set( true );
             break;
         }
 
@@ -301,10 +314,10 @@ public class KStarsState {
     public Map<String, Object> fillStatus(Map<String, Object> res) {
 		
 		res.put( "captureRunning", this.captureRunning.get() );
-		res.put( "capturePaused", this.capturePaused.get() );
 		res.put( "focusRunning", this.focusRunning.get() );
-		res.put( "autoFocusDone", this.autoFocusDone.get() );
         res.put( "gudingRunning", this.gudingRunning.get() );
+        res.put( "ditheringActive", this.ditheringActive.get() );
+        
 
 		res.put( "alignStatus", this.alignStatus.get() );
 		res.put( "weatherState", this.weatherState.get() );

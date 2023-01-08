@@ -82,7 +82,12 @@ public class IndiCamera extends IndiDevice {
         }
     }
 
+    public synchronized boolean isWarming() {
+        return this.isWarming;
+    }
+
     public synchronized void checkWarming( double ccdTemp ) {
+        /*
         if( this.warmingHasFinished == false && this.isWarming == false ) {
             this.isWarming = true;
             this.warmingSettleTemp = (ccdTemp + 2);
@@ -91,12 +96,14 @@ public class IndiCamera extends IndiDevice {
             settleTimeout.reset();
             this.setCcdTemparatur( this.warmingSettleTemp );
         }
+        */
     }
 
     public void warm() {
         if( isCooling() ) {
             logMessage( "Warming Camera" );
-            checkWarming( getCcdTemparatur() );
+            this.setCooling( false );
+            //checkWarming( getCcdTemparatur() );
         }
     }
 

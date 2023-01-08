@@ -34,14 +34,14 @@ public interface Focus extends DBusInterface {
     public void resetFrame();
 
     public static enum FocusState {
-    	FOCUS_IDLE, 	
-    	FOCUS_COMPLETE, 	
-    	FOCUS_FAILED, 	
-    	FOCUS_ABORTED, 	
-    	FOCUS_WAITING, 	
-    	FOCUS_PROGRESS,
-    	FOCUS_FRAMING, 	
-    	FOCUS_CHANGING_FILTER
+        FOCUS_IDLE,
+        FOCUS_COMPLETE,
+        FOCUS_FAILED,
+        FOCUS_ABORTED,
+        FOCUS_WAITING,
+        FOCUS_PROGRESS,
+        FOCUS_FRAMING,
+        FOCUS_CHANGING_FILTER
     }
     public static class newStatus extends AbstractStateSignal<FocusState> {
         public newStatus(String _path, Object[] _status) throws DBusException {

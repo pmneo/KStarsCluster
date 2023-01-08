@@ -1,11 +1,11 @@
 package de.pmneo.kstars.web;
 
-import java.io.IOException;
-
 import de.pmneo.kstars.SimpleLogger;
 import de.pmneo.kstars.SimpleLogger.LogListener;
 import jakarta.websocket.CloseReason;
 import jakarta.websocket.OnClose;
+import jakarta.websocket.OnError;
+import jakarta.websocket.OnMessage;
 import jakarta.websocket.OnOpen;
 import jakarta.websocket.Session;
 import jakarta.websocket.server.ServerEndpoint;
@@ -28,18 +28,24 @@ public class LoggingSocket implements LogListener {
         SimpleLogger.getLogger().removeListener( this );
     }
 
+    @OnMessage
+    public void onMessage( String message ) {
+        //System.out.println( "onMessage: " + message );
+    }
+
+    @OnError
+    public void onError( Throwable t ) {
+        //SimpleLogger.getLogger().logError( "onError", t);
+    }
+
     @Override
     public void logMessage(String message) {
-        if (this.session != null)
-        {
-            try
-            {
-                this.session.getBasicRemote().sendText( message );
-            }
-            catch (IOException e)
-            {
-                e.printStackTrace();
-            }
+        if (this.session != null) {
+            this.session.getAsyncRemote().sendText(message, res -> {
+                if( res.getException() != null ) {
+                    res.getException().printStackTrace();
+                }
+            } );
         }
     }
 }

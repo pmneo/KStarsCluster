@@ -79,26 +79,26 @@ public interface Capture extends DBusInterface {
     }
 
     public static enum CaptureStatus {
-	    CAPTURE_IDLE,                
-	    CAPTURE_PROGRESS,            
-	    CAPTURE_CAPTURING,           
-	    CAPTURE_PAUSE_PLANNED,       
-	    CAPTURE_PAUSED,              
-	    CAPTURE_SUSPENDED,           
-	    CAPTURE_ABORTED,             
-	    CAPTURE_WAITING,             
-	    CAPTURE_IMAGE_RECEIVED,      
-	    CAPTURE_DITHERING,           
-	    CAPTURE_FOCUSING,            
-	    CAPTURE_FILTER_FOCUS,        
-	    CAPTURE_CHANGING_FILTER,     
-	    CAPTURE_GUIDER_DRIFT,        
-	    CAPTURE_SETTING_TEMPERATURE, 
-	    CAPTURE_SETTING_ROTATOR,     
-	    CAPTURE_ALIGNING,            
-	    CAPTURE_CALIBRATING,         
-	    CAPTURE_MERIDIAN_FLIP,       
-	    CAPTURE_COMPLETE             
+        CAPTURE_IDLE,                /*!< no capture job active */
+        CAPTURE_PROGRESS,            /*!< capture job sequence in preparation (temperature, filter, rotator) */
+        CAPTURE_CAPTURING,           /*!< CCD capture running */
+        CAPTURE_PAUSE_PLANNED,       /*!< user has requested to pause the capture sequence */
+        CAPTURE_PAUSED,              /*!< paused capture sequence due to a user request */
+        CAPTURE_SUSPENDED,           /*!< capture stopped since some limits are not met, but may be continued if all limits are met again */
+        CAPTURE_ABORTED,             /*!< capture stopped by the user or aborted due to guiding problems etc. */
+        CAPTURE_WAITING,             /*!< waiting for settling of the mount before start of capturing */
+        CAPTURE_IMAGE_RECEIVED,      /*!< image received from the CDD device */
+        CAPTURE_DITHERING,           /*!< dithering before starting to capture */
+        CAPTURE_FOCUSING,            /*!< focusing before starting to capture */
+        CAPTURE_FILTER_FOCUS,        /*!< not used */
+        CAPTURE_CHANGING_FILTER,     /*!< preparation event changing the filter */
+        CAPTURE_GUIDER_DRIFT,        /*!< preparation event waiting for the guider to settle */
+        CAPTURE_SETTING_TEMPERATURE, /*!< preparation event setting the camera temperature */
+        CAPTURE_SETTING_ROTATOR,     /*!< preparation event setting the camera rotator */
+        CAPTURE_ALIGNING,            /*!< aligning before starting to capture */
+        CAPTURE_CALIBRATING,         /*!< startup of guiding running before starting to capture */
+        CAPTURE_MERIDIAN_FLIP,       /*!< only used as signal that a meridian flip is ongoing */
+        CAPTURE_COMPLETE             /*!< capture job sequence completed successfully */  
 	}
     public static class newStatus extends AbstractStateSignal<CaptureStatus> {
         public newStatus(String _path, Object[] _status) throws DBusException {

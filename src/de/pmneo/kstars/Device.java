@@ -49,15 +49,15 @@ public class Device<T extends DBusInterface> {
 	@SuppressWarnings("rawtypes")
 	private DBusSigHandler newStateHandler;
 	
-	public <S extends AbstractStateSignal<?>> void addNewStatusHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
+	public <S extends AbstractStateSignal<?>> Runnable addNewStatusHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
 		this.newStateSignal = _type;
 		this.newStateHandler = _handler;
 		
-		this.addSigHandler( _type, _handler );
+		return this.addSigHandler( _type, _handler );
 	}
 	
-	public <S extends DBusSignal> void addSigHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
-		con.<S>addSigHandler( _type, this.methods, status -> {
+	public <S extends DBusSignal> Runnable addSigHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
+		final DBusSigHandler<S> handler = status -> {
 			synchronized( this ) {
 				try {
 					this.readAll();
@@ -67,7 +67,18 @@ public class Device<T extends DBusInterface> {
 				}
 				_handler.handle( status );
 			}
-		} );
+		};
+
+		con.<S>addSigHandler( _type, this.methods, handler );
+
+		return () -> {
+			try {
+				con.removeSigHandler( _type, this.methods, handler  );
+			}
+			catch( Throwable t ) {
+				t.printStackTrace();
+			}
+		};
 	}
 	
 	@SuppressWarnings({ "rawtypes", "unchecked" })
