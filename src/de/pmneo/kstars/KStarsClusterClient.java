@@ -403,7 +403,7 @@ public class KStarsClusterClient extends KStarsCluster {
                             logMessage( "Resume to capture after restart" );
                         }
                         else {
-                            this.stage = Stage.ALIGN;
+                            this.stage = Stage.FOCUS;
                         }
                     break;
                 }
@@ -467,11 +467,12 @@ public class KStarsClusterClient extends KStarsCluster {
                     }
                 }
                 else if( stage == Stage.CAPTURE ) {
-                    if( this.ditheringActive.hasChangedAndReset() ) {
+                    if( server.ditheringActive.hasChangedAndReset() ) {
+                        logMessage( "Server dithering has changed: " + this.ditheringActive.get() );
                         checkStopCapture(); //check stop in any case, also if dithering is not longer active because the next job might have started
                     }
 
-                    if( this.ditheringActive.get() ) {
+                    if( server.ditheringActive.get() ) {
                         checkStopCapture();
                     }
                     else {
@@ -506,7 +507,13 @@ public class KStarsClusterClient extends KStarsCluster {
                                 }
                             }
                             else {
-                                logMessage( "No Jobs to capture in sequence" );
+                                logMessage( "No Jobs to capture in sequence, aborting capture in any way and retry" );
+                                try {
+                                    this.capture.methods.abort();
+                                }
+                                catch( Throwable t ) {
+                                    logError( "Aborting capture failed", t);
+                                }
                             }
                         }
                         else {
@@ -538,6 +545,7 @@ public class KStarsClusterClient extends KStarsCluster {
         }
         else if( server.mountIsTracking.hasChangedAndReset() ) {
             logMessage( "Server mount is not longer in tracking" );
+            this.stopCapture();
         }
     }
 

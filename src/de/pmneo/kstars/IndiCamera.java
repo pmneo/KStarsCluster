@@ -25,7 +25,7 @@ public class IndiCamera extends IndiDevice {
 
     private WaitUntil settleTimeout = new WaitUntil( 600, null );
 
-    protected void workerLoop() {
+    protected void workerLoopOff() {
         super.workerLoop();
 
         synchronized( this ) {

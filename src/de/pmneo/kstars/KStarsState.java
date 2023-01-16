@@ -215,7 +215,10 @@ public class KStarsState {
             break;
             
             case CAPTURE_PROGRESS:
-                //no need to handle
+                captureRunning.set( true );
+            break;
+            case CAPTURE_SETTING_TEMPERATURE:
+                captureRunning.set( true );
             break;
             
             case CAPTURE_IMAGE_RECEIVED:
@@ -247,8 +250,9 @@ public class KStarsState {
                 //no need to handle
                 break;
             
+
+
             case CAPTURE_SETTING_ROTATOR:
-            case CAPTURE_SETTING_TEMPERATURE:
             case CAPTURE_WAITING:
                 //no need to handle
                 break;
