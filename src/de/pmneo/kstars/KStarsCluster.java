@@ -52,8 +52,9 @@ public abstract class KStarsCluster extends KStarsState {
 	public final Device<Capture> capture;
 	public final Device<Mount> mount;
 	public final Device<Scheduler> scheduler;
-	public final Device<Weather> weather;
 	public final Device<INDI> indi;
+	
+	public Device<Weather> weather;
 
 	private final AtomicReference< IndiRotator > rotatorDevice = new AtomicReference<>();
 	public IndiRotator getRotatorDevice() {
@@ -112,6 +113,8 @@ public abstract class KStarsCluster extends KStarsState {
         return preCoolTemp;
     }
 
+	private List<Runnable> subscriptions = new ArrayList<>();
+
 	public KStarsCluster( String logPrefix ) throws DBusException {
 		super( logPrefix );
 
@@ -120,69 +123,91 @@ public abstract class KStarsCluster extends KStarsState {
 		
 		this.ekos = new Device<>( con, "org.kde.kstars", "/KStars/Ekos", Ekos.class );
 		this.mandatoryDevices.add( this.ekos );
-		this.ekos.addSigHandler( Ekos.ekosStatusChanged.class, status -> {
-			this.handleEkosStatus( status.getStatus() );
-		} );
-
+		
 		this.indi = new Device<>( con, "org.kde.kstars", "/KStars/INDI", INDI.class );
 		this.devices.add( this.indi );
 
 		this.guide = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Guide", Guide.class );
 		this.devices.add( this.guide );
 		this.mandatoryDevices.add( this.guide );
-		this.guide.addNewStatusHandler( Guide.newStatus.class, status -> {
-			this.handleGuideStatus( status.getStatus() );
-		} );
-
 
 		this.capture = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Capture", Capture.class );
 		this.devices.add( this.capture );
 		this.mandatoryDevices.add( this.capture );
-		this.capture.addNewStatusHandler( Capture.newStatus.class, status -> {
-			this.handleCaptureStatus( status.getStatus() );
-		} );
-		
-		
+
 		this.mount = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Mount", Mount.class );
 		this.devices.add( this.mount );
 		this.mandatoryDevices.add( this.mount );
-		this.mount.addNewStatusHandler( Mount.newStatus.class, status -> {
-			this.handleMountStatus( status.getStatus() );
-		} );
-		this.mount.addSigHandler( Mount.newParkStatus.class, status -> {
-			this.handleMountParkStatus( status.getStatus() );
-		} );
-		this.mount.addSigHandler( Mount.newMeridianFlipStatus.class, status -> {
-			this.handleMeridianFlipStatus( status.getStatus() );
-		} );
-		
-		
+
+
 		this.align = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Align", Align.class );
 		this.devices.add( this.align );
-		this.align.addNewStatusHandler( Align.newStatus.class, status -> {
-			this.handleAlignStatus( status.getStatus() );
-		} );
-		this.align.addSigHandler( Align.newSolution.class, status -> {
-			logMessage( "newSolution: " + status.getSolution() );
-		} );
 
-		
 		this.focus = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Focus", Focus.class );
 		this.devices.add( this.focus );
-		this.focus.addNewStatusHandler( Focus.newStatus.class, status -> {
-			this.handleFocusStatus( status.getStatus() );
-		} );
 		
 		this.scheduler = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Scheduler", Scheduler.class );
 		this.devices.add( this.scheduler );
 		this.mandatoryDevices.add( this.scheduler );
-		this.scheduler.addNewStatusHandler( Scheduler.newStatus.class, status -> {
+	}
+
+	protected synchronized void unsubscribe() throws DBusException {
+		for( Runnable unsub : subscriptions ) {
+			try {
+				unsub.run();
+			}
+			catch( Throwable t ) {
+				logError( "Failed to unsubscribe", t );
+			}
+		}
+		subscriptions.clear();
+
+		cameraDevice.set( null );
+		focusDevice.set( null );
+		rotatorDevice.set( null );
+	}
+	protected synchronized void subscribe() throws DBusException {
+
+		unsubscribe();
+
+		logMessage( "Subscribing to KStars" );
+
+		subscriptions.add( this.ekos.addSigHandler( Ekos.ekosStatusChanged.class, status -> {
+			this.handleEkosStatus( status.getStatus() );
+		} ) );
+		subscriptions.add( this.guide.addNewStatusHandler( Guide.newStatus.class, status -> {
+			this.handleGuideStatus( status.getStatus() );
+		} ) );
+		subscriptions.add( this.capture.addNewStatusHandler( Capture.newStatus.class, status -> {
+			this.handleCaptureStatus( status.getStatus() );
+		} ) );
+		subscriptions.add( this.mount.addNewStatusHandler( Mount.newStatus.class, status -> {
+			this.handleMountStatus( status.getStatus() );
+		} ) );
+		subscriptions.add( this.mount.addSigHandler( Mount.newParkStatus.class, status -> {
+			this.handleMountParkStatus( status.getStatus() );
+		} ) );
+		subscriptions.add( this.mount.addSigHandler( Mount.newMeridianFlipStatus.class, status -> {
+			this.handleMeridianFlipStatus( status.getStatus() );
+		} ) );
+		subscriptions.add( this.align.addNewStatusHandler( Align.newStatus.class, status -> {
+			this.handleAlignStatus( status.getStatus() );
+		} ) );
+		subscriptions.add( this.align.addSigHandler( Align.newSolution.class, status -> {
+			logMessage( "newSolution: " + status.getSolution() );
+		} ) );
+		subscriptions.add( this.focus.addNewStatusHandler( Focus.newStatus.class, status -> {
+			this.handleFocusStatus( status.getStatus() );
+		} ) );
+		subscriptions.add( this.scheduler.addNewStatusHandler( Scheduler.newStatus.class, status -> {
 			this.handleSchedulerStatus( status.getStatus() );
-		} );
+		} ) );
+
+		this.devices.remove( this.weather );
 
 		System.out.println( "Detecting INDI Weather Device" );
 		Device<Weather> weather = null;
-		for( int i=0; i<10; i++ ) {
+		for( int i=0; i<20; i++ ) {
 			weather = new Device<>( con, "org.kde.kstars", "/KStars/INDI/Weather/" + i, Weather.class );
 			try {
 				String name = (String) weather.read( "name" );
@@ -197,16 +222,23 @@ public abstract class KStarsCluster extends KStarsState {
 		this.weather = weather;
 		if( this.weather != null ) {
 			this.devices.add( this.weather );
-			this.weather.addNewStatusHandler( Weather.newStatus.class, status -> {
+			subscriptions.add( this.weather.addNewStatusHandler( Weather.newStatus.class, status -> {
 				this.handleSchedulerWeatherStatus( status.getStatus() );
-			} );
+			} ) );
 		}
-	}
 
-	protected void kStarsConnected() {
 		this.getCameraDevice();
 		this.getFocusDevice();
 		this.getRotatorDevice();
+	}
+
+	protected void kStarsConnected() {
+		try {
+			subscribe();
+		}
+		catch( Throwable t ) {
+			logError( "Failed to subscribe", t );
+		}
 
 		for( Device<?> d : devices ) {
 			try {
@@ -219,7 +251,12 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 	
 	protected void kStarsDisconnected() {
-		
+		try {
+			unsubscribe();
+		}
+		catch( Throwable t ) {
+			logError( "Failed to unsubscribe", t);
+		}
 	}
 	
 
@@ -593,6 +630,10 @@ public abstract class KStarsCluster extends KStarsState {
 		} );
 
 		actions.put( "camera", ( parts, req, resp ) -> {
+			if( kStarsConnected.get() == false ) {
+				return NOT_CONNECTED;
+			}
+
 			if( parts.length > 1 ) {
 				if( parts[1].equals( "preCool" ) ) {
 					this.getCameraDevice().preCool();
@@ -630,6 +671,10 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	public Map<String,Object> statusAction( String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
+		if( kStarsConnected.get() == false ) {
+			return NOT_CONNECTED;
+		}
+		
 		Map<String,Object> res = new HashMap<>();
         
 		List<String> filters = this.getFilterDevice().getFilters() ;
@@ -745,11 +790,18 @@ public abstract class KStarsCluster extends KStarsState {
 	}
     
 
-
+	private static Map<String,Object> NOT_CONNECTED = new HashMap<>(); 
+	static {
+		NOT_CONNECTED.put( "result", "KStars not connected" );
+	}
 
 	private AtomicBoolean calibrateFilterInProgress = new AtomicBoolean( false );
     public Object calibrateFiltersAction( String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        Map<String,Object> res = new HashMap<>();
+		if( kStarsConnected.get() == false ) {
+			return NOT_CONNECTED;
+		}
+
+		Map<String,Object> res = new HashMap<>();
 
         if( calibrateFilterInProgress.getAndSet( true ) ) {
             res.put( "result", "Filter calibration is already in progress" );            

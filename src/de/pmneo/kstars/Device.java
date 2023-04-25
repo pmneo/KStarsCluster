@@ -20,29 +20,43 @@ import org.kde.kstars.ekos.AbstractStateSignal;
 
 public class Device<T extends DBusInterface> {
 
-	public final T methods;
+	
+	public final Class<T> impl;
 	public final String interfaceName;
+	public final String busName;
 	public final String objectPath;
 	
 	private final DBusConnection con;
 	
-	private final Properties properties;
 	private final Map<String, Class<?>> dbusProperties;
 	private final Map<String, Object> parsedProperties;
 	
+	public T methods;
+	private Properties properties;
+	
+
 	public Device( DBusConnection con, String busName, String objectPath, Class<T> impl ) throws DBusException {
 		
 		this.con = con;
-		
+
+		this.impl = impl;
+		this.busName = busName;
 		this.objectPath = objectPath;
 		
-		this.methods = con.getRemoteObject( busName, objectPath, impl );
-		this.properties = con.getRemoteObject( busName, objectPath, Properties.class );
 		this.interfaceName = impl.getAnnotation( DBusInterfaceName.class ).value();
 
 		this.parsedProperties = new HashMap<String, Object>();
 		this.parsedProperties.put( "interfaceName", interfaceName );
 		dbusProperties = Arrays.stream( impl.getAnnotationsByType( DBusProperty.class ) ).collect( Collectors.toMap( p -> p.name(), p->p.type() ) );
+	
+		this.connect();
+	}
+
+	public Device<T> connect() throws DBusException {
+		this.methods = con.getRemoteObject( busName, objectPath, impl );
+		this.properties = con.getRemoteObject( busName, objectPath, Properties.class );
+
+		return this;
 	}
 	
 	private Class<? extends AbstractStateSignal<?> > newStateSignal;
