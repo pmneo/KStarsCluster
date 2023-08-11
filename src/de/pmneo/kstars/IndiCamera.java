@@ -19,99 +19,17 @@ public class IndiCamera extends IndiDevice {
         return preCoolTemp;
     }
 
-    private boolean isWarming = false;
-    private boolean warmingHasFinished = false;
-    private double warmingSettleTemp = 99;
-
-    private WaitUntil settleTimeout = new WaitUntil( 600, null );
-
-    protected void workerLoopOff() {
-        super.workerLoop();
-
-        synchronized( this ) {
-            double ccdTemp = getCcdTemparatur();
-            IpsState ccdState = getCcdTemparaturState();
-
-            if( isCooling() ) {
-                if( !isAntiDewHeaterOn() && isWarming == false ) {
-                    logMessage( "Camera is cooling, enable anti dew heater" );
-                    setAntiDewHeaterOn( true );
-                }
-                
-                if( isWarming ) {
-                    if( ccdState == IpsState.IPS_OK ) {
-                        double tempDelta = Math.abs( warmingSettleTemp - ccdTemp );
-                        double maxDelta = 0.6;
-                        if( tempDelta <= maxDelta ) { //procceed only if range is within 1.2deg
-                            this.warmingSettleTemp = (ccdTemp + 2);
-                            logMessage( "Warming temperature settled, next target temp = " + this.warmingSettleTemp );
-                            settleTimeout.reset();
-                            this.setCcdTemparatur( this.warmingSettleTemp );
-                        }
-                        else {
-                            this.isWarming = false;
-                            this.warmingHasFinished = false;
-                            logMessage( "Warming aborted, delta is more than "+maxDelta+": " + tempDelta );
-                        }
-                    }
-                    else if( settleTimeout.elapsed() ) {
-                        logMessage( "Warming finished" );
-                        this.isWarming = false;
-                        this.warmingHasFinished = true;
-                        this.setCooling( false );
-                    }
-                }
-                else if( this.warmingHasFinished ) {
-                    logMessage( "Resetting warming has finished" );
-                    this.warmingHasFinished = false;
-                }
-            }
-            else {
-                if( isAntiDewHeaterOn() ) {
-                    logMessage( "Camera is warming, disable anti dew heater" );
-                    setAntiDewHeaterOn( false );
-                }
-
-                checkWarming( ccdTemp );
-
-                if( this.isWarming ) {
-                    logMessage( "Camera is warming, but was set off - restarting warming procedure" );
-                    this.setCcdTemparatur( this.warmingSettleTemp );
-                }
-            }
-        }
-    }
-
-    public synchronized boolean isWarming() {
-        return this.isWarming;
-    }
-
-    public synchronized void checkWarming( double ccdTemp ) {
-        /*
-        if( this.warmingHasFinished == false && this.isWarming == false ) {
-            this.isWarming = true;
-            this.warmingSettleTemp = (ccdTemp + 2);
-
-            logMessage( "Warming detected, begin warm up procedure with next target temp = " + this.warmingSettleTemp );
-            settleTimeout.reset();
-            this.setCcdTemparatur( this.warmingSettleTemp );
-        }
-        */
-    }
 
     public void warm() {
         if( isCooling() ) {
             logMessage( "Warming Camera" );
             this.setCooling( false );
-            //checkWarming( getCcdTemparatur() );
         }
     }
 
     public synchronized void preCool() {
-        if( !isCooling() || isWarming ) {
+        if( !isCooling() ) {
             logMessage( "Precooling Camera to " + preCoolTemp );
-            this.isWarming = false;
-            this.warmingHasFinished = false;
             this.setCcdTemparatur( preCoolTemp );
         }
     }

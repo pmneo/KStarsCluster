@@ -26,7 +26,11 @@
         "libs/slf4j-api-1.7.30.jar",
         "libs/embedded-jetty.jar",
         "libs/gson-2.10.jar",
-        "libs/bsh-3.0.0-SNAPSHOT.jar"
+        "libs/bsh-3.0.0-SNAPSHOT.jar",
+        "libs/commons-configuration2-2.9.0.jar",
+        "libs/commons-lang3-3.12.0.jar",
+        "libs/commons-logging-1.2.jar",
+        "libs/commons-text-1.10.0.jar"
     ],
     "workbench.colorTheme": "Eclipse Light",
     "editor.codeLens": true,

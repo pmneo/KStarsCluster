@@ -7,6 +7,8 @@ public class WaitUntil {
     private long endTime = -1;
     private long maxWaitInSeconds = -1;
     private final String timeoutMessage;
+
+    
     public WaitUntil( long maxWaitInSeconds, String timeoutMessage ) {
         this.timeoutMessage = timeoutMessage;
         this.reset( maxWaitInSeconds );

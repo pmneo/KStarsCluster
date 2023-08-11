@@ -1,27 +1,41 @@
 package de.pmneo.kstars;
 
+import java.io.ByteArrayOutputStream;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.StringReader;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+
+import org.apache.commons.configuration2.INIConfiguration;
+import org.apache.commons.configuration2.ex.ConfigurationException;
+import org.eclipse.jetty.client.HttpClient;
+import org.eclipse.jetty.client.api.ContentResponse;
 import org.freedesktop.dbus.connections.impl.DBusConnection;
 import org.freedesktop.dbus.exceptions.DBusException;
-
+import org.freedesktop.dbus.interfaces.Introspectable;
+import org.freedesktop.dbus.messages.MethodCall;
 import org.kde.kstars.Ekos;
 import org.kde.kstars.INDI;
-import org.kde.kstars.Ekos.CommunicationStatus;
 import org.kde.kstars.INDI.DriverInterface;
 import org.kde.kstars.INDI.IpsState;
 import org.kde.kstars.ekos.Align;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture;
+import org.kde.kstars.ekos.Dome;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus;
 import org.kde.kstars.ekos.Focus.FocusState;
@@ -30,12 +44,21 @@ import org.kde.kstars.ekos.Mount;
 import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Scheduler;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
+import org.qtproject.Qt.QAction;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.EntityResolver;
+import org.xml.sax.InputSource;
+import org.xml.sax.SAXException;
 
 import bsh.Interpreter;
 
 import org.kde.kstars.ekos.Weather;
 
 import de.pmneo.kstars.utils.RaDecUtils;
+import de.pmneo.kstars.utils.SunriseSunset;
 import de.pmneo.kstars.web.CommandServlet.Action;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -45,67 +68,50 @@ import jakarta.servlet.http.HttpServletResponse;
 public abstract class KStarsCluster extends KStarsState {
 	protected DBusConnection con;
 
-	public final Device<Ekos> ekos;
-	public final Device<Align> align;
-	public final Device<Focus> focus;
-	public final Device<Guide> guide;
-	public final Device<Capture> capture;
-	public final Device<Mount> mount;
-	public final Device<Scheduler> scheduler;
-	public final Device<INDI> indi;
+	public Device<Ekos> ekos;
+	public Device<Align> align;
+	public Device<Focus> focus;
+	public Device<Guide> guide;
+	public Device<Capture> capture;
+	public Device<Mount> mount;
+	public Device<Scheduler> scheduler;
+	public Device<INDI> indi;
+
+	public Device<QAction> showEkos;
+	public Device<QAction> quitKStars;
 	
 	public Device<Weather> weather;
 
-	private final AtomicReference< IndiRotator > rotatorDevice = new AtomicReference<>();
+	public Device<Dome> dome;
+
+	private IndiRotator rotatorDevice = null;
 	public IndiRotator getRotatorDevice() {
-		if( rotatorDevice.get() == null ) {
-			String foundRotator = IndiRotator.findFirstDevice(indi, DriverInterface.ROTATOR_INTERFACE);
-			rotatorDevice.compareAndSet(null, new IndiRotator(foundRotator, indi) );
-			rotatorDevice.get().start();
-		}
-		return rotatorDevice.get();
+		return rotatorDevice;
 	}
 	
-	private final AtomicReference<IndiFocuser> focusDevice = new AtomicReference<>();
+	private IndiFocuser focusDevice = null;
 	public IndiFocuser getFocusDevice() {
-		if( focusDevice.get() == null ) {
-			String foundFocuser = (String) this.focus.read( "focuser" );
-			focusDevice.compareAndSet(null, new IndiFocuser(foundFocuser, indi) );
-			focusDevice.get().start();
-		}
-		return focusDevice.get();
+		return focusDevice;
 	}
 
-	private final AtomicReference<IndiCamera> cameraDevice = new AtomicReference<>();
+	private IndiCamera cameraDevice = null;
 	public IndiCamera getCameraDevice() {
-		if( cameraDevice.get() == null ) {
-			String foundCamera = (String) this.capture.read( "camera" );
-			cameraDevice.compareAndSet(null, new IndiCamera(foundCamera, indi) );
-			cameraDevice.get().setPreCoolTemp( getPreCoolTemp() );
-			cameraDevice.get().start();
-		}
-		return cameraDevice.get();
+		return cameraDevice;
 	}
 
-	private final AtomicReference<IndiFilterWheel> filterDevice = new AtomicReference<>();
+	private IndiFilterWheel filterDevice = null;
 	public IndiFilterWheel getFilterDevice() {
-		if( filterDevice.get() == null ) {
-			String foundFilterWheel = (String) this.capture.read( "filterWheel" );
-			filterDevice.compareAndSet(null, new IndiFilterWheel(foundFilterWheel, indi) );
-			filterDevice.get().start();
-		}
-		return filterDevice.get();
+		return filterDevice;
 	}
 	
 	protected final List< Device<?> > mandatoryDevices = new ArrayList<Device<?>>();
 	protected final List< Device<?> > devices = new ArrayList<Device<?>>();
 	
-	protected final AtomicBoolean kStarsConnected = new AtomicBoolean(false);
-
     private double preCoolTemp = -15;
     public void setPreCoolTemp(double preCoolTemp) {
-		if( this.cameraDevice.get() != null ) {
-			this.cameraDevice.get().setPreCoolTemp(preCoolTemp);
+		IndiCamera camera = getCameraDevice();
+		if( camera != null ) {
+			camera.setPreCoolTemp(preCoolTemp);
 		}
         this.preCoolTemp = preCoolTemp;
     }
@@ -118,12 +124,29 @@ public abstract class KStarsCluster extends KStarsState {
 	public KStarsCluster( String logPrefix ) throws DBusException {
 		super( logPrefix );
 
+		MethodCall.setDefaultTimeout( 20000 );
+
 		/* Get a connection to the session bus so we can get data */
 		con = DBusConnection.getConnection( DBusConnection.DBusBusType.SESSION );
-		
+
+	}
+
+	protected synchronized void createEkosDevices() throws DBusException {
+		this.unsubscribe();
+
+		this.mandatoryDevices.clear();
+		this.devices.clear();
+
+		this.showEkos = new Device<>( con, "org.kde.kstars", "/kstars/MainWindow_1/actions/ekos", QAction.class );
+		this.quitKStars = new Device<>( con, "org.kde.kstars", "/kstars/MainWindow_1/actions/quit", QAction.class );
+
 		this.ekos = new Device<>( con, "org.kde.kstars", "/KStars/Ekos", Ekos.class );
 		this.mandatoryDevices.add( this.ekos );
-		
+	}
+
+	protected synchronized void createDevices() throws DBusException {
+		this.createEkosDevices();
+
 		this.indi = new Device<>( con, "org.kde.kstars", "/KStars/INDI", INDI.class );
 		this.devices.add( this.indi );
 
@@ -139,12 +162,13 @@ public abstract class KStarsCluster extends KStarsState {
 		this.devices.add( this.mount );
 		this.mandatoryDevices.add( this.mount );
 
-
 		this.align = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Align", Align.class );
 		this.devices.add( this.align );
+		this.mandatoryDevices.add( this.align );
 
 		this.focus = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Focus", Focus.class );
 		this.devices.add( this.focus );
+		this.mandatoryDevices.add( this.focus );
 		
 		this.scheduler = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Scheduler", Scheduler.class );
 		this.devices.add( this.scheduler );
@@ -152,6 +176,8 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	protected synchronized void unsubscribe() throws DBusException {
+		resetValues();
+
 		for( Runnable unsub : subscriptions ) {
 			try {
 				unsub.run();
@@ -162,12 +188,15 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 		subscriptions.clear();
 
-		cameraDevice.set( null );
-		focusDevice.set( null );
-		rotatorDevice.set( null );
+		weather = null;
+		dome = null;
+		cameraDevice = null;
+		focusDevice = null;
+		filterDevice = null;
+		rotatorDevice = null;
 	}
-	protected synchronized void subscribe() throws DBusException {
 
+	protected synchronized void subscribe() throws DBusException {
 		unsubscribe();
 
 		logMessage( "Subscribing to KStars" );
@@ -205,13 +234,14 @@ public abstract class KStarsCluster extends KStarsState {
 
 		this.devices.remove( this.weather );
 
-		System.out.println( "Detecting INDI Weather Device" );
+
+		logMessage( "Detecting INDI Weather Device" );
 		Device<Weather> weather = null;
-		for( int i=0; i<20; i++ ) {
-			weather = new Device<>( con, "org.kde.kstars", "/KStars/INDI/Weather/" + i, Weather.class );
+		for( String path : getChildPaths( "/KStars/INDI/Weather" ) ) {
+			weather = new Device<>( con, "org.kde.kstars", path, Weather.class );
 			try {
 				String name = (String) weather.read( "name" );
-				System.out.println( "Detected Weather device: " + name + " at " + "/KStars/INDI/Weather/" + i );
+				logMessage( "Detected Weather device: " + name + " at " + path );
 				break;
 			}
 			catch( Throwable t ) {
@@ -226,31 +256,85 @@ public abstract class KStarsCluster extends KStarsState {
 				this.handleSchedulerWeatherStatus( status.getStatus() );
 			} ) );
 		}
-
-		this.getCameraDevice();
-		this.getFocusDevice();
-		this.getRotatorDevice();
-	}
-
-	protected void kStarsConnected() {
-		try {
-			subscribe();
-		}
-		catch( Throwable t ) {
-			logError( "Failed to subscribe", t );
+		else {
+			logMessage( "No weather device detected" );
 		}
 
-		for( Device<?> d : devices ) {
+		logMessage( "Detecting INDI Dome Device" );
+		Device<Dome> dome = null;
+		for( String path : getChildPaths( "/KStars/INDI/Dome" ) ) {
+			dome = new Device<>( con, "org.kde.kstars", path, Dome.class );
 			try {
-				d.determineAndDispatchCurrentState();
+				String name = (String) dome.read( "name" );
+				logMessage( "Detected Dome device: " + name + " at " + path );
+				break;
 			}
 			catch( Throwable t ) {
-				//logger.error( "Failed to read from device " + d.interfaceName, t );
+				//IGNORE
+				dome = null;
 			}
 		}
+		this.dome = dome;
+		if( this.dome != null ) {
+			this.devices.add( this.dome );
+			subscriptions.add( this.dome.addNewStatusHandler( Dome.newStatus.class, status -> {
+				this.handleDomeStatus( status.getStatus() );
+			} ) );
+		}
+		else {
+			logMessage( "No dome device detected" );
+		}
+
+		String foundCamera = (String) this.capture.read( "camera" );
+		cameraDevice = new IndiCamera(foundCamera, indi);
+		cameraDevice.setPreCoolTemp( getPreCoolTemp() );
+
+		String foundFocuser = (String) this.focus.read( "focuser" );
+		focusDevice = new IndiFocuser(foundFocuser, indi);
+
+		String foundRotator = IndiRotator.findFirstDevice(indi, DriverInterface.ROTATOR_INTERFACE);
+		rotatorDevice = new IndiRotator(foundRotator, indi);
+
+		String foundFilterWheel = (String) this.capture.read( "filterWheel" );
+		filterDevice = new IndiFilterWheel(foundFilterWheel, indi);
 	}
+
+	protected List<String> getChildPaths(String path) throws DBusException {
+		List<String> childNodes = new ArrayList<>();
+			
+		try {
+			Introspectable weatherInfo = con.getRemoteObject( "org.kde.kstars", path, Introspectable.class );
+
+			DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+			
+			//an instance of builder to parse the specified xml file  
+			DocumentBuilder db = dbf.newDocumentBuilder();
+			db.setEntityResolver( new EntityResolver() {
+				@Override
+				public InputSource resolveEntity(String publicId, String systemId) throws SAXException, IOException {
+					return new InputSource(new StringReader("") );
+				}
+			} );
+			Document doc = db.parse( new InputSource( new StringReader( weatherInfo.Introspect() ) ) );
+			NodeList nl = doc.getDocumentElement().getChildNodes();
+			
+			for( int i=0; i<nl.getLength(); i++ ) {
+				Node n = nl.item(i);
+				if( n instanceof Element && "node".equals( n.getNodeName() ) ) {
+					childNodes.add( path  + "/" + ((Element) n).getAttribute( "name" )  );
+				}
+			}
+			
+		}
+		catch( Throwable t ) {
+			logError( "Failed to introspect " + path, t );
+		}
+
+		return childNodes;
+	}
+
 	
-	protected void kStarsDisconnected() {
+	protected void ekosDisconnected() {
 		try {
 			unsubscribe();
 		}
@@ -258,8 +342,126 @@ public abstract class KStarsCluster extends KStarsState {
 			logError( "Failed to unsubscribe", t);
 		}
 	}
-	
 
+	private INIConfiguration config;
+	
+	public Calendar[] getCivilTwilight() {
+		try {
+			loadConfig();
+
+			double longitude = config.getDouble("Location.Longitude", -999 );
+			double latitude = config.getDouble( "Location.Latitude", -999 );
+
+			Calendar now = Calendar.getInstance();
+			Calendar[] range = SunriseSunset.getCivilTwilight( now, latitude, longitude );
+
+			if( range == null ) {
+				return null;
+			}
+			else {
+				return new Calendar[] { range[0], range[1], now };
+			}
+			
+		}
+		catch( Throwable t ) {
+			logError( "Failed to calc twighlight", t);
+			return null;
+		}
+	}
+
+	public boolean isNight( ) {
+		return isNight( getCivilTwilight() );
+	}
+	public boolean isNight( Calendar[] range ) {
+		if( range == null ) {
+			return true;
+		}
+		Calendar now = range[2];
+		if( now.getTimeInMillis() < range[0].getTimeInMillis() || range[1].getTimeInMillis() < now.getTimeInMillis() ) {
+			//logMessage( "Twighlight: " + start.getTime() + " to " + end.getTime() + " at ("+latitude + "/" + longitude+")" );
+			return true;
+		}
+		else {
+			return false;
+		}
+	}
+
+	
+	private synchronized void loadConfig() throws ConfigurationException, IOException, FileNotFoundException {
+		if( config == null ) {
+			config = new INIConfiguration();
+			config.read( new FileReader( System.getProperty("user.home") + "/.config/kstarsrc" ) );
+		}
+	}
+
+	private HttpClient client = null;
+	private boolean weatherSafty = false;
+	private long lastCheck = -1;
+	public synchronized boolean checkWeatherStatus() {
+		ensureHttpClient();
+		
+		if( this.lastCheck + 30000 < System.currentTimeMillis() ) {
+			try {
+				//logMessage( "Fetching weather saftey" );
+				final ContentResponse res = client.newRequest( "http://192.168.0.106:8082/simple-api.0/getPlainValue/0_userdata.0.Roof.isSafeCondition" ).send();
+			
+				boolean weatherSafty = Boolean.parseBoolean( res.getContentAsString() );
+				this.lastCheck = System.currentTimeMillis();
+
+				if( this.weatherSafty != weatherSafty ) {
+					logMessage( "Weather saftey changed from " + this.weatherSafty + " to " + weatherSafty);
+					this.weatherSafty = weatherSafty;
+				}
+			}
+			catch( Throwable t ) {
+				logError( "Failed to get weather status", t);
+			}
+		}
+
+		return this.weatherSafty;
+	}
+
+	private synchronized void ensureHttpClient() {
+		if( client == null ) {
+			client = new HttpClient();
+			try {
+				client.start();
+			}
+			catch( Throwable t ) {
+				logError( "Failed to start http client", t);
+			}
+		}
+	}
+
+	public void stopUsbDevices() {
+		ensureHttpClient();
+
+		try {
+			//logMessage( "Fetching weather saftey" );
+			final ContentResponse res = client.newRequest( "http://192.168.0.106:8082/simple-api.0/getPlainValue/0_userdata.0.usb.0.enabled" ).send();
+			boolean usbEnabled = Boolean.parseBoolean( res.getContentAsString() );
+			if( usbEnabled ) {
+				logMessage( "USB is still enabled, stopping now " );
+				client.newRequest( "http://192.168.0.106:8082/simple-api.0/set/0_userdata.0.usb.0.enabled?value=false" ).send();
+			}
+		}
+		catch( Throwable t ) {
+			logError( "Failed to get weather status", t);
+		}
+	}
+
+	private long checkShutdownUsb( long ekosStoppedAt ) {
+		if( ekosStoppedAt == 0 ) {
+			ekosStoppedAt = System.currentTimeMillis();
+		}
+		else if( ( System.currentTimeMillis() - ekosStoppedAt ) >= TimeUnit.MINUTES.toMillis( 5 ) ) {
+			logMessageOnce( "Check if usb is off, because ekos has stopped" );
+			stopUsbDevices();
+			ekosStoppedAt = Long.MAX_VALUE;
+		}
+
+		return ekosStoppedAt;
+	}
 
 	private Thread kStarsMonitor = null;
 	public synchronized void connectToKStars() {
@@ -268,122 +470,233 @@ public abstract class KStarsCluster extends KStarsState {
 				return;
 			}
 		}
+
 		kStarsMonitor = new Thread( () -> {
-			boolean ekosAvailable = false;
-			boolean startKStars = false;
-			Process kstarsProcess = null;
-
-			Runtime.getRuntime().addShutdownHook(new Thread()
-			{
-				@Override
-				public void run()
-				{
-					System.out.println("Shutdown hook ran!");
-				}
-			});
-
 			Thread.currentThread().setName( "KStars Monitor Thread" );
 
+			long ekosStoppedAt = 0;
+
 			while( true ) { try {
-				ekosAvailable = false;
-
-				while( !ekosAvailable ) {
-					//first check if ekos is started and available
-					try {
-						ekos.readAll();
-						ekosAvailable = true;
-						startKStars = false;
-					}
-					catch( Throwable t ) {
-						//ekos is not responding ... kstars may be crashed or not running
-
-						if( !startKStars ) {
-							startKStars = true;
-							ekosAvailable = false;
-
-							logMessage( "KStars/Ekos seems not to run, let's wait up to 15 Seconds it may be start soon" );
-							for( int wi = 0; wi < 15; wi++ ) {
-								try {
-									ekos.readAll();
-									ekosAvailable = true;
-									startKStars = false;
-									break;
-								}
-								catch( Throwable t2 ) {
-									sleep( 1000L );
-								}
-							}
-						}
-						else {
-
-							try {
-								logMessage( "Killing previous kstars processes" );
-								Process kill = Runtime.getRuntime().exec( new String[]{ "killall", "kstars" } );
-								
-								kill.waitFor();
-
-								logMessage( "Killed previous kstars processes" );
-								
-							}
-							catch( Throwable tt ) {
-								logError( "Failed to kill kstars", tt );
-							}
-							
-							try {
-								logMessage( "Starting kstars" );
-								kstarsProcess = Runtime.getRuntime().exec( new String[]{ "setsid", "nohup", "kstars" } );
-								
-								logMessage( "Started kstars with pid " + kstarsProcess.pid() );
-								startKStars = false;
-							}
-							catch( Throwable tt ) {
-								logError( "Failed to start kstars", tt );
-							}
-							
-						}
-					}
-				}
-
-				if( isKStarsReady() == false ) {
-					CommunicationStatus indiStatus = (CommunicationStatus)ekos.getParsedProperties().get( "indiStatus" );
-
-					logMessage( "Current indi status: " + indiStatus );
-					logMessage( "Ekos not started yet, starting now" );
-					try {
-						ekos.methods.start();
-					}
-					catch( Throwable t ) {
-						logError( "Faield to start ekos, is kstars running?", t );
-						continue; //repeat check
-					}
-				}
-
-				while( checkKStarsReady() == false ) {
-					sleep( 1000L );
-				}
-			
-				logMessage( "Ekos is ready" );
-				
-				ekosReady();
-
-				kStarsConnected.set(true);
-				kStarsConnected();
-				
-				while( checkKStarsReady() ) {
+				if( tryStartKStars() == false ) {
+					ekosStoppedAt = checkShutdownUsb( ekosStoppedAt );
+					//retry in 5 seconds
 					sleep( 5000L );
 				}
-				
-				logMessage( "Kstars is has stopped, waiting to become ready again" );
-				
-				kStarsConnected.set(false);
-				kStarsDisconnected();
+				else {
+					this.createDevices();
+
+					if( checkEkosReady() == false ) {
+						ekosStoppedAt = checkShutdownUsb( ekosStoppedAt );
+					
+						if( checkWeatherStatus() == false ) {
+							logMessageOnce( "Weather conditions are UNSAFE, skip start of ekos");
+
+							if( getKStarsRuntime() > TimeUnit.HOURS.toMillis( 36 ) ) {
+								logMessage( "Weather conditions are BAD and KStars is running more than 36h, stopping KStars" );
+								stopKStars();
+							}
+
+							sleep( 5000L );
+						}
+						else {
+							logMessage( "Weather conditions are SAFE, starting ekos now" );
+
+							try {
+								showEkos.methods.trigger();
+								sleep( 1000L );
+								ekos.methods.start();
+							}
+							catch( Throwable t ) {
+								logError( "Failed to start ekos, is kstars running?", t );
+								continue; //repeat check
+							}
+							boolean ekosStarted = false;
+							for( int i=0; i<60; i++ ) {
+								if( checkEkosReady() == false ) {
+									sleep( 1000L );
+								}
+								else {
+									ekosStarted = true;
+									break;
+								}
+							}
+							if( ekosStarted == false ) {
+								logMessage( "Ekos failed to start, stopping ekos and retry later" );
+								this.stopKStars();
+							}
+						}
+					}
+					else {
+						ekosStoppedAt = 0;
+
+						synchronized( this ) {
+							subscribe();
+							ekosReady();
+
+							ekosReady.set( true );
+						}
+
+						waitUntilEkosHasStopped();
+						ekosStoppedAt = checkShutdownUsb( ekosStoppedAt );
+						
+						logMessage( "Ekos has stopped, waiting to become ready again" );
+						
+						synchronized( this ) {
+							ekosDisconnected();
+						}
+					}
+				}
 			}
 			catch( Throwable t ) {
 				logError( "Unhandled error in KStars Monitor loop", t );
-			} }
-		} );
+			} 
+			finally {
+				kStarsMonitor = null;
+			}
+		} } );
 		kStarsMonitor.setDaemon( true );
 		kStarsMonitor.start();
+	}
+
+	private boolean 
+	tryStartKStars() throws DBusException {
+		
+		this.createEkosDevices();
+		
+		for( int i=0; i<10; i++ ) {
+			//first check if ekos is started and available
+			try {
+				ekos.checkAlive();
+				return true;
+			}
+			catch( Throwable t ) {
+				//ekos is not responding ... kstars may be crashed or not running
+				long runtime = getKStarsRuntime();
+				if( runtime > 60000 ) {
+					stopKStars();
+				}
+
+				Calendar[] range = getCivilTwilight();
+				if( isNight(range) ) {
+					if( runtime == 0 ) {
+						try {
+							logMessage( "Starting kstars" );
+							Process kstarsProcess = Runtime.getRuntime().exec( new String[]{ "setsid", "nohup", "kstars" } );
+							logMessage( "Started kstars with pid " + kstarsProcess.pid() );
+							sleep( 5000L );
+						}
+						catch( Throwable tt ) {
+							logError( "Failed to start kstars", tt );
+						}
+					}
+				}
+				else {
+					logMessageOnce( "It's daytime, wait to start until dusk: " + range[1].getTime() );
+					return false;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	private void waitUntilEkosHasStopped() {
+		Long weatherBadSince = null;
+		while( checkEkosReady() ) {
+			if( checkWeatherStatus() ) {
+				if( weatherBadSince != null ) {
+					logMessage( "Weather changed to SAFE" );
+					weatherBadSince = null;
+				}
+			}
+			else {
+				if( weatherBadSince == null ) {
+					weatherBadSince = System.currentTimeMillis();
+					logMessage( "Weather changed to UNSAFE" );
+				}
+				else {
+					long now = System.currentTimeMillis();
+					long badWeatherDuration = (now - weatherBadSince);
+					long badWeatherTimeout = TimeUnit.HOURS.toMillis(1);
+
+					if( badWeatherDuration >= badWeatherTimeout ) {
+						StringBuilder waitToStopReasons = new StringBuilder();
+						waitToStopReasons.append( "Weather is UNSAFE since 1 hour, check if we can shutdown ekos" );
+
+						boolean canStop = true;
+						if( isCameraBusy() ) {
+							waitToStopReasons.append( "\n\tCamera is still busy, wait for warming" );
+							canStop = false;
+						}
+						if( this.mountStatus.get() != MountStatus.MOUNT_PARKED ) {
+							waitToStopReasons.append( "\n\tMount is not yet parked, wait for parking" );
+							canStop = false;
+						}
+						if( this.captureRunning.get() )  {
+							waitToStopReasons.append( "\n\tA capture is in progress" );
+							canStop = false;
+						}
+						if( ( now - this.captureRunning.lastChange.get() ) < TimeUnit.MINUTES.toMillis( 15 ) ) {
+							waitToStopReasons.append( "\n\tLast capture was less than 15 Minutes ago" );
+							canStop = false;
+						}
+
+						if( canStop == false ) {
+							logMessageOnce( waitToStopReasons.toString() );
+						}
+						else {
+							logMessage( "Shutting down Ekos / KStars after " + (badWeatherDuration / 1000 / 60 ) + " Minutes" );
+							if( stopEkos() == false ) {
+								stopKStars();
+							}
+							stopUsbDevices();
+							break;
+						}
+					}
+					else if( badWeatherDuration >= TimeUnit.MINUTES.toMillis( 1 ) ) {
+						ensureMountIsParked();
+					}
+				}
+			}
+			sleep( 5000L );
+		}
+	}
+
+	protected boolean ensureMountIsParked() {
+		switch( this.mountStatus.get() ) {
+			case MOUNT_PARKING:
+				return false;
+			case MOUNT_PARKED:
+				return true;
+
+			
+			case MOUNT_IDLE:
+			case MOUNT_MOVING: 
+			case MOUNT_SLEWING: 
+			case MOUNT_TRACKING:
+			case MOUNT_ERROR:
+			default:
+				try {
+					this.mount.methods.abort();
+					this.mount.methods.park();
+				}
+				catch( Throwable t ) {
+					logError( "Failed to park mount", t);
+				}
+				return false;
+		}
+	}
+
+	private boolean isCameraBusy() {
+		boolean isCooling = getCameraDevice().isCooling();
+		IpsState ccdTempState = getCameraDevice().getCcdTemparaturState();
+
+		if( isCooling || ccdTempState == IpsState.IPS_BUSY || ccdTempState == IpsState.IPS_ALERT ) {
+			return true;
+		}
+		else {
+			return false;
+		}
 	}
 
 	protected void sleep(long time) {
@@ -395,29 +708,54 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 
-	protected final AtomicBoolean kStarsReady = new AtomicBoolean(false);
+	protected final AtomicBoolean ekosReady = new AtomicBoolean(false);
 
-	protected boolean checkKStarsReady() {
+	protected boolean checkEkosReady() {
 		
 		for( Device<?> d : mandatoryDevices ) {
 			try {
-				d.readAll();
+				d.checkAlive();
 			}
 			catch( Throwable t ) {
-				kStarsReady.set( false );
+				ekosReady.set( false );
 				return false;
 			}
 		}
-		kStarsReady.set( true );
-		return true;
-	}
 
-	protected boolean isKStarsReady() {
-		return kStarsReady.get();
+		boolean allConnected = true;
+		try {
+			for( String device : this.indi.methods.getDevices() ) {
+				String state = this.indi.methods.getPropertyState( device, "CONNECTION" );
+				String connected = this.indi.methods.getSwitch( device, "CONNECTION", "CONNECT" );
+				
+
+				if( "Ok".equals( state ) && "On".equals( connected ) ) {
+					continue;
+				}
+				else {
+					allConnected = false;
+					logMessage( "The device " + device + " is not connected: " + state );
+					this.indi.methods.setSwitch( device, "CONNECTION", "CONNECT", "On" );
+					this.indi.methods.sendProperty( device, "CONNECTION" );
+				}
+			}
+		}
+		catch( Throwable t ) {
+			logError( "Failed to query indi device status", t );
+		}
+
+		return allConnected;
 	}
 
 	protected void ekosReady() {
-
+		for( Device<?> d : devices ) {
+			try {
+				d.determineAndDispatchCurrentState();
+			}
+			catch( Throwable t ) {
+				logError( "Failed to read status from device " + d.interfaceName, t );
+			}
+		}
 	}
 
 	private final AtomicInteger alignProgressCounter = new AtomicInteger(0);
@@ -464,6 +802,19 @@ public abstract class KStarsCluster extends KStarsState {
 		boolean captureWasRunning = captureRunning.get();
 
 		state = super.handleCaptureStatus(state);
+
+		String targetName = (String) this.capture.read( "targetName" );
+                    
+		if( targetName != null && targetName.isEmpty() == false ) {
+			String oldTarget = this.captureTarget.getAndSet( targetName );
+			if( targetName.equals( oldTarget ) == false ) {
+				logMessage( "Capture target has changed from " + oldTarget + " to " + targetName );
+			}
+		}
+		else {
+			logMessage( "Capture target has changed to empty, restoring to " + this.captureTarget.get() );
+			this.capture.write( "targetName", this.captureTarget.get() );
+		}
 
 		if( CaptureStatus.CAPTURE_CAPTURING == state || lastFocusPos.get() == null ) {
 			double focusPos = getFocusDevice().getFocusPosition();
@@ -532,6 +883,9 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 	
     protected void checkCameraCooling( KStarsState state ) {
+		if( this.getCameraDevice() == null ) {
+			return;
+		}
 
 		SchedulerState schedulerStatus = state.schedulerState.get();
 		MountStatus mountStatus = state.mountStatus.get();
@@ -603,7 +957,7 @@ public abstract class KStarsCluster extends KStarsState {
 			sleep(10);
 		}
 
-		double pos = this.getFocusDevice().getFocusPosition();
+		double pos = this.getFocusDevice() == null ? -1 : this.getFocusDevice().getFocusPosition();
 
 		logMessage( "Focus process has finished: " + pos );
 
@@ -630,7 +984,7 @@ public abstract class KStarsCluster extends KStarsState {
 		} );
 
 		actions.put( "camera", ( parts, req, resp ) -> {
-			if( kStarsConnected.get() == false ) {
+			if( ekosReady.get() == false ) {
 				return NOT_CONNECTED;
 			}
 
@@ -646,6 +1000,10 @@ public abstract class KStarsCluster extends KStarsState {
 			return true;
 		} );
 
+		actions.put( "stopKStars", (parts, req, resp ) -> {
+				stopKStars();
+				return "OK";
+		} );
 
 		actions.put( "exec", ( parts, req, resp ) -> {
 			
@@ -671,7 +1029,7 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	public Map<String,Object> statusAction( String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
-		if( kStarsConnected.get() == false ) {
+		if( ekosReady.get() == false ) {
 			return NOT_CONNECTED;
 		}
 		
@@ -684,13 +1042,12 @@ public abstract class KStarsCluster extends KStarsState {
 		res.put( "focusPosition", this.getFocusDevice().getFocusPosition() );
 		res.put( "rotatorAngle", this.getRotatorDevice().getRotatorPosition() );
 
-
 		Map<String,Object> camera = new HashMap<>();
 
 		camera.put( "name", this.getCameraDevice().deviceName );
 		camera.put( "temperature", this.getCameraDevice().getCcdTemparatur() );
 		camera.put( "antiDewHeaterOn", this.getCameraDevice().isAntiDewHeaterOn() );
-		camera.put( "isCooling", this.getCameraDevice().isWarming() ? false : this.getCameraDevice().isCooling() );
+		camera.put( "isCooling", this.getCameraDevice().isCooling() );
 
 		res.put( "camera", camera );
 
@@ -797,7 +1154,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 	private AtomicBoolean calibrateFilterInProgress = new AtomicBoolean( false );
     public Object calibrateFiltersAction( String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
-		if( kStarsConnected.get() == false ) {
+		if( ekosReady.get() == false ) {
 			return NOT_CONNECTED;
 		}
 
@@ -956,12 +1313,7 @@ public abstract class KStarsCluster extends KStarsState {
 					logMessage( "Rotator is " + cRotatorState );
 				}
 
-				try {
-					Thread.sleep( 500 );
-				}
-				catch( Throwable t ) {
-					t.printStackTrace();
-				}
+				sleep( 500 );
 			}
 
 			return alignFailed.get();
@@ -976,4 +1328,88 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 		}
     }
+
+
+
+	public int getKStarsRuntime() {
+		try {
+			Process runtime = Runtime.getRuntime().exec( new String[]{ "ps", "-C", "kstars", "-o", "etimes="} );
+				
+			InputStream in = runtime.getInputStream();
+
+			runtime.waitFor();
+			ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+			byte[] buf = new byte[4096];
+			int len = 0;
+			while( (len = in.read(buf)) > 0 ) {
+				out.write(buf, 0, len);
+			}
+			
+			in.close();
+			out.close();
+
+			int rts = Integer.parseInt( out.toString().trim() );
+
+			return rts;
+		}
+		catch( Throwable t ) {
+			return 0;
+		}
+	}
+
+	public boolean stopEkos() {
+		try {
+			this.unsubscribe();
+		}
+		catch( Throwable t ) {
+			//SILENT_CATCH
+		}
+
+		if( getKStarsRuntime() > 0 ) {
+			logMessage( "Stopping Ekos" );
+			try {
+				this.ekos.methods.stop();
+				sleep( 5000 );
+				return true;
+			}
+			catch( Throwable t ) {
+				logError( "Failed to stop ekos", t);
+				return false;
+			}
+		}
+		else {
+			return true;
+		}
+		
+	}
+	public void stopKStars() {
+		stopEkos();
+
+		if( getKStarsRuntime() > 0 ) {
+			logMessage( "Quting KStars" );
+			for( int i=0; i<20; i++ ) {
+				try {
+					this.quitKStars.methods.trigger();
+					sleep( 1000 );
+				}
+				catch( Throwable t ) {
+					break;
+				}
+			}
+
+			try {
+				logMessage( "Killing hanging kstars processes" );
+				Process kill = Runtime.getRuntime().exec( new String[]{ "killall", "kstars" } );
+				
+				kill.waitFor();
+
+				logMessage( "Killed previous kstars processes" );
+				
+			}
+			catch( Throwable tt ) {
+				logError( "Failed to kill kstars", tt );
+			}
+		}
+	}
 }

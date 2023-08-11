@@ -48,10 +48,10 @@ public class KStarsClusterServer extends KStarsCluster {
                 serverWorker = new Thread( () -> {
                     while( true ) {
                         try {
-                            if( isKStarsReady() && automationSuspended.get() == false ) {
+                            if( ekosReady.get() ) {
                                 checkServerState();
                             }
-                            Thread.sleep( 100 );
+                            Thread.sleep( 5000 );
                         }
                         catch( Throwable t ) {
                             logError( "Error in check server state", t);
@@ -71,7 +71,8 @@ public class KStarsClusterServer extends KStarsCluster {
             File f = new File( loadSchedule );
             if( f.exists() ) {
 
-                if( scheduler.getParsedProperties().get( "status" ) == SchedulerState.SCHEDULER_IDLE ) {
+                SchedulerState status = (SchedulerState) scheduler.read( "status" );
+                if( status == SchedulerState.SCHEDULER_IDLE ) {
                     try {
                         f = f.getCanonicalFile();
                     }
@@ -85,18 +86,10 @@ public class KStarsClusterServer extends KStarsCluster {
                     catch( Throwable t ) {
                         logError( "Failed to load schedule", t );
                     }
-                    sleep(1000L);
-                    logMessage( "starting schedule " + f.getPath() );
-                    try {
-                        scheduler.methods.start();
-                    }
-                    catch( Throwable t ) {
-                        logError( "Failed to start schedule", t );
-                    }
-                    
+                    sleep(1000L);                   
                 }
                 else {
-                    logMessage( "Scheduler is not idle: " + scheduler.getParsedProperties().get( "status" ) );
+                    logMessage( "Scheduler is not idle: " + status );
                 }
             }
             else {
@@ -108,17 +101,24 @@ public class KStarsClusterServer extends KStarsCluster {
         }
     }
 
-    private final WaitUntil manualSchedulerAbort = new WaitUntil( 5, null ); 
-    private AtomicBoolean autoStartScheduler = new AtomicBoolean( true );
-
     protected synchronized void checkServerState() {
         try {
-            if( autoStartScheduler.get() ) {
-                if( this.weatherState.get() == WeatherState.WEATHER_OK && this.schedulerState.get() != SchedulerState.SCHEDULER_RUNNING ) {
+            
+            if( this.weatherState.get() != WeatherState.WEATHER_ALERT && this.schedulerState.get() != SchedulerState.SCHEDULER_RUNNING ) {
+                if( automationSuspended.get() == false ) {
                     logMessage( "Weather is OK, Starting idle scheduler" );
-                    scheduler.methods.start();
+                    if( ensureMountIsParked() ) {
+                        scheduler.methods.start();
+                    }
+                    else {
+                        logMessage( "Weather is OK, but Mount is not yet parked" );
+                    }
+                }
+                else {
+                    logMessage( "Weather is OK, but automatio is suspended" );
                 }
             }
+            
         }
         catch( Throwable t ) {
             logError( "Failed to check server state", t );
@@ -129,9 +129,10 @@ public class KStarsClusterServer extends KStarsCluster {
     public CaptureStatus handleCaptureStatus(CaptureStatus state) {
         state = super.handleCaptureStatus(state);
         
-        final Map<String,Object> payload = capture.getParsedProperties();
+        final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleCaptureStatus" );
         payload.put( "status", state);
+        payload.put( "targetName", capture.read( "targetName" ) );
 
         writeToAllClients( payload );
 
@@ -142,7 +143,7 @@ public class KStarsClusterServer extends KStarsCluster {
     public AlignState handleAlignStatus(AlignState state) {
         state = super.handleAlignStatus(state);
         
-        final Map<String,Object> payload = align.getParsedProperties();
+        final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleAlignStatus" );
         payload.put( "solutionResult", getSolutionResult() );
         payload.put( "status", state);
@@ -168,7 +169,7 @@ public class KStarsClusterServer extends KStarsCluster {
     public FocusState handleFocusStatus(FocusState state) {
         state = super.handleFocusStatus(state);
         
-        final Map<String,Object> payload = focus.getParsedProperties();
+        final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleFocusStatus" );
         payload.put( "status", state);
 
@@ -181,36 +182,10 @@ public class KStarsClusterServer extends KStarsCluster {
     public SchedulerState handleSchedulerStatus(SchedulerState state) {
         state = super.handleSchedulerStatus(state);
 
-        if( this.automationSuspended.get() == false ) {
-            switch( state ) {
-                case SCHEDULER_IDLE:
-                    //if scheduler paused and aborted within 5 seconds, disable auto scheduler start
-                    if( manualSchedulerAbort.check() ) {
-                        autoStartScheduler.set( false );
-                    }
-                break;
-
-                case SCHEDULER_PAUSED:
-                    manualSchedulerAbort.reset();
-                break;
-                
-                case SCHEDULER_RUNNING:
-                    autoStartScheduler.set( true );
-                break;
-
-                case SCHEDULER_STARTUP:
-                case SCHEDULER_LOADING:
-                case SCHEDULER_SHUTDOWN:
-                case SCHEDULER_ABORTED:
-                default:
-                    break;
-            }
-        }
-
         checkCameraCooling( this );
 
         
-        final Map<String,Object> payload = scheduler.getParsedProperties();
+        final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleSchedulerStatus" );
         payload.put( "status", state);
 
@@ -241,7 +216,7 @@ public class KStarsClusterServer extends KStarsCluster {
     public GuideStatus handleGuideStatus(GuideStatus state) {
         state = super.handleGuideStatus(state);
         
-        final Map<String,Object> payload = guide.getParsedProperties();
+        final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleGuideStatus" );
         payload.put( "status", state);
 
@@ -256,7 +231,7 @@ public class KStarsClusterServer extends KStarsCluster {
         
         checkCameraCooling( this );
 
-        final Map<String,Object> payload = mount.getParsedProperties();
+        final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleMountStatus" );
         payload.put( "status", state);
 
@@ -270,7 +245,7 @@ public class KStarsClusterServer extends KStarsCluster {
     public MeridianFlipStatus handleMeridianFlipStatus(MeridianFlipStatus state) {
         state = super.handleMeridianFlipStatus(state);
         
-        final Map<String,Object> payload = mount.getParsedProperties();
+        final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleMeridianFlipStatus" );
         payload.put( "status", state);
 
@@ -282,7 +257,7 @@ public class KStarsClusterServer extends KStarsCluster {
     public ParkStatus handleMountParkStatus(ParkStatus state) {
         state = super.handleMountParkStatus(state);
         
-        final Map<String,Object> payload = mount.getParsedProperties();
+        final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleMountParkStatus" );
         payload.put( "status", state);
 

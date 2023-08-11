@@ -1,17 +1,20 @@
 package de.pmneo.kstars;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.kde.kstars.ParkStatus;
+import org.kde.kstars.ekos.Mount;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus.FocusState;
@@ -61,7 +64,7 @@ public class KStarsClusterClient extends KStarsCluster {
                 clientWorker = new Thread( () -> {
                     while( true ) {
                         try {
-                            if( isKStarsReady() && serverInitDone.get() && this.automationSuspended.get() == false ) {
+                            if( ekosReady.get() && serverInitDone.get() && this.automationSuspended.get() == false ) {
                                 checkClientState();
                             }
                             sleep( 100 );
@@ -88,8 +91,8 @@ public class KStarsClusterClient extends KStarsCluster {
             f = new File( System.getProperty("user.home") + "/current_sequence.esq" );
         }
 
-        if( serverCaptureTarget.get() != null ) {
-            String targetName = ( serverCaptureTarget.get() + ".esq" ).toLowerCase();
+        if( server.captureTarget.get() != null ) {
+            String targetName = ( server.captureTarget.get() + ".esq" ).toLowerCase();
             targetName = targetName.replaceAll( "[ -]", "_" );
 
             System.out.println( "Try to resolve sequence by target: " + targetName );
@@ -124,6 +127,8 @@ public class KStarsClusterClient extends KStarsCluster {
 
     public void loadSequence() {
 
+        String currentTargetName = (String) this.captureTarget.get();
+
         String sequencePath = resolveCaptureSequence();
 
         if( sequencePath == null ) {
@@ -139,9 +144,9 @@ public class KStarsClusterClient extends KStarsCluster {
 
         WaitUntil.waitUntil( "Capture sequence is empty", 5, () -> this.capture.methods.getJobCount() > 0 );
 
-        logMessage( "loading sequence " + sequencePath );
+        logMessage( "loading sequence " + sequencePath + " for target " + currentTargetName );
         try {
-            capture.methods.loadSequenceQueue( sequencePath );
+            capture.methods.loadSequenceQueue( sequencePath, true );
         }
         catch( Throwable t ) {
             logError( "Failed to load sequence", t );
@@ -151,6 +156,8 @@ public class KStarsClusterClient extends KStarsCluster {
 
         try {
             logMessage( "sequence loaded with " + this.capture.methods.getPendingJobCount() + " pending jobs" );
+
+            this.capture.write( "targetName", currentTargetName );
         }
         catch( Throwable t ) {
             logError( "Failed to determine pending jobs", t );
@@ -178,7 +185,7 @@ public class KStarsClusterClient extends KStarsCluster {
         try {
             //this should currently not happen?
             
-            if( kStarsConnected.get() == false ) {
+            if( ekosReady.get() == false ) {
                 logMessage( "Received a Server Frame, but KStars is not ready yet. Skipping.");
                 return;
             }
@@ -209,7 +216,7 @@ public class KStarsClusterClient extends KStarsCluster {
                     String serverTarget = (String) payload.get( "targetName" );
                     
                     if( serverTarget != null ) {
-                        serverCaptureTarget.set( serverTarget );
+                        server.captureTarget.set( serverTarget );
                     }
                 }
                 else if( "handleFocusStatus".equals( action ) ) {
@@ -263,17 +270,10 @@ public class KStarsClusterClient extends KStarsCluster {
             logError( "Error due handle server frame", t );
         }
     }
-
-    @Override
-    protected void kStarsConnected() {
-        resetValues();
-        
-        super.kStarsConnected();
-    }
     
     @Override
-    protected void kStarsDisconnected() {
-        super.kStarsDisconnected();
+    protected void ekosDisconnected() {
+        super.ekosDisconnected();
 
         synchronized ( this ) {
             try {
@@ -291,7 +291,7 @@ public class KStarsClusterClient extends KStarsCluster {
     
     public void listen()  {
         while( true ) {
-            while( kStarsConnected.get() ) {
+            while( ekosReady.get() ) {
                 try {
                     synchronized ( this ) {
                         clientHandler = new SocketHandler( new Socket( host, listenPort ) );
@@ -325,7 +325,6 @@ public class KStarsClusterClient extends KStarsCluster {
     }
 
 
-    protected AtomicReference<String> serverCaptureTarget = new AtomicReference<>( null );
     protected AtomicReference< List<Double> > serverSolutionResult = new AtomicReference<>();
 
     public void resetValues() {
@@ -364,6 +363,7 @@ public class KStarsClusterClient extends KStarsCluster {
     }
 
     private Stage stage = Stage.INIT;
+    private long lastSuccessfullFocus = -1;
 
     protected synchronized void checkClientState() {
         
@@ -373,15 +373,23 @@ public class KStarsClusterClient extends KStarsCluster {
             }
 
             String currentTargetName = (String) this.capture.read( "targetName" );
-            String targetName = serverCaptureTarget.get() + "_" + targetPostFix;
+            String targetName = server.captureTarget.get() + "_" + targetPostFix;
+
+            if( currentTargetName == null || currentTargetName.isEmpty() ) {
+                currentTargetName = this.captureTarget.get();
+                logMessage( "Target is empty, restoring to " + currentTargetName );
+                this.capture.write( "targetName", currentTargetName );
+            }
             
             if( targetName.equals( currentTargetName ) == false ) {
-                logMessage( "Target has changed: " + targetName );
+                logMessage( "Target has changed from " + currentTargetName + " to " + targetName );
 
+                this.captureTarget.set( targetName );
                 this.capture.write( "targetName", targetName );
 
                 this.loadSequence();
 
+                this.capture.write( "targetName", targetName );
                 serverSolutionChanged.set( true );
             }
 
@@ -438,7 +446,16 @@ public class KStarsClusterClient extends KStarsCluster {
                         logMessage( "Focus module not present" );
                     }
                     finally {
-                        stage = Stage.ALIGN;
+                        if( ( System.currentTimeMillis() - this.lastSuccessfullFocus ) > TimeUnit.HOURS.toMillis( 12 ) ) {
+                            logMessage( "Restart focus procedure, because the last focus was done more than 12 hours ago");
+                            stage = Stage.FOCUS;
+                        }
+                        else {
+                            stage = Stage.ALIGN;
+                        }
+                        
+                        lastSuccessfullFocus = System.currentTimeMillis();
+
                         logMessage( "changing next stage to " + stage );
                     }
                 }
@@ -550,8 +567,7 @@ public class KStarsClusterClient extends KStarsCluster {
     }
 
     private boolean checkIfPaInRange( double range ) {
-        List<Double> serverSolution = serverSolutionResult.get();
-        double serverPa = normalizePa( serverSolution.get( 0 ).doubleValue() );
+        double serverPa = normalizePa( getTargetPa() );
 
         List<Double> coords = this.align.methods.getSolutionResult();
         double clientPa = normalizePa( coords.get( 0 ).doubleValue() );
@@ -567,6 +583,38 @@ public class KStarsClusterClient extends KStarsCluster {
             logMessage( "The delta between server " + serverPa + " and client " + clientPa + " is more than "+range+" deg: " + delta );
             return false;
         }
+    }
+
+    private double getTargetPa() {
+        List<Double> serverSolution = serverSolutionResult.get();
+        double serverPa = normalizePa( serverSolution.get( 0 ).doubleValue() );
+
+        String sequencePath = resolveCaptureSequence();
+
+        if( sequencePath != null ) {
+            File rot = new File( sequencePath + ".rot" );
+            if( rot.exists() ) {
+                try {
+                    FileInputStream in = new FileInputStream( rot );
+                    try {
+                        byte[] buffer = new byte[ 4096 ];
+                        int len = in.read(buffer);
+                        int customPa = Integer.parseInt( new String( buffer, 0, len ).trim() );
+
+                        logMessage( "Using custom pa " + customPa + " instead of " + serverPa );
+                        return customPa;
+                    }
+                    finally {
+                        in.close();
+                    }
+                }
+                catch( Throwable t ) {
+                    logError( "Failed to read rotation file", t);
+                }
+            }
+        }
+
+        return serverPa;
     }
 
     public void checkStopCapture() {
@@ -592,14 +640,14 @@ public class KStarsClusterClient extends KStarsCluster {
     }
 
     public boolean executeAlignment() {
-        Integer currenParkStatusOrdinal = (Integer) this.mount.read( "parkStatus" );
+        Mount.ParkStatus currenParkStatus = (Mount.ParkStatus) this.mount.read( "parkStatus" );
 
         WaitUntil maxWait = new WaitUntil( 60, "Unparking Mount" );
-        while( currenParkStatusOrdinal.intValue() != ParkStatus.PARK_UNPARKED.ordinal() && maxWait.check() ) {
-            if( currenParkStatusOrdinal.intValue() != ParkStatus.PARK_UNPARKING.ordinal() ) {
+        while( currenParkStatus != Mount.ParkStatus.PARK_UNPARKED && maxWait.check() ) {
+            if( currenParkStatus != Mount.ParkStatus.PARK_UNPARKING ) {
                 this.mount.methods.unpark();
             }
-            currenParkStatusOrdinal = (Integer) this.mount.read( "parkStatus" );
+            currenParkStatus = (Mount.ParkStatus) this.mount.read( "parkStatus" );
         }
         List<Double> serverSolution = serverSolutionResult.get();
       
@@ -607,7 +655,7 @@ public class KStarsClusterClient extends KStarsCluster {
         this.mount.methods.slew( serverSolution.get(1) / 15.0, serverSolution.get(2) );
         waitForMountTracking( 60 );
                
-        double pa = normalizePa( serverSolution.get( 0 ).doubleValue() );
+        double pa = getTargetPa();
 
         logMessage( "Starting Align process to " + pa );
         this.align.methods.setTargetPositionAngle( pa );

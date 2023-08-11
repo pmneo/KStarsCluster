@@ -34,6 +34,7 @@ public class Device<T extends DBusInterface> {
 	public T methods;
 	private Properties properties;
 	
+	private String checkAliveProperty = null;
 
 	public Device( DBusConnection con, String busName, String objectPath, Class<T> impl ) throws DBusException {
 		
@@ -49,7 +50,23 @@ public class Device<T extends DBusInterface> {
 		this.parsedProperties.put( "interfaceName", interfaceName );
 		dbusProperties = Arrays.stream( impl.getAnnotationsByType( DBusProperty.class ) ).collect( Collectors.toMap( p -> p.name(), p->p.type() ) );
 	
+		if( dbusProperties.containsKey( "status" ) ) {
+			checkAliveProperty = "status";
+		}
+		else {
+			for( String prop : dbusProperties.keySet() ) {
+				checkAliveProperty = prop;
+				if( prop.toLowerCase().endsWith( "status" ) ) {
+					break;
+				}
+			}
+		}
+
 		this.connect();
+	}
+
+	public void checkAlive() {
+		this.read( checkAliveProperty );
 	}
 
 	public Device<T> connect() throws DBusException {
@@ -73,12 +90,6 @@ public class Device<T extends DBusInterface> {
 	public <S extends DBusSignal> Runnable addSigHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
 		final DBusSigHandler<S> handler = status -> {
 			synchronized( this ) {
-				try {
-					this.readAll();
-				}
-				catch( Throwable t ) {
-					t.printStackTrace();
-				}
 				_handler.handle( status );
 			}
 		};
@@ -97,12 +108,10 @@ public class Device<T extends DBusInterface> {
 	
 	@SuppressWarnings({ "rawtypes", "unchecked" })
 	public void determineAndDispatchCurrentState() {
-		Map<String,Object> payload = readAll();
 		
 		if( this.newStateSignal != null ) {
 			try {
-				Enum status = (Enum) payload.get( "status" );
-				
+				Enum status = (Enum) this.read( "status" );
 				Constructor c = this.newStateSignal.getConstructor( String.class, Object[].class );
 					
 				if( c != null ) {
@@ -118,11 +127,14 @@ public class Device<T extends DBusInterface> {
 	}
 	
 	@SuppressWarnings("unchecked")
-	private void parseProperty( String key, Variant<?> value ) {
+	private void parseProperty( String key, Object v ) {
 		Class<?> p = dbusProperties.get( key );
 		
-		Object v = value.getValue();
-		
+		if( v instanceof Variant ) {
+			v = ((Variant<?>) v).getValue();
+		}
+
+
 		if( v != null && v.getClass().isArray() ) {
 			v = ArrayUtils.arrayToList( v );
 		}
@@ -173,13 +185,10 @@ public class Device<T extends DBusInterface> {
 			all.forEach( this::parseProperty );
 		}
 		else {
-			this.parsedProperties.put( name, value );
+			this.parseProperty( name, value );
 		}
+
 		return this.parsedProperties.get( name );
-	}
-	
-	public synchronized Map<String, Object> getParsedProperties() {
-		return new HashMap<String, Object>( parsedProperties );
 	}
 	
 	public synchronized Object write( String name, Object value ) {
@@ -190,13 +199,6 @@ public class Device<T extends DBusInterface> {
 	
 	@Override
 	public String toString() {
-		final StringBuilder sb = new StringBuilder();
-		
-		sb.append( interfaceName ).append( ": " );
-		getParsedProperties().forEach( (k,v) -> {
-			sb.append( "\n\t" ).append( k ).append( ": " ).append( v );
-		});
-		
-		return sb.toString();
+		return interfaceName;
 	}
 }

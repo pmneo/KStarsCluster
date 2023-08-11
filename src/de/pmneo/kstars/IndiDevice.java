@@ -1,9 +1,12 @@
 package de.pmneo.kstars;
 
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
 
-import org.freedesktop.dbus.errors.ServiceUnknown;
 import org.kde.kstars.INDI;
+import org.kde.kstars.INDI.DriverInterface;
 import org.kde.kstars.INDI.IpsState;
 
 public class IndiDevice {
@@ -11,22 +14,39 @@ public class IndiDevice {
     public final Device< INDI > indi;
     
 
-	public static String findFirstDevice( Device< INDI > indi, int ofInterface) {
+	public static String findFirstDevice( Device< INDI > indi, DriverInterface ofInterface) {
+		Map<DriverInterface, List<String> > devices = getDevices(indi);
+		List<String> devList = devices.get( ofInterface );
+		if( devList != null ) {
+			return devList.get(0);
+		}
+		return null;
+	}
+
+	public static Map<DriverInterface, List<String> > getDevices( Device< INDI > indi ) {
+		Map<DriverInterface, List<String> > devices = new HashMap<>();
+
 		for( String device : indi.methods.getDevices() ) {
 			int driverInterface = Integer.parseInt( indi.methods.getText( device, "DRIVER_INFO", "DRIVER_INTERFACE" ) );
 
-			if( ( driverInterface & ofInterface ) != 0 ) {
-				return device;
+			for( DriverInterface ofInterface : DriverInterface.values() ) {
+				if( ( driverInterface & ofInterface.id ) == ofInterface.id ) {
+					List<String> devList = devices.get( ofInterface );
+					if( devList == null ) {
+						devices.put( ofInterface, devList = new LinkedList<>() );
+					}
+					devList.add( device );
+				}
 			}
 		}
-		return null;
+
+		return devices;
 	}
 
     public IndiDevice( String deviceName, Device<INDI> indi ) {
         this.deviceName = deviceName;
         this.indi = indi;
     }
-
 
 	public void logMessage( Object message ) {
 		SimpleLogger.getLogger().logMessage( message );
@@ -36,42 +56,6 @@ public class IndiDevice {
         SimpleLogger.getLogger().logError( message, t );
 	}
 	
-
-    private AtomicBoolean running = new AtomicBoolean( false );
-    private Thread workerThread = null;
-    public synchronized void start() {
-        if( this.workerThread != null && this.workerThread.isAlive() ) {
-            return;
-        }
-
-        this.running.set( true );
-
-        this.workerThread = new Thread( () -> {
-            try {
-                while( this.running.get() ) {
-                    try {
-                        workerLoop();
-                        Thread.sleep( 1000L );
-                    }
-                    catch( ServiceUnknown su ) {
-                        //will be thrown, if KStars is not available
-                    } 
-                    catch( Throwable t ) {
-                        logError( "Error in processing device " + deviceName, t );
-                    }
-                }
-            }
-            finally {
-                this.workerThread = null;
-            }
-        }, this.deviceName + " Worker" );
-
-        this.workerThread.start();
-    }
-
-    protected void workerLoop() {
-    }
-
     public double getNumber( String property, String numberName ) {
         return indi.methods.getNumber(deviceName, property, numberName );
     }
