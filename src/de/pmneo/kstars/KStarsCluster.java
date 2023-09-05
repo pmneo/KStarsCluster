@@ -1,11 +1,13 @@
 package de.pmneo.kstars;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
@@ -235,18 +237,23 @@ public abstract class KStarsCluster extends KStarsState {
 		this.devices.remove( this.weather );
 
 
+		final List<String> indiPaths = getChildPaths( "/KStars/INDI" );
+
 		logMessage( "Detecting INDI Weather Device" );
 		Device<Weather> weather = null;
-		for( String path : getChildPaths( "/KStars/INDI/Weather" ) ) {
-			weather = new Device<>( con, "org.kde.kstars", path, Weather.class );
-			try {
-				String name = (String) weather.read( "name" );
-				logMessage( "Detected Weather device: " + name + " at " + path );
-				break;
-			}
-			catch( Throwable t ) {
-				//IGNORE
-				weather = null;
+
+		if( indiPaths.contains( "/KStars/INDI/Weather" ) ) {
+			for( String path : getChildPaths( "/KStars/INDI/Weather" ) ) {
+				weather = new Device<>( con, "org.kde.kstars", path, Weather.class );
+				try {
+					String name = (String) weather.read( "name" );
+					logMessage( "Detected Weather device: " + name + " at " + path );
+					break;
+				}
+				catch( Throwable t ) {
+					//IGNORE
+					weather = null;
+				}
 			}
 		}
 		this.weather = weather;
@@ -262,16 +269,18 @@ public abstract class KStarsCluster extends KStarsState {
 
 		logMessage( "Detecting INDI Dome Device" );
 		Device<Dome> dome = null;
-		for( String path : getChildPaths( "/KStars/INDI/Dome" ) ) {
-			dome = new Device<>( con, "org.kde.kstars", path, Dome.class );
-			try {
-				String name = (String) dome.read( "name" );
-				logMessage( "Detected Dome device: " + name + " at " + path );
-				break;
-			}
-			catch( Throwable t ) {
-				//IGNORE
-				dome = null;
+		if( indiPaths.contains( "/KStars/INDI/Dome" ) ) {
+			for( String path : getChildPaths( "/KStars/INDI/Dome" ) ) {
+				dome = new Device<>( con, "org.kde.kstars", path, Dome.class );
+				try {
+					String name = (String) dome.read( "name" );
+					logMessage( "Detected Dome device: " + name + " at " + path );
+					break;
+				}
+				catch( Throwable t ) {
+					//IGNORE
+					dome = null;
+				}
 			}
 		}
 		this.dome = dome;
@@ -397,24 +406,38 @@ public abstract class KStarsCluster extends KStarsState {
 	private HttpClient client = null;
 	private boolean weatherSafty = false;
 	private long lastCheck = -1;
+
 	public synchronized boolean checkWeatherStatus() {
 		ensureHttpClient();
 		
 		if( this.lastCheck + 30000 < System.currentTimeMillis() ) {
-			try {
-				//logMessage( "Fetching weather saftey" );
-				final ContentResponse res = client.newRequest( "http://192.168.0.106:8082/simple-api.0/getPlainValue/0_userdata.0.Roof.isSafeCondition" ).send();
-			
-				boolean weatherSafty = Boolean.parseBoolean( res.getContentAsString() );
-				this.lastCheck = System.currentTimeMillis();
 
-				if( this.weatherSafty != weatherSafty ) {
-					logMessage( "Weather saftey changed from " + this.weatherSafty + " to " + weatherSafty);
-					this.weatherSafty = weatherSafty;
+			final File isSafeCondition = new File( "./KStarsClusterScripts/isSafeCondition.bsh" );
+			
+			boolean weatherSafty = true;
+
+			if( isSafeCondition.exists() ) {
+				try {
+					Interpreter i = new Interpreter();
+					i.set( "cluster", this );
+					i.set( "client", client );
+
+					Object isSafe = i.eval( new FileReader( isSafeCondition, Charset.forName( "UTF-8" ) ) );
+
+					if( isSafe instanceof Boolean ) {
+						weatherSafty = ((Boolean)isSafe).booleanValue();
+					}
+				}
+				catch( Throwable t ) {
+					logError( "Failed to get weather status", t);
 				}
 			}
-			catch( Throwable t ) {
-				logError( "Failed to get weather status", t);
+
+			this.lastCheck = System.currentTimeMillis();
+
+			if( this.weatherSafty != weatherSafty ) {
+				logMessage( "Weather saftey changed from " + this.weatherSafty + " to " + weatherSafty);
+				this.weatherSafty = weatherSafty;
 			}
 		}
 
@@ -436,17 +459,18 @@ public abstract class KStarsCluster extends KStarsState {
 	public void stopUsbDevices() {
 		ensureHttpClient();
 
-		try {
-			//logMessage( "Fetching weather saftey" );
-			final ContentResponse res = client.newRequest( "http://192.168.0.106:8082/simple-api.0/getPlainValue/0_userdata.0.usb.0.enabled" ).send();
-			boolean usbEnabled = Boolean.parseBoolean( res.getContentAsString() );
-			if( usbEnabled ) {
-				logMessage( "USB is still enabled, stopping now " );
-				client.newRequest( "http://192.168.0.106:8082/simple-api.0/set/0_userdata.0.usb.0.enabled?value=false" ).send();
+		final File stopScript = new File( "./KStarsClusterScripts/stopUsb.bsh" );
+		if( stopScript.exists() ) {
+			try {
+				Interpreter i = new Interpreter();
+				i.set( "cluster", this );
+				i.set( "client", client );
+
+				i.eval( new FileReader( stopScript, Charset.forName( "UTF-8" ) ) );
 			}
-		}
-		catch( Throwable t ) {
-			logError( "Failed to get weather status", t);
+			catch( Throwable t ) {
+				logError( "Failed to stop usb devices", t);
+			}
 		}
 	}
 
@@ -485,7 +509,7 @@ public abstract class KStarsCluster extends KStarsState {
 				else {
 					this.createDevices();
 
-					if( checkEkosReady() == false ) {
+					if( checkEkosReady( true ) == false ) {
 						ekosStoppedAt = checkShutdownUsb( ekosStoppedAt );
 					
 						if( checkWeatherStatus() == false ) {
@@ -512,7 +536,7 @@ public abstract class KStarsCluster extends KStarsState {
 							}
 							boolean ekosStarted = false;
 							for( int i=0; i<60; i++ ) {
-								if( checkEkosReady() == false ) {
+								if( checkEkosReady( true ) == false ) {
 									sleep( 1000L );
 								}
 								else {
@@ -602,7 +626,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 	private void waitUntilEkosHasStopped() {
 		Long weatherBadSince = null;
-		while( checkEkosReady() ) {
+		while( checkEkosReady( false ) ) {
 			if( checkWeatherStatus() ) {
 				if( weatherBadSince != null ) {
 					logMessage( "Weather changed to SAFE" );
@@ -710,7 +734,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 	protected final AtomicBoolean ekosReady = new AtomicBoolean(false);
 
-	protected boolean checkEkosReady() {
+	protected boolean checkEkosReady( boolean autoConnect ) {
 		
 		for( Device<?> d : mandatoryDevices ) {
 			try {
@@ -735,8 +759,10 @@ public abstract class KStarsCluster extends KStarsState {
 				else {
 					allConnected = false;
 					logMessage( "The device " + device + " is not connected: " + state );
-					this.indi.methods.setSwitch( device, "CONNECTION", "CONNECT", "On" );
-					this.indi.methods.sendProperty( device, "CONNECTION" );
+					if( autoConnect ) {
+						this.indi.methods.setSwitch( device, "CONNECTION", "CONNECT", "On" );
+						this.indi.methods.sendProperty( device, "CONNECTION" );
+					}
 				}
 			}
 		}

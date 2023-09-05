@@ -306,6 +306,7 @@ public class KStarsClusterServer extends KStarsCluster {
                     final SocketHandler clientHandler = new SocketHandler( client );
                     final Thread rThread = new Thread( () -> {
                         clientHandler.receive( this::clientFrameReceived, (c,t) -> {
+                            logMessage( "Client " + client.getRemoteSocketAddress() + " disconnected" );
                             clients.remove( c );
                         } );
                     } );

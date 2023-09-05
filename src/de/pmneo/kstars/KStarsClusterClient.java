@@ -9,11 +9,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.freedesktop.dbus.exceptions.DBusException;
-import org.kde.kstars.ParkStatus;
 import org.kde.kstars.ekos.Mount;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
@@ -301,7 +299,7 @@ public class KStarsClusterClient extends KStarsCluster {
                     clientHandler.receive( 
                         this::serverFrameReceived, 
                         (c,t) -> {
-                        
+                            logMessage( "Disconnected from " + host + " ");
                         } 
                     );
                 }
