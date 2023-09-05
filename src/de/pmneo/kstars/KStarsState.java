@@ -249,7 +249,7 @@ public class KStarsState {
             break;
             
             case CAPTURE_IDLE:
-                captureRunning.set( false );
+                //captureRunning.set( false );
             break;
             
             case CAPTURE_PAUSE_PLANNED:

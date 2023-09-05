@@ -21,6 +21,7 @@ import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
 import org.kde.kstars.ekos.Weather.WeatherState;
 
+import de.pmneo.kstars.web.CommandServlet.Action;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
@@ -348,7 +349,7 @@ public class KStarsClusterClient extends KStarsCluster {
 
     private void stopCapture() {
         if( this.captureRunning.get() ) {
-            this.capture.methods.stop();
+            this.capture.methods.abort();
             WaitUntil.waitUntil( "capture has stopped", 5, () -> captureRunning.get() );
         }
     }
@@ -444,11 +445,12 @@ public class KStarsClusterClient extends KStarsCluster {
                         logMessage( "Focus module not present" );
                     }
                     finally {
+                        /*
                         if( ( System.currentTimeMillis() - this.lastSuccessfullFocus ) > TimeUnit.HOURS.toMillis( 12 ) ) {
                             logMessage( "Restart focus procedure, because the last focus was done more than 12 hours ago");
                             stage = Stage.FOCUS;
                         }
-                        else {
+                        else */ {
                             stage = Stage.ALIGN;
                         }
                         
@@ -483,7 +485,7 @@ public class KStarsClusterClient extends KStarsCluster {
                 }
                 else if( stage == Stage.CAPTURE ) {
                     if( server.ditheringActive.hasChangedAndReset() ) {
-                        logMessage( "Server dithering has changed: " + this.ditheringActive.get() );
+                        logMessage( "Server dithering has changed: " + server.ditheringActive.get() );
                         checkStopCapture(); //check stop in any case, also if dithering is not longer active because the next job might have started
                     }
 
@@ -503,54 +505,7 @@ public class KStarsClusterClient extends KStarsCluster {
                             return;
                         }
 
-                        //check if we have to start the capture
-                        if( this.captureRunning.get() == false ) {
-                            logMessage( "Server is guiding, but no capture is running" );
-
-                            int pendingJobCount = this.capture.methods.getPendingJobCount();
-                    
-                            if( pendingJobCount == 0 ) {
-                                loadSequence();
-                                pendingJobCount = this.capture.methods.getPendingJobCount();
-                            }
-
-                            if( pendingJobCount > 0 ) {
-                                logMessage( "Starting aborted capture, pending jobs " + pendingJobCount );
-                                if( this.startCapture() == false ) {
-                                    logMessage( "Start of capture was not possible, try loading new sequence and start again later" );
-                                    loadSequence();
-                                }
-                            }
-                            else {
-                                logMessage( "No Jobs to capture in sequence, aborting capture in any way and retry" );
-                                try {
-                                    this.capture.methods.abort();
-                                }
-                                catch( Throwable t ) {
-                                    logError( "Aborting capture failed", t);
-                                }
-                            }
-                        }
-                        else {
-                            int jobId = this.activeCaptureJob.get();
-                            long jobStarted = this.activeCaptureJobStarted.get();
-
-                            if( jobId >= 0 ) {
-                                CaptureDetails job = this.getCaptureDetails(jobId, false);
-
-                                long timeSinceStart = ( System.currentTimeMillis() - jobStarted ) / 1000;
-
-                                if( job.exposure < 5 && timeSinceStart > (job.duration + 300) ) {
-                                    logMessage( "Job has started 5 minutes ago, but still no progress, aborting and restarting" );
-                                    stopCapture();
-                                    startCapture();
-                                }
-                            }
-                            else {
-                                logMessage( "Capture is running, but got no jobId" );
-                            }
-                        }
-
+                        this.checkStartCapture();
                     }
                 }
             }
@@ -615,9 +570,68 @@ public class KStarsClusterClient extends KStarsCluster {
         return serverPa;
     }
 
-    public void checkStopCapture() {
+    public boolean checkStartCapture() {
+        //check if we have to start the capture
+        if( this.captureRunning.get() == false ) {
+            logMessage( "Server is guiding, but no capture is running" );
+
+            int pendingJobCount = this.capture.methods.getPendingJobCount();
+    
+            if( pendingJobCount == 0 ) {
+                loadSequence();
+                pendingJobCount = this.capture.methods.getPendingJobCount();
+            }
+
+            if( pendingJobCount > 0 ) {
+                logMessage( "Starting aborted capture, pending jobs " + pendingJobCount );
+                if( this.startCapture() == false ) {
+                    logMessage( "Start of capture was not possible, try loading new sequence and start again later" );
+                    loadSequence();
+                    return false;
+                }
+                else {
+                    return true;
+                }
+            }
+            else {
+                logMessage( "No Jobs to capture in sequence, aborting capture in any way and retry" );
+                try {
+                    this.capture.methods.abort();
+                }
+                catch( Throwable t ) {
+                    logError( "Aborting capture failed", t);
+                }
+
+                return false;
+            }            
+        }
+        else {
+            int jobId = this.activeCaptureJob.get();
+            long jobStarted = this.activeCaptureJobStarted.get();
+
+            if( jobId >= 0 ) {
+                CaptureDetails job = this.getCaptureDetails(jobId, false);
+
+                long timeSinceStart = ( System.currentTimeMillis() - jobStarted ) / 1000;
+
+                if( job.exposure < 5 && timeSinceStart > (job.duration + 300) ) {
+                    logMessage( "Job has started 5 minutes ago, but still no progress, aborting and restarting" );
+                    stopCapture();
+                    return false;
+                }
+
+                return true;
+            }
+            else {
+                logMessage( "Capture is running, but got no jobId" );
+                return true;
+            }
+        }
+    }
+
+    public boolean checkStopCapture() {
         if( this.automationSuspended.get() ) {
-            return;
+            return false;
         }
 
         //no capture possible, check if we have to abort
@@ -630,11 +644,15 @@ public class KStarsClusterClient extends KStarsCluster {
             if( job.timeLeft >= 2.0 && job.exposure >= 2.0 ) {
                 logMessage( "Aborting job " + job );
                 stopCapture();
+                return true;
             }
             else {
                 logMessage( "Do not abort job " + job );
+                return false;
             }
         }
+
+        return false;
     }
 
     public boolean executeAlignment() {
@@ -715,5 +733,16 @@ public class KStarsClusterClient extends KStarsCluster {
         return res;
     }
 
+
+    public void addActions( Map<String, Action> actions ) {
+        super.addActions(actions);
+
+        actions.put( "checkStartCapture", ( parts, req, resp ) -> {
+            return this.checkStartCapture();
+		} );
+        actions.put( "checkStopCapture", ( parts, req, resp ) -> {
+			return this.checkStopCapture();
+		} );
+    }
     
 }

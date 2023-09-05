@@ -987,6 +987,8 @@ public abstract class KStarsCluster extends KStarsState {
 
 		logMessage( "Focus process has finished: " + pos );
 
+		this.focusRunning.hasChangedAndReset();
+
 		return (int) pos;
 		
 	}
@@ -1154,19 +1156,21 @@ public abstract class KStarsCluster extends KStarsState {
 		CaptureDetails c = new CaptureDetails();
 
 		c.jobId = jobId;
-		c.duration = this.capture.methods.getJobExposureDuration( jobId );
-		c.timeLeft = this.capture.methods.getJobExposureProgress( jobId );
-		/*
-		if( c.timeLeft == 0 ) {
-			c.timeLeft = c.duration;
-		}
-		*/
-		
-		c.exposure = c.duration - c.timeLeft;
-		
-		if( withCnt ) {
-			c.imageCount = this.capture.methods.getJobImageCount( jobId );
-			c.imageProgress = this.capture.methods.getJobImageProgress( jobId );
+		if( jobId >= 0 ) {
+			c.duration = this.capture.methods.getJobExposureDuration( jobId );
+			c.timeLeft = this.capture.methods.getJobExposureProgress( jobId );
+			/*
+			if( c.timeLeft == 0 ) {
+				c.timeLeft = c.duration;
+			}
+			*/
+			
+			c.exposure = c.duration - c.timeLeft;
+			
+			if( withCnt ) {
+				c.imageCount = this.capture.methods.getJobImageCount( jobId );
+				c.imageProgress = this.capture.methods.getJobImageProgress( jobId );
+			}
 		}
 
 		return c;
