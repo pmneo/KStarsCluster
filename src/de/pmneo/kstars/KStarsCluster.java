@@ -508,7 +508,7 @@ public abstract class KStarsCluster extends KStarsState {
 				else {
 					this.createDevices();
 
-					if( checkEkosReady( true ) == false ) {
+					if( checkEkosReady( false ) == false ) {
 						ekosStoppedAt = checkShutdownUsb( ekosStoppedAt );
 					
 						if( checkWeatherStatus() == false ) {
