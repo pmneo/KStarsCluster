@@ -64,7 +64,7 @@ public class RaDecUtils {
         val -= m / 60.0;
         // 60 sec/min == 3600 sec/deg
         val *= 3600.0;
-        String d = Double.toString(val);
+        //String d = Double.toString(val);
 
         String degs = Integer.toString(deg);
         if (deg < 10) {

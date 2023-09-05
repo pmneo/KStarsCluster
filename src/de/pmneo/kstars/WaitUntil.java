@@ -1,8 +1,5 @@
 package de.pmneo.kstars;
 
-import java.util.concurrent.locks.Condition;
-import java.util.function.Predicate;
-
 public class WaitUntil {
     private long endTime = -1;
     private long maxWaitInSeconds = -1;

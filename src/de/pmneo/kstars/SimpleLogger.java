@@ -2,7 +2,6 @@ package de.pmneo.kstars;
 
 import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
-import java.io.IOError;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.text.SimpleDateFormat;

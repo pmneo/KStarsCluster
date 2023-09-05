@@ -7,7 +7,6 @@ import java.net.Socket;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -362,7 +361,7 @@ public class KStarsClusterClient extends KStarsCluster {
     }
 
     private Stage stage = Stage.INIT;
-    private long lastSuccessfullFocus = -1;
+    //private long lastSuccessfullFocus = -1;
 
     protected synchronized void checkClientState() {
         
@@ -454,7 +453,7 @@ public class KStarsClusterClient extends KStarsCluster {
                             stage = Stage.ALIGN;
                         }
                         
-                        lastSuccessfullFocus = System.currentTimeMillis();
+                        //lastSuccessfullFocus = System.currentTimeMillis();
 
                         logMessage( "changing next stage to " + stage );
                     }
