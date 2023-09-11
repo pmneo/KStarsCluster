@@ -855,6 +855,13 @@ public abstract class KStarsCluster extends KStarsState {
 			activeCaptureJobStarted.set( System.currentTimeMillis() );
 
 			final CaptureDetails details = getCaptureDetails( jobId );
+
+			final int binning = this.cameraDevice.getBinning();
+			if( binning != 1 ) {
+				logMessage( "WARNING: Camera binning was not set to bin1: " + " bin" + binning);
+				this.cameraDevice.setBinning( 1 );
+			}
+
 			logMessage( "Capture started " + details );
 		}
 		else if( captureWasRunning == true && captureRunning.get() == false ) {

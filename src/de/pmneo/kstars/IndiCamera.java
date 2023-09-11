@@ -80,7 +80,13 @@ public class IndiCamera extends IndiDevice {
         setNumber( "CCD_TEMP_RAMP", "RAMP_SLOPE", value );
     }
 
-
+    public int getBinning() {
+        return (int) getNumber( "CCD_BINNING","HOR_BIN" );
+    }
+    public void setBinning( int value ) {
+        setNumber( "CCD_BINNING", "HOR_BIN", value );
+        setNumber( "CCD_BINNING", "VER_BIN", value );
+    }
 
 
     /*
