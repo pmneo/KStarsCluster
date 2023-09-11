@@ -848,7 +848,7 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 		}
 
-		if( captureWasRunning == false && captureRunning.get() ) {
+		if( ( captureWasRunning == false || state == CaptureStatus.CAPTURE_PROGRESS ) && captureRunning.get() ) {
 			final int jobId = this.capture.methods.getActiveJobID();
 
 			activeCaptureJob.set( jobId );

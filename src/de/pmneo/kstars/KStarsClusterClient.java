@@ -607,14 +607,13 @@ public class KStarsClusterClient extends KStarsCluster {
         else {
             int jobId = this.activeCaptureJob.get();
             long jobStarted = this.activeCaptureJobStarted.get();
+            long timeSinceStart = ( System.currentTimeMillis() - jobStarted ) / 1000;
 
             if( jobId >= 0 ) {
                 CaptureDetails job = this.getCaptureDetails(jobId, false);
 
-                long timeSinceStart = ( System.currentTimeMillis() - jobStarted ) / 1000;
-
                 if( job.exposure < 5 && timeSinceStart > (job.duration + 300) ) {
-                    logMessage( "Job has started 5 minutes ago, but still no progress, aborting and restarting" );
+                    logMessage( "Job has started " + ( timeSinceStart / 60.0 ) + " minutes ago, but still no progress, aborting and restarting" );
                     stopCapture();
                     return false;
                 }
@@ -623,7 +622,14 @@ public class KStarsClusterClient extends KStarsCluster {
             }
             else {
                 logMessage( "Capture is running, but got no jobId" );
-                return true;
+
+                if( timeSinceStart > 10 ) {
+                    stopCapture();
+                    return false;
+                }
+                else {
+                    return true;
+                }
             }
         }
     }
