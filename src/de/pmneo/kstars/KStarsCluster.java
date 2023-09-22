@@ -364,7 +364,7 @@ public abstract class KStarsCluster extends KStarsState {
 			Calendar[] range = SunriseSunset.getCivilTwilight( now, latitude, longitude );
 
 			if( range == null ) {
-				return null;
+				return new Calendar[] { null, null, now };
 			}
 			else {
 				return new Calendar[] { range[0], range[1], now };
@@ -381,7 +381,7 @@ public abstract class KStarsCluster extends KStarsState {
 		return isNight( getCivilTwilight() );
 	}
 	public boolean isNight( Calendar[] range ) {
-		if( range == null ) {
+		if( range[0] == null ) {
 			return true;
 		}
 		Calendar now = range[2];
@@ -393,7 +393,6 @@ public abstract class KStarsCluster extends KStarsState {
 			return false;
 		}
 	}
-
 	
 	private synchronized void loadConfig() throws ConfigurationException, IOException, FileNotFoundException {
 		if( config == null ) {
@@ -510,18 +509,22 @@ public abstract class KStarsCluster extends KStarsState {
 
 					if( checkEkosReady( false ) == false ) {
 						ekosStoppedAt = checkShutdownUsb( ekosStoppedAt );
-					
-						if( checkWeatherStatus() == false ) {
-							logMessageOnce( "Weather conditions are UNSAFE, skip start of ekos");
 
-							if( getKStarsRuntime() > TimeUnit.HOURS.toMillis( 36 ) ) {
-								logMessage( "Weather conditions are BAD and KStars is running more than 36h, stopping KStars" );
+						Calendar[] range = getCivilTwilight();
+						if( isNight(range) == false ) {
+							Calendar now = range[2];
+							if( getKStarsRuntime() > TimeUnit.HOURS.toSeconds( 5 ) && now.get( Calendar.HOUR_OF_DAY ) >= 15 ) {
+								logMessage( "It's day and KStars is running more than 5h, stopping KStars" );
 								stopKStars();
 							}
+						}
 
+						if( checkWeatherStatus() == false ) {
+							logMessageOnce( "Weather conditions are UNSAFE, skip start of ekos");
 							sleep( 5000L );
 						}
 						else {
+							
 							logMessage( "Weather conditions are SAFE, starting ekos now" );
 
 							try {
@@ -595,7 +598,7 @@ public abstract class KStarsCluster extends KStarsState {
 			catch( Throwable t ) {
 				//ekos is not responding ... kstars may be crashed or not running
 				long runtime = getKStarsRuntime();
-				if( runtime > 60000 ) {
+				if( runtime > TimeUnit.HOURS.toSeconds( 1 ) ) {
 					stopKStars();
 				}
 
