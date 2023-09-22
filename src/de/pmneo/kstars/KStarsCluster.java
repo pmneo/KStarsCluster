@@ -408,7 +408,7 @@ public abstract class KStarsCluster extends KStarsState {
 	public synchronized boolean checkWeatherStatus() {
 		ensureHttpClient();
 		
-		if( this.lastCheck + 30000 < System.currentTimeMillis() ) {
+		if( this.lastCheck + 10000 < System.currentTimeMillis() ) {
 
 			final File isSafeCondition = new File( "./KStarsClusterScripts/isSafeCondition.bsh" );
 			
