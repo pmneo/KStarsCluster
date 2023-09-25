@@ -182,12 +182,7 @@ public class KStarsClusterClient extends KStarsCluster {
     protected void serverFrameReceived( SocketHandler client, Object frame ) {
         try {
             //this should currently not happen?
-            
-            if( ekosReady.get() == false ) {
-                logMessage( "Received a Server Frame, but KStars is not ready yet. Skipping.");
-                return;
-            }
-            
+
             if( frame instanceof Map ) {
                 @SuppressWarnings("unchecked")
                 final Map<String, Object> payload = (Map<String, Object>) frame;
@@ -198,7 +193,7 @@ public class KStarsClusterClient extends KStarsCluster {
                    
                     server.handleMountStatus(status);
 
-                    if( serverInitDone.get() ) {
+                    if( serverInitDone.get() && ekosReady.get() ) {
                         this.checkCameraCooling( server );
                     }
                 }
@@ -227,7 +222,7 @@ public class KStarsClusterClient extends KStarsCluster {
                     
                     server.handleSchedulerStatus( status );
 
-                    if( serverInitDone.get() ) {
+                    if( serverInitDone.get() && ekosReady.get()  ) {
                         this.checkCameraCooling( server );
                     }
                 }
@@ -361,7 +356,6 @@ public class KStarsClusterClient extends KStarsCluster {
     }
 
     private Stage stage = Stage.INIT;
-    //private long lastSuccessfullFocus = -1;
 
     protected synchronized void checkClientState() {
         
@@ -444,16 +438,7 @@ public class KStarsClusterClient extends KStarsCluster {
                         logMessage( "Focus module not present" );
                     }
                     finally {
-                        /*
-                        if( ( System.currentTimeMillis() - this.lastSuccessfullFocus ) > TimeUnit.HOURS.toMillis( 12 ) ) {
-                            logMessage( "Restart focus procedure, because the last focus was done more than 12 hours ago");
-                            stage = Stage.FOCUS;
-                        }
-                        else */ {
-                            stage = Stage.ALIGN;
-                        }
-                        
-                        //lastSuccessfullFocus = System.currentTimeMillis();
+                        stage = Stage.ALIGN;
 
                         logMessage( "changing next stage to " + stage );
                     }

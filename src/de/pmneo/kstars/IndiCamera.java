@@ -88,6 +88,9 @@ public class IndiCamera extends IndiDevice {
         setNumber( "CCD_BINNING", "VER_BIN", value );
     }
 
+    public void resetFrameSettings() {
+        setSwitch( "CCD_FRAME_RESET", "RESET", "On" );
+    }
 
     /*
 "ZWO CCD ASI2600MM Pro", "CONNECTION", "CONNECT",

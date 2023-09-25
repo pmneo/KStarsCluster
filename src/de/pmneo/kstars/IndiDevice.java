@@ -66,4 +66,13 @@ public class IndiDevice {
     public IpsState getPropertyState( String property ) {
 		return IpsState.get( this.indi.methods.getPropertyState( deviceName, property ) );
 	}
+
+	public void setSwitch( String property, String switchName, String state ) {
+        this.indi.methods.setSwitch( deviceName, property, switchName, state );
+		this.indi.methods.sendProperty( deviceName, property );
+    }
+	public String getSwitch( String property, String switchName ) {
+		return this.indi.methods.getSwitch( deviceName, property, switchName );
+	}
 }
+

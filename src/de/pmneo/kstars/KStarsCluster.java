@@ -859,11 +859,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 			final CaptureDetails details = getCaptureDetails( jobId );
 
-			final int binning = this.cameraDevice.getBinning();
-			if( binning != 1 ) {
-				logMessage( "WARNING: Camera binning was not set to bin1: " + " bin" + binning);
-				this.cameraDevice.setBinning( 1 );
-			}
+			checkBin1();
 
 			logMessage( "Capture started " + details );
 		}
@@ -875,6 +871,17 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 
 		return state;
+	}
+	private boolean checkBin1() {
+		final int binning = this.cameraDevice.getBinning();
+		if( binning != 1 ) {
+			logMessage( "WARNING: Camera binning was not set to bin1: " + " bin" + binning);
+			this.cameraDevice.resetFrameSettings();
+			return false;
+		}
+		else {
+			return true;
+		}
 	}
 
 	public FocusState handleFocusStatus( FocusState state ) {
@@ -895,8 +902,10 @@ public abstract class KStarsCluster extends KStarsState {
 					break;
 				case FOCUS_FRAMING:
 					break;
-				case FOCUS_IDLE:
+				
 				case FOCUS_COMPLETE:
+					checkBin1();
+				case FOCUS_IDLE:
 					double focusPos = getFocusDevice().getFocusPosition();
 					logMessage( "Storing last focus pos ("+state+"): " + focusPos );
 					lastFocusPos.set(focusPos);
@@ -1290,6 +1299,9 @@ public abstract class KStarsCluster extends KStarsState {
 
 					case ALIGN_COMPLETE:
 						alignRunning.set( false );
+
+						this.checkBin1();
+
 						break;
 				
 					case ALIGN_FAILED:
