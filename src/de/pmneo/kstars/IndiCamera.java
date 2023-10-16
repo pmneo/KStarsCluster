@@ -92,6 +92,13 @@ public class IndiCamera extends IndiDevice {
         setSwitch( "CCD_FRAME_RESET", "RESET", "On" );
     }
 
+    public void setGain( int gain ) {
+        setNumber( "CCD_CONTROLS", "Gain", gain );
+    }
+    public int getGain() {
+        return (int) getNumber( "CCD_CONTROLS", "Gain" );
+    }
+
     /*
 "ZWO CCD ASI2600MM Pro", "CONNECTION", "CONNECT",
  "ZWO CCD ASI2600MM Pro", "CONNECTION", "DISCONNECT",

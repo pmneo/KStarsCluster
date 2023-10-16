@@ -877,6 +877,7 @@ public abstract class KStarsCluster extends KStarsState {
 		if( binning != 1 ) {
 			logMessage( "WARNING: Camera binning was not set to bin1: " + " bin" + binning);
 			this.cameraDevice.resetFrameSettings();
+			this.cameraDevice.setGain( 100 );
 			return false;
 		}
 		else {
@@ -904,7 +905,7 @@ public abstract class KStarsCluster extends KStarsState {
 					break;
 				
 				case FOCUS_COMPLETE:
-					checkBin1();
+					//checkBin1();
 				case FOCUS_IDLE:
 					double focusPos = getFocusDevice().getFocusPosition();
 					logMessage( "Storing last focus pos ("+state+"): " + focusPos );
@@ -1300,7 +1301,7 @@ public abstract class KStarsCluster extends KStarsState {
 					case ALIGN_COMPLETE:
 						alignRunning.set( false );
 
-						this.checkBin1();
+						//this.checkBin1();
 
 						break;
 				
