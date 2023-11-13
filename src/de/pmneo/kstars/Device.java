@@ -106,12 +106,23 @@ public class Device<T extends DBusInterface> {
 		};
 	}
 	
-	@SuppressWarnings({ "rawtypes", "unchecked" })
+	
+
 	public void determineAndDispatchCurrentState() {
+		determineAndDispatchCurrentState( null );
+	}
+
+	@SuppressWarnings({ "rawtypes", "unchecked" })
+	public void determineAndDispatchCurrentState( Enum prevState ) {
 		
 		if( this.newStateSignal != null ) {
 			try {
 				Enum status = (Enum) this.read( "status" );
+
+				if( prevState == status ) {
+					return;
+				}
+
 				Constructor c = this.newStateSignal.getConstructor( String.class, Object[].class );
 					
 				if( c != null ) {
