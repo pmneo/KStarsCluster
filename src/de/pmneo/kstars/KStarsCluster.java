@@ -665,9 +665,13 @@ public abstract class KStarsCluster extends KStarsState {
 							waitToStopReasons.append( "\n\tA capture is in progress" );
 							canStop = false;
 						}
-						if( ( now - this.captureRunning.lastChange.get() ) < TimeUnit.MINUTES.toMillis( 15 ) ) {
+						
+						if( this.captureRunning.lastChangeLessThen( TimeUnit.MINUTES.toMillis( 15 ) ) ) {
 							waitToStopReasons.append( "\n\tLast capture was less than 15 Minutes ago" );
 							canStop = false;
+						}
+						else {
+							this.capture.determineAndDispatchCurrentState( this.captureStatus.get() );
 						}
 
 						if( canStop == false ) {

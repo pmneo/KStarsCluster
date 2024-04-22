@@ -343,8 +343,13 @@ public class KStarsClusterClient extends KStarsCluster {
 
     private void stopCapture() {
         if( this.captureRunning.get() ) {
+
             this.capture.methods.abort();
             WaitUntil.waitUntil( "capture has stopped", 5, () -> captureRunning.get() );
+
+            if( this.captureRunning.get() ) {
+                this.capture.determineAndDispatchCurrentState();
+            }            
         }
     }
     

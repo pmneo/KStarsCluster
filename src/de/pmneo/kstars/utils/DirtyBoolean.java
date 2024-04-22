@@ -41,4 +41,12 @@ public class DirtyBoolean {
         boolean changed = this.changed.getAndSet( false );
         return changed;
     }
+
+    public long getLastChangeDelta() {
+        return System.currentTimeMillis() - this.lastChange.get();
+    }
+
+    public boolean lastChangeLessThen( long duration ) {
+        return getLastChangeDelta() < duration;
+    }
 }
