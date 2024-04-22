@@ -447,8 +447,8 @@ public abstract class KStarsCluster extends KStarsState {
 		if( client == null ) {
 			client = new HttpClient();
 			try {
-				client.setConnectTimeout( 10 );
-				client.setIdleTimeout( 10 );
+				client.setConnectTimeout( 2000 );
+				client.setIdleTimeout( 5000 );
 				client.start();
 			}
 			catch( Throwable t ) {
