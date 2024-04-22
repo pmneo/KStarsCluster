@@ -144,7 +144,7 @@ public class KStarsClusterClient extends KStarsCluster {
 
         logMessage( "loading sequence " + sequencePath + " for target " + currentTargetName );
         try {
-            capture.methods.loadSequenceQueue( sequencePath, true );
+            capture.methods.loadSequenceQueue( sequencePath, currentTargetName );//server.captureTarget.get() );
         }
         catch( Throwable t ) {
             logError( "Failed to load sequence", t );
@@ -370,12 +370,17 @@ public class KStarsClusterClient extends KStarsCluster {
             }
 
             String currentTargetName = (String) this.capture.read( "targetName" );
-            String targetName = server.captureTarget.get() + "_" + targetPostFix;
+            String sTarget = server.captureTarget.get();
+            if( sTarget == null || sTarget.isEmpty() ) {
+                sTarget = "Unkown";
+            }
+            String targetName = sTarget + "_" + targetPostFix;
 
+            
             if( currentTargetName == null || currentTargetName.isEmpty() ) {
                 currentTargetName = this.captureTarget.get();
-                logMessage( "Target is empty, restoring to " + currentTargetName );
-                this.capture.write( "targetName", currentTargetName );
+                //logMessage( "Target is empty, restoring to " + currentTargetName );
+                //this.capture.write( "targetName", currentTargetName );
             }
             
             if( targetName.equals( currentTargetName ) == false ) {
