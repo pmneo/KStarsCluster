@@ -401,7 +401,7 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 
-	private HttpClient client = null;
+	protected HttpClient client = null;
 	private boolean weatherSafty = false;
 	private long lastCheck = -1;
 
@@ -428,6 +428,7 @@ public abstract class KStarsCluster extends KStarsState {
 				}
 				catch( Throwable t ) {
 					logError( "Failed to get weather status", t);
+					weatherSafty = false;
 				}
 			}
 
@@ -442,10 +443,12 @@ public abstract class KStarsCluster extends KStarsState {
 		return this.weatherSafty;
 	}
 
-	private synchronized void ensureHttpClient() {
+	protected synchronized void ensureHttpClient() {
 		if( client == null ) {
 			client = new HttpClient();
 			try {
+				client.setConnectTimeout( 10 );
+				client.setIdleTimeout( 10 );
 				client.start();
 			}
 			catch( Throwable t ) {
@@ -702,6 +705,19 @@ public abstract class KStarsCluster extends KStarsState {
 			case MOUNT_TRACKING:
 			case MOUNT_ERROR:
 			default:
+				
+
+				Calendar[] range = getCivilTwilight();
+				range[0].add( Calendar.HOUR, 1 );
+				if( isNight(range) == false ) {
+					//logMessage( "Do not park, it's day" );
+					return false;
+				}
+
+				if( automationSuspended.get() ) {
+					return false;
+				}
+
 				try {
 					this.mount.methods.abort();
 					this.mount.methods.park();
@@ -709,6 +725,7 @@ public abstract class KStarsCluster extends KStarsState {
 				catch( Throwable t ) {
 					logError( "Failed to park mount", t);
 				}
+				
 				return false;
 		}
 	}
@@ -876,8 +893,8 @@ public abstract class KStarsCluster extends KStarsState {
 		final int binning = this.cameraDevice.getBinning();
 		if( binning != 1 ) {
 			logMessage( "WARNING: Camera binning was not set to bin1: " + " bin" + binning);
-			this.cameraDevice.resetFrameSettings();
-			this.cameraDevice.setGain( 100 );
+			//this.cameraDevice.resetFrameSettings();
+			//this.cameraDevice.setGain( 100 );
 			return false;
 		}
 		else {

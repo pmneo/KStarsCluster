@@ -21,6 +21,8 @@ import org.kde.kstars.ekos.Mount.ParkStatus;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
 import org.kde.kstars.ekos.Weather.WeatherState;
 
+import de.pmneo.kstars.web.CommandServlet.Action;
+
 public class KStarsClusterServer extends KStarsCluster {
     protected final ServerSocket serverSocket;
     
@@ -331,5 +333,46 @@ public class KStarsClusterServer extends KStarsCluster {
                 logError( "Failed to accept", t );
             }
         }
+    }
+
+    public void addActions( Map<String, Action> actions ) {
+        super.addActions(actions);
+
+        final int PARKED = 1;
+        final int UNPARKED = 0;
+        
+        final AtomicBoolean parked = new AtomicBoolean( true );
+        actions.put( "roof", ( parts, req, resp ) -> {
+
+            if( parts.length > 1 ) {
+                if( parts[1].equals( "park" ) ) {
+                    logMessage( "Request dome park" );
+                    parked.set( true );
+                    ensureHttpClient();
+                    try {
+                        client.GET( "http://192.168.0.106:8082/simple-api.0/set/0_userdata.0.Roof.CLOSE?value=true" );
+                    }
+                    catch( Throwable t ) {
+                        logError( "Failed to request close roof", t);
+                    }
+                }
+                else if( parts[1].equals( "unpark" ) ) {
+                    logMessage( "Request dome unpark" );
+
+                    parked.set( false );
+
+                    ensureHttpClient();
+                    try {
+                        client.GET( "http://192.168.0.106:8082/simple-api.0/set/0_userdata.0.Roof.OPEN?value=true" );
+                    }
+                    catch( Throwable t ) {
+                        logError( "Failed to request open roof", t);
+                    }
+                }
+            }
+
+            return parked.get() ? PARKED : UNPARKED;
+
+		} );
     }
 }
