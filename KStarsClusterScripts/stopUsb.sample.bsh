@@ -1,0 +1,9 @@
+
+String usbState = "";
+
+Object res = client.newRequest( "http://192.168.0.106:8082/simple-api.0/getPlainValue/0_userdata.0.usb.0.enabled" ).send();
+boolean usbEnabled = Boolean.parseBoolean( res.getContentAsString() );
+if( usbEnabled ) {
+    cluster.logMessage( "USB is still enabled, stopping now " );
+    client.newRequest( "http://192.168.0.106:8082/simple-api.0/set/0_userdata.0.usb.0.enabled?value=false" ).send();
+}
