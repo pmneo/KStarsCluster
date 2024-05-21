@@ -106,7 +106,10 @@ public class KStarsClusterServer extends KStarsCluster {
     protected synchronized void checkServerState() {
         try {
             
+            this.scheduler.determineAndDispatchCurrentState( this.schedulerState.get() );
+            
             if( this.weatherState.get() != WeatherState.WEATHER_ALERT && this.schedulerState.get() != SchedulerState.SCHEDULER_RUNNING ) {
+                
                 if( automationSuspended.get() == false ) {
                     logMessage( "Weather is OK, Starting idle scheduler" );
                     if( ensureMountIsParked() ) {

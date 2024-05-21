@@ -1476,9 +1476,13 @@ public abstract class KStarsCluster extends KStarsState {
 				Process kill = Runtime.getRuntime().exec( new String[]{ "killall", "kstars" } );
 				
 				kill.waitFor();
-
 				logMessage( "Killed previous kstars processes" );
+
+				logMessage( "Killing hanging indi processes" );
+				kill = Runtime.getRuntime().exec( new String[]{ "killall", "-9", "-r", "indi.*"} );
 				
+				kill.waitFor();
+				logMessage( "Killed previous indi processes" );
 			}
 			catch( Throwable tt ) {
 				logError( "Failed to kill kstars", tt );
