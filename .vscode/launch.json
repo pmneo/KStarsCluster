@@ -24,6 +24,14 @@
             "mainClass": "de.pmneo.kstars.ServerRunner",
             "projectName": "KStarsCluster_5a695d30",
             "args": "-h 192.168.0.104"
+        },
+        {
+            "type": "java",
+            "name": "Launch ServerRunner as client from TS80",
+            "request": "launch",
+            "mainClass": "de.pmneo.kstars.ServerRunner",
+            "projectName": "KStarsCluster_a33f49fb",
+            "args": "-h 192.168.0.193"
         }
     ]
 }
