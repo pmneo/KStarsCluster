@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.kde.kstars.Ekos.CommunicationStatus;
 import org.kde.kstars.ekos.Dome;
+import org.kde.kstars.ekos.SchedulerJob;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus.FocusState;
@@ -286,6 +287,8 @@ public class KStarsState {
     }
 
 
+    public final AtomicReference<SchedulerJob> schedulerActiveJob = new AtomicReference<SchedulerJob>( null );
+    
     public final AtomicReference<SchedulerState> schedulerState = new AtomicReference<SchedulerState>( SchedulerState.SCHEDULER_IDLE );
     public SchedulerState handleSchedulerStatus( SchedulerState state ) {
         if( state != null ) {
@@ -353,7 +356,11 @@ public class KStarsState {
         res.put( "focusState", this.focusState.get() );
         res.put( "guideStatus", this.guideStatus.get() );
         res.put( "captureTarget", this.captureTarget.get() );
+
+        res.put( "activeJob", this.schedulerActiveJob.get() );
         
+        //new GsonBuilder().create().
+
         return res;
 	}
 }
