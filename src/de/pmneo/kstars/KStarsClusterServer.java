@@ -4,7 +4,6 @@ import java.io.File;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -12,7 +11,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.freedesktop.dbus.exceptions.DBusException;
-import org.kde.kstars.ekos.SchedulerJob;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus.FocusState;
@@ -22,8 +20,6 @@ import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Mount.ParkStatus;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
 import org.kde.kstars.ekos.Weather.WeatherState;
-
-import com.google.gson.GsonBuilder;
 
 import de.pmneo.kstars.web.CommandServlet.Action;
 
@@ -72,35 +68,9 @@ public class KStarsClusterServer extends KStarsCluster {
     }
 
     protected void loadSchedule() {
-
         if( loadSchedule != null && loadSchedule.isEmpty() == false ) {
             File f = new File( loadSchedule );
-            if( f.exists() ) {
-
-                SchedulerState status = (SchedulerState) scheduler.read( "status" );
-                if( status == SchedulerState.SCHEDULER_IDLE ) {
-                    try {
-                        f = f.getCanonicalFile();
-                    }
-                    catch( IOException e ) {
-                        //ignore
-                    }
-                    logMessage( "loading schedule " + f.getPath() );
-                    try {
-                        scheduler.methods.loadScheduler( f.getPath() );
-                    }
-                    catch( Throwable t ) {
-                        logError( "Failed to load schedule", t );
-                    }
-                    sleep(1000L);                   
-                }
-                else {
-                    logMessage( "Scheduler is not idle: " + status );
-                }
-            }
-            else {
-                logMessage( "Scheduler File does not exists: " + f.getPath() );
-            }
+            loadSchedule( f );                
         }
         else {
             logMessage( "No Scheduler File provided" );
@@ -109,42 +79,9 @@ public class KStarsClusterServer extends KStarsCluster {
 
     protected synchronized void checkServerState() {
         try {
-            String currentJobName = (String) this.scheduler.read( "currentJobName" );
-            if( currentJobName == null ) {
-                currentJobName = "";
-            }
+            this.updateSchedulerState( );
 
-            SchedulerJob job = this.schedulerActiveJob.get();
-
-            boolean jobChanged = false;
-
-            if( currentJobName.isEmpty() ) {
-                if( job != null ) {
-                    logMessage( "Scheduler job has changed from " + job.name + " to null" );
-
-                    this.schedulerActiveJob.set( job = null );
-                    jobChanged = true;
-                }
-            }
-            else if( job == null || job.name.equals( currentJobName ) == false ) {
-                logMessage( "Scheduler job has changed from " + (job == null ? "null" : job.name ) + " to " + currentJobName );
-
-                String currentJobJson = (String) this.scheduler.read( "currentJobJson" );
-
-                job = new GsonBuilder().create().fromJson( currentJobJson, SchedulerJob.class );
-                if( job != null ) {
-                    job.loadSequenceContent();
-                }
-                this.schedulerActiveJob.set( job );
-                jobChanged = true;
-            }
-            
-          
-            //force update
-            this.scheduler.determineAndDispatchCurrentState( jobChanged ? null : this.schedulerState.get() );
-            
             if( this.weatherState.get() != WeatherState.WEATHER_ALERT && this.schedulerState.get() != SchedulerState.SCHEDULER_RUNNING ) {
-                
                 if( automationSuspended.get() == false ) {
                     logMessage( "Weather is OK, Starting idle scheduler" );
                     if( ensureMountIsParked() ) {
@@ -157,13 +94,15 @@ public class KStarsClusterServer extends KStarsCluster {
                 else {
                     logMessage( "Weather is OK, but automatio is suspended" );
                 }
-            }
-            
+            }            
         }
         catch( Throwable t ) {
             logError( "Failed to check server state", t );
         }
     }
+
+    
+
 
     @Override
     public CaptureStatus handleCaptureStatus(CaptureStatus state) {

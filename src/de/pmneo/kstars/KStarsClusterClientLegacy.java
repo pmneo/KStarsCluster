@@ -1,6 +1,7 @@
 package de.pmneo.kstars;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.util.HashMap;
@@ -10,7 +11,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.freedesktop.dbus.exceptions.DBusException;
-import org.kde.kstars.ekos.SchedulerJob;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus.FocusState;
@@ -19,14 +19,11 @@ import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
 import org.kde.kstars.ekos.Weather.WeatherState;
 
-import com.google.gson.GsonBuilder;
-
-import de.pmneo.kstars.utils.IOUtils;
 import de.pmneo.kstars.web.CommandServlet.Action;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
-public class KStarsClusterClient extends KStarsCluster {
+public class KStarsClusterClientLegacy extends KStarsCluster {
     
     protected final String host;
     protected final int listenPort; 
@@ -37,7 +34,7 @@ public class KStarsClusterClient extends KStarsCluster {
     
     protected String targetPostFix = "client";
     
-    public KStarsClusterClient( String host, int listenPort ) throws DBusException {
+    public KStarsClusterClientLegacy( String host, int listenPort ) throws DBusException {
         super( "Client" );
         this.host = host;
         this.listenPort = listenPort;
@@ -77,77 +74,91 @@ public class KStarsClusterClient extends KStarsCluster {
                 clientWorker.start();
             }
         }
+
+        //loadSequence();
     }
 
-    public String getClientJobName( String name ) {
-        String baseName = name.replaceAll( "[ -/\\\\]", "_" );
-        String jobName = baseName + "_" + targetPostFix;
-        return jobName;
-    }
-    
-    public File ensureClientSchedule( SchedulerJob job ) {
+    public String resolveCaptureSequence() {
+        File f;
 
-        String jobName = getClientJobName( job.name );
-
-        File seqFile = new File( System.getProperty("user.home") + "/" + jobName.toLowerCase() + ".esq" );
-        File scheduleFile = new File( System.getProperty("user.home") + "/" + jobName.toLowerCase() + ".esl" );
-
-        String scheduleSample = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"+
-        "<SchedulerList version='1.6'>\n"+
-        "<Profile>Standard</Profile>\n"+
-        "<Job>\n"+
-        "<Name>{name}</Name>\n"+
-        "<Group></Group>\n"+
-        "<Coordinates>\n"+
-        "<J2000RA>{ra}</J2000RA>\n"+
-        "<J2000DE>{dec}</J2000DE>\n"+
-        "</Coordinates>\n"+
-        "<PositionAngle>{pa}</PositionAngle>\n"+
-        "<Sequence>{seq}</Sequence>\n"+
-        "<StartupCondition>\n"+
-        "<Condition>ASAP</Condition>\n"+
-        "</StartupCondition>\n"+
-        "<Constraints>\n"+
-        "<Constraint>EnforceWeather</Constraint>\n"+
-        "</Constraints>\n"+
-        "<CompletionCondition>\n"+
-        "<Condition>Loop</Condition>\n"+
-        "</CompletionCondition>\n"+
-        "<Steps>\n"+
-        "</Steps>\n"+
-        "</Job>\n"+
-        "<SchedulerAlgorithm value='1'/>\n"+
-        "<ErrorHandlingStrategy value='1'>\n"+
-        " <delay>5</delay>\n"+
-        "</ErrorHandlingStrategy>\n"+
-        "<StartupProcedure>\n"+
-        "</StartupProcedure>\n"+
-        "<ShutdownProcedure>\n"+
-        "</ShutdownProcedure>\n"+
-        "</SchedulerList>";
-
-        String scheduleContent = scheduleSample
-            .replace( "{name}", jobName )
-            .replace( "{ra}", Double.toString( job.targetRA ) )
-            .replace( "{dec}", Double.toString( job.targetDEC ) )
-            .replace( "{pa}", Double.toString( job.pa ) )
-            .replace( "{seq}", seqFile.getAbsolutePath() )
-        ; 
-        try {
-           IOUtils.writeTextContent( scheduleFile, scheduleContent, "UTF-8" );
+        if( captureSequence != null && captureSequence.isEmpty() == false ) {
+            f = new File( captureSequence );
         }
-        catch( Throwable t ) {
-            logError( "Failed to write " + scheduleFile.getAbsolutePath(), t );
+        else {
+            f = new File( System.getProperty("user.home") + "/current_sequence.esq" );
         }
 
-        try {
-            IOUtils.writeTextContent( seqFile, job.sequenceContent, "UTF-8" );
+        if( server.captureTarget.get() != null ) {
+            String targetName = ( server.captureTarget.get() + ".esq" ).toLowerCase();
+            targetName = targetName.replaceAll( "[ -]", "_" );
+
+            System.out.println( "Try to resolve sequence by target: " + targetName );
+
+            for( File ff : f.getParentFile().listFiles() ) {
+                String fName = ff.getName().toLowerCase().replaceAll( "[ -]", "_" );
+                if( fName.equalsIgnoreCase( targetName ) ) {
+                    f = ff;
+                    System.out.println( "Using by target sequence: " + ff.getPath() );
+                    break;
+                }
+            }
         }
-        catch( Throwable t ) {
-            logError( "Failed to write " + seqFile.getAbsolutePath(), t );
-        }  
+
+        if( f.exists() ) {
+            try {
+                f = f.getCanonicalFile();
+            }
+            catch( IOException e ) {
+                //ignore
+            }
+
+            return f.getPath();
+        }
+        else {
+            logMessage( "capture File does not exists: " + f.getPath() );
+
+            return null;
+        }
         
-        return scheduleFile;
+    }
+
+    public void loadSequence() {
+
+        String currentTargetName = (String) this.captureTarget.get();
+
+        String sequencePath = resolveCaptureSequence();
+
+        if( sequencePath == null ) {
+            return;
+        }
+
+        if( captureRunning.get() ) {
+            logMessage( "Stopping capture, to load new sequence" );
+            this.stopCapture();
+        }
+
+        this.capture.methods.clearSequenceQueue();
+
+        WaitUntil.waitUntil( "Capture sequence is empty", 5, () -> this.capture.methods.getJobCount() > 0 );
+
+        logMessage( "loading sequence " + sequencePath + " for target " + currentTargetName );
+        try {
+            capture.methods.loadSequenceQueue( sequencePath, currentTargetName );//server.captureTarget.get() );
+        }
+        catch( Throwable t ) {
+            logError( "Failed to load sequence", t );
+        }
+
+        WaitUntil.waitUntil( "Capture sequence is loaded", 5, () -> this.capture.methods.getJobCount() == 0 );
+
+        try {
+            logMessage( "sequence loaded with " + this.capture.methods.getPendingJobCount() + " pending jobs" );
+
+            this.capture.write( "targetName", currentTargetName );
+        }
+        catch( Throwable t ) {
+            logError( "Failed to determine pending jobs", t );
+        }
     }
 
     public void setAutoFocuseEnabled(boolean autoFocus) {
@@ -208,10 +219,6 @@ public class KStarsClusterClient extends KStarsCluster {
                 else if( "handleSchedulerStatus".equals( action ) ) {
                     final SchedulerState status = (SchedulerState) payload.get( "status" );
                     
-                    SchedulerJob job = (SchedulerJob) payload.get( "job" );
-
-                    server.schedulerActiveJob.set( job );
-
                     server.handleSchedulerStatus( status );                   
 
                     if( serverInitDone.get() && ekosReady.get()  ) {
@@ -316,12 +323,35 @@ public class KStarsClusterClient extends KStarsCluster {
         super.resetValues();
     }
     
+    
     @Override
     public CaptureStatus handleCaptureStatus(CaptureStatus state) {
         state = super.handleCaptureStatus(state);
         return state;
     }
-        
+    
+    private boolean startCapture() {
+        if( this.captureRunning.get() == false ) {
+            this.capture.methods.start();
+            return WaitUntil.waitUntil( "capture has started", 5, () -> captureRunning.get() == false );
+        }
+        else {
+            return true;
+        }
+    }
+
+    private void stopCapture() {
+        if( this.captureRunning.get() ) {
+
+            this.capture.methods.abort();
+            WaitUntil.waitUntil( "capture has stopped", 5, () -> captureRunning.get() );
+
+            if( this.captureRunning.get() ) {
+                this.capture.determineAndDispatchCurrentState();
+            }            
+        }
+    }
+    
     public static enum Stage {
         INIT,
         FOCUS,
@@ -331,58 +361,37 @@ public class KStarsClusterClient extends KStarsCluster {
 
     private Stage stage = Stage.INIT;
 
-    protected void stopAll() {
-        this.focus.methods.abort();
-        this.align.methods.abort();
-        this.scheduler.methods.stop();
-    }
-
     protected synchronized void checkClientState() {
         
-        this.updateSchedulerState();
-
         if( server.mountIsTracking.get() ) {
-
-            SchedulerJob serverJob = server.schedulerActiveJob.get();
-            SchedulerJob clientJob = this.schedulerActiveJob.get();
-
-            if( serverJob != null ) {
-                String targetJobName = getClientJobName( serverJob.name );
-                if( clientJob == null ) {
-                    String jsonJobs = (String) this.scheduler.read( "jsonJobs" );
-
-			        SchedulerJob[] loadedJobs = new GsonBuilder().create().fromJson( jsonJobs, SchedulerJob[].class );
-
-                    if( loadedJobs.length == 1 ) {
-                        clientJob = loadedJobs[0];
-                    }                   
-                }
-
-                if( clientJob == null || clientJob.name.equals( targetJobName ) == false ) {
-                    logMessage( "Target Job has changed to " + targetJobName + ", stopping scheduler and load scheduler" );
-
-                    clientJob = null;
-
-                    File clientSchedule = ensureClientSchedule( serverJob );
-
-                    this.stopAll();
-
-                    loadSchedule( clientSchedule );
-
-                    serverSolutionChanged.set( true );
-
-                    this.updateSchedulerState();
-                }
-            }
-
-
-            if( clientJob == null ) {
-                logMessage( "No active client job, waiting ..." );
-                return;
-            }
-
             if( server.mountIsTracking.hasChangedAndReset() ) {
                 logMessage( "Server mount started tracking" );
+            }
+
+            String currentTargetName = (String) this.capture.read( "targetName" );
+            String sTarget = server.captureTarget.get();
+            if( sTarget == null || sTarget.isEmpty() ) {
+                sTarget = "Unkown";
+            }
+            String targetName = sTarget + "_" + targetPostFix;
+
+            
+            if( currentTargetName == null || currentTargetName.isEmpty() ) {
+                currentTargetName = this.captureTarget.get();
+                //logMessage( "Target is empty, restoring to " + currentTargetName );
+                //this.capture.write( "targetName", currentTargetName );
+            }
+            
+            if( targetName.equals( currentTargetName ) == false ) {
+                logMessage( "Target has changed from " + currentTargetName + " to " + targetName );
+
+                this.captureTarget.set( targetName );
+                this.capture.write( "targetName", targetName );
+
+                this.loadSequence();
+
+                this.capture.write( "targetName", targetName );
+                serverSolutionChanged.set( true );
             }
 
             if( serverSolutionChanged.getAndSet( false ) ) {
@@ -420,7 +429,9 @@ public class KStarsClusterClient extends KStarsCluster {
                 }
 
                 if( stage == Stage.FOCUS ) {
-                    this.stopAll();
+                    this.focus.methods.abort();
+                    this.align.methods.abort();
+                    this.stopCapture();
 
                     try {
                         if( this.isAutoFocusEnabled() && this.focus.methods.canAutoFocus() ) {
@@ -442,17 +453,16 @@ public class KStarsClusterClient extends KStarsCluster {
                     }
                 }
                 else if( stage == Stage.ALIGN ) {
-                    this.stopAll();
+                    this.focus.methods.abort();
+                    this.align.methods.abort();
+                    this.stopCapture();
 
                     try {
-                        List<Double> serverSolution = serverSolutionResult.get();
-                        double targetPa = serverSolution.get(0);
-
-                        executePaAlignment( targetPa, serverSolution.get(1), serverSolution.get(2) );
+                        executeAlignment();
 
                         logMessage( "checking pa" );
 
-                        if( checkIfPaInRange( targetPa, 2 ) ) {
+                        if( checkIfPaInRange( getTargetPa(), 2 ) ) {
                             stage = Stage.CAPTURE;
                             logMessage( "changing next stage to " + stage );
                         }
@@ -462,52 +472,25 @@ public class KStarsClusterClient extends KStarsCluster {
                         //autofocus failed, this
                         logError( "Align failed", t );
                     }
+                    finally {
+                        
+                    }
                 }
                 else if( stage == Stage.CAPTURE ) {
-                    boolean ditheringActive = server.ditheringActive.get();
                     if( server.ditheringActive.hasChangedAndReset() ) {
-                        logMessage( "Server dithering has changed: " + ditheringActive );
-
-                        ditheringActive = true; //force abort
+                        logMessage( "Server dithering has changed: " + server.ditheringActive.get() );
+                        checkStopCapture(); //check stop in any case, also if dithering is not longer active because the next job might have started
                     }
 
-                    if( ditheringActive ) {
-                        //checkAbortCapture();
-                        switch( this.schedulerState.get() ) {
-                            case SCHEDULER_ABORTED: 
-                            case SCHEDULER_IDLE:
-                            case SCHEDULER_LOADING:
-                            case SCHEDULER_PAUSED:
-                            case SCHEDULER_SHUTDOWN:
-                            case SCHEDULER_STARTUP:
-                                //ignore
-                                logMessage( "No dithering action: " + this.schedulerState.get() );
-                            break;
-                            case SCHEDULER_RUNNING:
-                                //todo: check capture
-                                //no capture possible, check if we have to abort
-                                if( this.captureRunning.get() ) {
-                                    final int jobId = activeCaptureJob.get();
-
-                                    CaptureDetails job = getCaptureDetails(jobId, false);
-
-                                    //if more than 2 seconds left, or more than 2 seconds exposed
-                                    if( job.timeLeft >= 2.0 && job.exposure >= 2.0 ) {
-                                        logMessage( "Aborting job " + job );
-                                        this.capture.methods.abort();
-                                    }
-                                    else {
-                                        logMessage( "Do not abort job " + job );
-                                    }
-                                }
-                            break;
-                        }
+                    if( server.ditheringActive.get() ) {
+                        checkStopCapture();
                     }
                     else {
                         if( this.focusRunning.get() ) {
                             if( this.focusRunning.hasChangedAndReset() ) {
                                 logMessage( "Focus process is running" );
                             }
+
                             return;
                         }
                         else if( this.focusRunning.hasChangedAndReset() ) {
@@ -515,42 +498,148 @@ public class KStarsClusterClient extends KStarsCluster {
                             return;
                         }
 
-                        switch( this.schedulerState.get() ) {
-                            case SCHEDULER_ABORTED: 
-                            case SCHEDULER_IDLE:
-                                //starting scheduler
-                                logMessage( "Starting scheduler with state " + this.schedulerState.get() );
-                                this.scheduler.methods.start();
-                            break;
-                            
-                            case SCHEDULER_LOADING:
-                            case SCHEDULER_PAUSED:
-                            case SCHEDULER_SHUTDOWN:
-                            case SCHEDULER_STARTUP:
-                                //ignore
-                                logMessage( "Waiting, scheduler state is " + this.schedulerState.get() );
-                            break;
-                            case SCHEDULER_RUNNING:
-                                //OK
-                                break;
-                        }
+                        this.checkStartCapture();
                     }
                 }
             }
             else if( server.gudingRunning.hasChangedAndReset() ) {
-                logMessage( "Server mount stopped guiding > stopping scheduler" );
-
-                this.scheduler.methods.stop();
+                logMessage( "Server mount stopped guiding" );
             }
         }
         else if( server.mountIsTracking.hasChangedAndReset() ) {
             logMessage( "Server mount is not longer in tracking" );
-            
-            this.stopAll();
+            this.stopCapture();
         }
     }
 
+    private double getTargetPa() {
+        List<Double> serverSolution = serverSolutionResult.get();
+        double serverPa = normalizePa( serverSolution.get( 0 ).doubleValue() );
 
+        String sequencePath = resolveCaptureSequence();
+
+        if( sequencePath != null ) {
+            File rot = new File( sequencePath + ".rot" );
+            if( rot.exists() ) {
+                try {
+                    FileInputStream in = new FileInputStream( rot );
+                    try {
+                        byte[] buffer = new byte[ 4096 ];
+                        int len = in.read(buffer);
+                        int customPa = Integer.parseInt( new String( buffer, 0, len ).trim() );
+
+                        logMessage( "Using custom pa " + customPa + " instead of " + serverPa );
+                        return customPa;
+                    }
+                    finally {
+                        in.close();
+                    }
+                }
+                catch( Throwable t ) {
+                    logError( "Failed to read rotation file", t);
+                }
+            }
+        }
+
+        return serverPa;
+    }
+
+    public boolean checkStartCapture() {
+        //check if we have to start the capture
+        if( this.captureRunning.get() == false ) {
+            logMessage( "Server is guiding, but no capture is running" );
+
+            int pendingJobCount = this.capture.methods.getPendingJobCount();
+    
+            if( pendingJobCount == 0 ) {
+                loadSequence();
+                pendingJobCount = this.capture.methods.getPendingJobCount();
+            }
+
+            if( pendingJobCount > 0 ) {
+                logMessage( "Starting aborted capture, pending jobs " + pendingJobCount );
+                if( this.startCapture() == false ) {
+                    logMessage( "Start of capture was not possible, try loading new sequence and start again later" );
+                    loadSequence();
+                    return false;
+                }
+                else {
+                    return true;
+                }
+            }
+            else {
+                logMessage( "No Jobs to capture in sequence, aborting capture in any way and retry" );
+                try {
+                    this.capture.methods.abort();
+                }
+                catch( Throwable t ) {
+                    logError( "Aborting capture failed", t);
+                }
+
+                return false;
+            }            
+        }
+        else {
+            int jobId = this.activeCaptureJob.get();
+            long jobStarted = this.activeCaptureJobStarted.get();
+            long timeSinceStart = ( System.currentTimeMillis() - jobStarted ) / 1000;
+
+            if( jobId >= 0 ) {
+                CaptureDetails job = this.getCaptureDetails(jobId, false);
+
+                if( job.exposure < 5 && timeSinceStart > (job.duration + 300) ) {
+                    logMessage( "Job has started " + ( timeSinceStart / 60.0 ) + " minutes ago, but still no progress, aborting and restarting" );
+                    stopCapture();
+                    return false;
+                }
+
+                return true;
+            }
+            else {
+                logMessage( "Capture is running, but got no jobId" );
+
+                if( timeSinceStart > 10 ) {
+                    stopCapture();
+                    return false;
+                }
+                else {
+                    return true;
+                }
+            }
+        }
+    }
+
+    public boolean checkStopCapture() {
+        if( this.automationSuspended.get() ) {
+            return false;
+        }
+
+        //no capture possible, check if we have to abort
+        if( this.captureRunning.get() ) {
+            final int jobId = activeCaptureJob.get();
+
+            CaptureDetails job = getCaptureDetails(jobId, false);
+
+            //if more than 2 seconds left, or more than 2 seconds exposed
+            if( job.timeLeft >= 2.0 && job.exposure >= 2.0 ) {
+                logMessage( "Aborting job " + job );
+                stopCapture();
+                return true;
+            }
+            else {
+                logMessage( "Do not abort job " + job );
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    public boolean executeAlignment() {
+        List<Double> serverSolution = serverSolutionResult.get();
+        return executePaAlignment( getTargetPa(), serverSolution.get(1), serverSolution.get(2) );
+    }
+    
     @Override
     public Map<String,Object> statusAction(String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
         Map<String,Object> res = super.statusAction(parts, req, resp);
@@ -566,6 +655,13 @@ public class KStarsClusterClient extends KStarsCluster {
 
     public void addActions( Map<String, Action> actions ) {
         super.addActions(actions);
+
+        actions.put( "checkStartCapture", ( parts, req, resp ) -> {
+            return this.checkStartCapture();
+		} );
+        actions.put( "checkStopCapture", ( parts, req, resp ) -> {
+			return this.checkStopCapture();
+		} );
     }
     
 }

@@ -45,6 +45,7 @@ import org.kde.kstars.ekos.Mount;
 import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Scheduler;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
+import org.kde.kstars.ekos.SchedulerJob;
 import org.qtproject.Qt.QAction;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -53,6 +54,8 @@ import org.w3c.dom.NodeList;
 import org.xml.sax.EntityResolver;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
+
+import com.google.gson.GsonBuilder;
 
 import bsh.Interpreter;
 
@@ -1401,8 +1404,159 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 		}
     }
+	
+	protected void updateSchedulerState() {
+        String currentJobName = (String) this.scheduler.read( "currentJobName" );
+		if( currentJobName == null ) {
+			currentJobName = "";
+		}
 
+		SchedulerJob job = this.schedulerActiveJob.get();
 
+		boolean jobChanged = false;
+
+		if( currentJobName.isEmpty() ) {
+			if( job != null ) {
+				logMessage( "Scheduler job has changed from " + job.name + " to null" );
+
+				this.schedulerActiveJob.set( job = null );
+				jobChanged = true;
+			}
+		}
+		else if( job == null || job.name.equals( currentJobName ) == false ) {
+			logMessage( "Scheduler job has changed from " + (job == null ? "null" : job.name ) + " to " + currentJobName );
+
+			String currentJobJson = (String) this.scheduler.read( "currentJobJson" );
+
+			job = new GsonBuilder().create().fromJson( currentJobJson, SchedulerJob.class );
+			if( job != null ) {
+				try {
+					job.loadSequenceContent();
+				}
+				catch( IOException e ) {
+					logError( "Failed to read sequence content", e );
+				}
+			}
+			this.schedulerActiveJob.set( job );
+			jobChanged = true;
+		}            
+		
+		//force update
+		this.scheduler.determineAndDispatchCurrentState( jobChanged ? null : this.schedulerState.get() );
+    }
+
+	protected void loadSchedule( File f ) {
+
+		if( f.exists() ) {
+			SchedulerState status = (SchedulerState) scheduler.read( "status" );
+			if( status == SchedulerState.SCHEDULER_IDLE ) {
+				try {
+					f = f.getCanonicalFile();
+				}
+				catch( IOException e ) {
+					//ignore
+				}
+				logMessage( "loading schedule " + f.getPath() );
+				try {
+					scheduler.methods.loadScheduler( f.getPath() );
+				}
+				catch( Throwable t ) {
+					logError( "Failed to load schedule", t );
+				}
+				sleep(1000L);                   
+			}
+			else {
+				logMessage( "Scheduler is not idle: " + status );
+			}
+		}
+		else {
+			logMessage( "Scheduler File does not exists: " + f.getPath() );
+		}
+    }
+	
+	protected void waitForMountTracking( long timeout ) {
+        sleep( 1000 );
+        WaitUntil maxWait = new WaitUntil( timeout, "Mount Tracking" );
+        logMessage( "Wait for mount tracking: " + this.mountStatus.get() );
+        boolean mountTracking = false;
+        while( !mountTracking && maxWait.check() ) {
+            MountStatus state = this.mountStatus.get();
+            
+            switch( state ) {
+                case MOUNT_TRACKING:
+                    logMessage( "Mount is tracking now: " + state );
+                    mountTracking = true;
+                    break;
+                default:
+                    break;
+            }
+
+            sleep( 500 );
+        }
+    }
+
+	public boolean checkIfPaInRange( double targetPa, double range ) {
+        double serverPa = normalizePa( targetPa );
+
+        List<Double> coords = this.align.methods.getSolutionResult();
+        double clientPa = normalizePa( coords.get( 0 ).doubleValue() );
+
+        double delta = Math.abs(serverPa - clientPa);
+        delta = Math.min( delta, Math.abs( delta - 180 ) );
+
+        if( delta <= range ) {
+            logMessage( "The delta between target " + serverPa + " and current " + clientPa + " is less than "+range+" deg: " + delta );
+            return true;
+        }
+        else {
+            logMessage( "The delta between target " + serverPa + " and current " + clientPa + " is more than "+range+" deg: " + delta );
+            return false;
+        }
+    }
+
+	public boolean executePaAlignment( double targetPa, double targetRA, double targetDEC ) {
+        Mount.ParkStatus currenParkStatus = (Mount.ParkStatus) this.mount.read( "parkStatus" );
+
+        WaitUntil maxWait = new WaitUntil( 60, "Unparking Mount" );
+        while( currenParkStatus != Mount.ParkStatus.PARK_UNPARKED && maxWait.check() ) {
+            if( currenParkStatus != Mount.ParkStatus.PARK_UNPARKING ) {
+                this.mount.methods.unpark();
+            }
+            currenParkStatus = (Mount.ParkStatus) this.mount.read( "parkStatus" );
+        }
+      
+        logMessage( "Slewing to " + (targetRA / 15.0 ) + " / " + targetDEC );
+        this.mount.methods.slew( targetRA / 15.0, targetDEC );
+        waitForMountTracking( 60 );
+
+        double pa = normalizePa( targetPa );
+
+        logMessage( "Starting Align process to " + pa );
+        this.align.methods.setTargetPositionAngle( pa );
+        this.align.methods.setSolverAction( 2 ); //NOTHING
+        
+        captureAndSolveAndWait( false );
+
+        List<Double> coords = this.align.methods.getSolutionResult();
+        logMessage( "Resolved coordinates: " + coords );
+
+        this.align.methods.setTargetPositionAngle( pa );
+        this.mount.methods.slew( coords.get(1) / 15.0, coords.get(2) );
+        waitForMountTracking( 60 );
+        logMessage( "Mount slewed to new coordinates: " + coords );
+
+        this.align.methods.setSolverAction( 1 ); //SYNC
+        if( captureAndSolveAndWait( true ) == false ) {
+            logMessage( "Alignment failed, retry later" );
+            return false;
+        }
+        else {
+            coords = this.align.methods.getSolutionResult();
+            logMessage( "PA align done: " + coords );
+        }
+
+        return true;
+    }
 
 	public int getKStarsRuntime() {
 		try {

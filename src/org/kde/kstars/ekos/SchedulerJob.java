@@ -1,9 +1,7 @@
 package org.kde.kstars.ekos;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.Serializable;
 import java.net.URL;
 import java.util.ArrayList;
@@ -12,10 +10,11 @@ import java.util.List;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
-import org.eclipse.jetty.util.IO;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
+
+import de.pmneo.kstars.utils.IOUtils;
 
 public class SchedulerJob implements Serializable {
 
@@ -84,12 +83,6 @@ public class SchedulerJob implements Serializable {
     }
 
     public String loadSequenceContent() throws IOException {
-        URL seq = new URL( sequence );
-                
-        try( InputStream in = seq.openStream() ) {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            IO.copy(in, out);
-            return sequenceContent = out.toString( "UTF-8" );
-        }
+        return sequenceContent = IOUtils.readTextContent(new URL( sequence ), "UTF-8" );
     }
 }
