@@ -656,10 +656,12 @@ public abstract class KStarsCluster extends KStarsState {
 						waitToStopReasons.append( "Weather is UNSAFE since 1 hour, check if we can shutdown ekos" );
 
 						boolean canStop = true;
+						/*
 						if( isCameraBusy() ) {
 							waitToStopReasons.append( "\n\tCamera is still busy, wait for warming" );
 							canStop = false;
 						}
+						*/
 						if( this.mountStatus.get() != MountStatus.MOUNT_PARKED ) {
 							waitToStopReasons.append( "\n\tMount is not yet parked, wait for parking" );
 							canStop = false;

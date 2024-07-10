@@ -328,7 +328,7 @@ public class KStarsClusterServer extends KStarsCluster {
                     parked.set( true );
                     ensureHttpClient();
                     try {
-                        client.GET( "http://192.168.0.106:8082/simple-api.0/set/0_userdata.0.Roof.CLOSE?value=true" );
+                        client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.CLOSE?value=true" );
                     }
                     catch( Throwable t ) {
                         logError( "Failed to request close roof", t);
@@ -341,7 +341,7 @@ public class KStarsClusterServer extends KStarsCluster {
 
                     ensureHttpClient();
                     try {
-                        client.GET( "http://192.168.0.106:8082/simple-api.0/set/0_userdata.0.Roof.OPEN?value=true" );
+                        client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.OPEN?value=true" );
                     }
                     catch( Throwable t ) {
                         logError( "Failed to request open roof", t);
