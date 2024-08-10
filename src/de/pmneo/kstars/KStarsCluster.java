@@ -865,10 +865,6 @@ public abstract class KStarsCluster extends KStarsState {
 				logMessage( "Capture target has changed from " + oldTarget + " to " + targetName );
 			}
 		}
-		else {
-			logMessage( "Capture target has changed to empty, restoring to " + this.captureTarget.get() );
-			this.capture.write( "targetName", this.captureTarget.get() );
-		}
 
 		if( CaptureStatus.CAPTURE_CAPTURING == state || lastFocusPos.get() == null ) {
 			double focusPos = getFocusDevice().getFocusPosition();
@@ -917,12 +913,15 @@ public abstract class KStarsCluster extends KStarsState {
 		try {
 			switch( state ) {
 				case FOCUS_ABORTED:
+				/*
 					Double lastPos = lastFocusPos.get();
 					if( lastPos != null ) {
 						logMessage( "Restoring focuser position to " + lastPos );
 						getFocusDevice().setFocusPosition( lastPos.doubleValue() );
 					}
+				*/
 					break;
+					
 				case FOCUS_CHANGING_FILTER:
 					break;
 				case FOCUS_FAILED:
