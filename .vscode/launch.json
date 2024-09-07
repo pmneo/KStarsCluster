@@ -6,6 +6,13 @@
     "configurations": [
         {
             "type": "java",
+            "name": "FocusAnalyser",
+            "request": "launch",
+            "mainClass": "de.pmneo.kstars.utils.FocusAnalyser",
+            "projectName": "KStarsCluster_5a695d30"
+        },
+        {
+            "type": "java",
             "name": "Launch Current File",
             "request": "launch",
             "mainClass": "${file}"

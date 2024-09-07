@@ -35,4 +35,11 @@ public class IndiFocuser extends IndiDevice {
 	public void setFocusPosition( double pos ) {
 		setNumber( "ABS_FOCUS_POSITION", "FOCUS_ABSOLUTE_POSITION", pos );
 	}
+
+	public double getFocusTemperature() {
+		return getNumber( "FOCUS_TEMPERATURE", "TEMPERATURE" );
+	}
+	public IpsState getFocusTemperatureStatus() {
+		return getPropertyState( "FOCUS_TEMPERATURE" );
+	}
 }

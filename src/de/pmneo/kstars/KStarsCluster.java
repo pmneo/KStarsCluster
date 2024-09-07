@@ -61,6 +61,7 @@ import bsh.Interpreter;
 
 import org.kde.kstars.ekos.Weather;
 
+import de.pmneo.kstars.utils.FocusAnalyser;
 import de.pmneo.kstars.utils.RaDecUtils;
 import de.pmneo.kstars.utils.SunriseSunset;
 import de.pmneo.kstars.web.CommandServlet.Action;
@@ -810,6 +811,34 @@ public abstract class KStarsCluster extends KStarsState {
 				logError( "Failed to read status from device " + d.interfaceName, t );
 			}
 		}
+
+		try {
+			logMessage( "Ekos started, checking focuser temp and move to estimated position" ) ;
+
+			double temp = 0;
+			for( int i=0; i<5; i++ ) {
+				temp = this.focusDevice.getFocusTemperature();
+				if( temp == 0 ) {
+					// wait a second seconds
+					sleep( 1000 );
+				}
+				else {
+					break;
+				}
+			}
+		
+			FocusAnalyser a = new FocusAnalyser();
+
+			int pos = a.aproximatePos( "Ha", temp );
+
+			logMessage( "Estimated focuser position for " + temp + "°C is " + pos );
+
+			this.focusDevice.setFocusPosition( pos );
+		}
+		catch( Throwable t ) {
+			logError( "Failed to set estimated focus pos", t );
+		}
+			
 	}
 
 	private final AtomicInteger alignProgressCounter = new AtomicInteger(0);

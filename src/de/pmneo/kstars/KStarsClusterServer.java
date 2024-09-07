@@ -321,12 +321,12 @@ public class KStarsClusterServer extends KStarsCluster {
         
         final AtomicBoolean parked = new AtomicBoolean( true );
         actions.put( "roof", ( parts, req, resp ) -> {
+            ensureHttpClient();
 
             if( parts.length > 1 ) {
                 if( parts[1].equals( "park" ) ) {
                     logMessage( "Request dome park" );
                     parked.set( true );
-                    ensureHttpClient();
                     try {
                         client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.CLOSE?value=true" );
                     }
@@ -339,7 +339,6 @@ public class KStarsClusterServer extends KStarsCluster {
 
                     parked.set( false );
 
-                    ensureHttpClient();
                     try {
                         client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.OPEN?value=true" );
                     }
@@ -347,6 +346,19 @@ public class KStarsClusterServer extends KStarsCluster {
                         logError( "Failed to request open roof", t);
                     }
                 }
+            }
+
+            try {
+                String indiStatus = client.GET( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.indiStatus" ).getContentAsString();
+                if( String.valueOf( PARKED ).equals( indiStatus ) ) {
+                    parked.set( true );
+                }
+                else {
+                    parked.set( false );
+                }
+            }
+            catch( Throwable t ) {
+                logError( "Failed to request close roof", t);
             }
 
             return parked.get() ? PARKED : UNPARKED;
