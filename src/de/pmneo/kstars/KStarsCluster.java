@@ -816,10 +816,11 @@ public abstract class KStarsCluster extends KStarsState {
 			logMessage( "Ekos started, checking focuser temp and move to estimated position" ) ;
 
 			double temp = 0;
-			for( int i=0; i<5; i++ ) {
+			for( int i=0; i<20; i++ ) {
 				temp = this.focusDevice.getFocusTemperature();
 				if( temp == 0 ) {
 					// wait a second seconds
+					logMessage( "Focus temp is zero, let's wait a second to init" );
 					sleep( 1000 );
 				}
 				else {
@@ -827,13 +828,17 @@ public abstract class KStarsCluster extends KStarsState {
 				}
 			}
 		
+			if( temp == 0 ) {
+				temp = 25;
+			}
+
 			FocusAnalyser a = new FocusAnalyser();
 
 			int pos = a.aproximatePos( "Ha", temp );
 
 			logMessage( "Estimated focuser position for " + temp + "°C is " + pos );
 
-			this.focusDevice.setFocusPosition( pos );
+			//this.focusDevice.setFocusPosition( pos );
 		}
 		catch( Throwable t ) {
 			logError( "Failed to set estimated focus pos", t );

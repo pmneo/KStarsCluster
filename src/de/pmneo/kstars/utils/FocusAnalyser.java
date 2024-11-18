@@ -20,12 +20,10 @@ import javax.swing.JTabbedPane;
 import org.apache.commons.math3.fitting.PolynomialCurveFitter;
 import org.apache.commons.math3.fitting.WeightedObservedPoints;
 import org.apache.commons.math3.stat.descriptive.DescriptiveStatistics;
-import org.apache.commons.math3.stat.descriptive.rank.Median;
 
 import com.panayotis.gnuplot.plot.DataSetPlot;
 import com.panayotis.gnuplot.plot.FunctionPlot;
 import com.panayotis.gnuplot.style.PlotStyle;
-import com.panayotis.gnuplot.style.Smooth;
 import com.panayotis.gnuplot.style.Style;
 import com.panayotis.gnuplot.swing.JPlot;
 import com.panayotis.gnuplot.terminal.ExpandableTerminal;
@@ -37,9 +35,11 @@ public class FocusAnalyser {
         FocusAnalyser fa = new FocusAnalyser();
 
         System.out.println( fa.aproximatePos( "Ha", 25.0 ) );
+
+        System.out.println( fa.aproximatePos( "Ha", 5.0 ) );
 		
-        drawTimeChart( fa );
         drawTempChart(fa);
+        drawTimeChart( fa );
     }
 
 
@@ -76,7 +76,7 @@ public class FocusAnalyser {
     
             JPlot plot = new JPlot();
             ExpandableTerminal terminal = (ExpandableTerminal) plot.getJavaPlot().getTerminal();
-            terminal.set("size","1800,1000");
+            terminal.set("size","1600,800");
 
             double[][] data = new double[ a.logs.size() ][];
 
@@ -148,7 +148,7 @@ public class FocusAnalyser {
     
             JPlot plot = new JPlot();
             ExpandableTerminal terminal = (ExpandableTerminal) plot.getJavaPlot().getTerminal();
-            terminal.set("size","1800,1000");
+            terminal.set("size","1600,800");
 
             double[][] data = new double[ a.logs.size() ][];
             double[][] data2 = new double[ a.logs.size() ][];
@@ -313,7 +313,7 @@ date, time, position, temperature, filter, HFR, altitude
 
         Calendar c = Calendar.getInstance();
 
-        c.add( Calendar.DATE, -14 );
+        c.add( Calendar.DATE, -40 );
         
         for( File log : dir.listFiles() ) {
             if( log.isFile() && log.getName().startsWith( "autofocus" ) ) {
