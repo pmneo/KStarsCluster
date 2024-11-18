@@ -1465,6 +1465,8 @@ public abstract class KStarsCluster extends KStarsState {
 
 			job = new GsonBuilder().create().fromJson( currentJobJson, SchedulerJob.class );
 			if( job != null ) {
+				job.fRatio = calculateFRatio();
+
 				try {
 					job.loadSequenceContent();
 				}
@@ -1479,6 +1481,16 @@ public abstract class KStarsCluster extends KStarsState {
 		//force update
 		this.scheduler.determineAndDispatchCurrentState( jobChanged ? null : this.schedulerState.get() );
     }
+	public double calculateFRatio() {
+		try {
+			List<Double> info = this.align.methods.telescopeInfo();
+			return ( info.get(0).doubleValue() / info.get( 1 ).doubleValue() ) * info.get( 2 ).doubleValue();
+		}
+		catch( Throwable t ) {
+			logError( "Failed to get telescope info", t );
+			return 0;
+		}
+	}
 
 	protected void loadSchedule( File f ) {
 

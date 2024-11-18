@@ -75,6 +75,8 @@ public class SchedulerJob implements Serializable {
     public double targetDEC;
     public double targetRA;
 
+    public double fRatio;
+
     public String sequenceContent;
 
     @Override

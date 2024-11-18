@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.kde.kstars.ekos.SchedulerJob;
@@ -141,13 +142,30 @@ public class KStarsClusterClient extends KStarsCluster {
         }
 
         try {
-            IOUtils.writeTextContent( seqFile, job.sequenceContent, "UTF-8" );
+            IOUtils.writeTextContent( seqFile, adjustCaptureLength( job.sequenceContent, job.fRatio, calculateFRatio() ), "UTF-8" );
         }
         catch( Throwable t ) {
             logError( "Failed to write " + seqFile.getAbsolutePath(), t );
         }  
         
         return scheduleFile;
+    }
+
+    public static String adjustCaptureLength( String sequenceContent, double sourceFRatio, double targetFRatio ) {
+        if( sourceFRatio > 0 && targetFRatio > 0 ) {
+            final double factor = Math.pow( targetFRatio / sourceFRatio, 2 );
+
+            return Pattern.compile( "<Exposure>([0-9]+)</Exposure>" ).matcher( sequenceContent ).replaceAll( r -> {
+            	int e = Integer.parseInt( r.group( 1 ) );
+            	int adjusted = (int) Math.round( factor * e );
+            	
+            	//System.out.println( "Adjusting " + e + " to " + adjusted );
+            	
+            	return "<Exposure>"+adjusted+"</Exposure>";
+            } );
+        }
+
+        return sequenceContent;
     }
 
     public void setAutoFocuseEnabled(boolean autoFocus) {
@@ -355,6 +373,10 @@ public class KStarsClusterClient extends KStarsCluster {
 
                     if( loadedJobs.length == 1 ) {
                         clientJob = loadedJobs[0];
+
+                        if( clientJob != null ) {
+                            clientJob.fRatio = calculateFRatio();
+                        }
                     }                   
                 }
 
