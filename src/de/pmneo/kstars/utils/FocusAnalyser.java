@@ -224,6 +224,9 @@ date, time, position, temperature, filter, HFR, altitude
             String[] parts = line.split( ",\\s*" );
 
             dateTime = sdf.parse( parts[0] + " " + parts[1] );
+
+            parts[2] = parts[2].substring( parts[2].indexOf( "]" ) + 1 ).trim();
+
             position = Integer.parseInt( parts[2] );
             temperature = Double.parseDouble( parts[3] );
             filter = parts[4];
