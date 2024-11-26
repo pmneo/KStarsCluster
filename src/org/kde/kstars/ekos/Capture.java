@@ -104,5 +104,8 @@ public interface Capture extends DBusInterface {
         public newStatus(String _path, Object[] _status) throws DBusException {
             super(_path, CaptureStatus.class, _status);
         }
+        public newStatus(String _path, Object[] _status, String train, int i) throws DBusException {
+            super(_path, CaptureStatus.class, _status);
+        }
     }
 }

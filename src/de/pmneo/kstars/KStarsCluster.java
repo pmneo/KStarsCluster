@@ -233,6 +233,9 @@ public abstract class KStarsCluster extends KStarsState {
 		subscriptions.add( this.focus.addNewStatusHandler( Focus.newStatus.class, status -> {
 			this.handleFocusStatus( status.getStatus() );
 		} ) );
+		subscriptions.add( this.focus.addSigHandler( Focus.newHFR.class, hfr -> {
+			System.out.println( "new hfr " + hfr.getHFR() );
+		} ) );
 		subscriptions.add( this.scheduler.addNewStatusHandler( Scheduler.newStatus.class, status -> {
 			this.handleSchedulerStatus( status.getStatus() );
 		} ) );

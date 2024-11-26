@@ -47,6 +47,9 @@ public interface Focus extends DBusInterface {
         public newStatus(String _path, Object[] _status) throws DBusException {
             super(_path, FocusState.class, _status );
         }
+        public newStatus(String _path, Object[] _status, String focuser) throws DBusException {
+            super(_path, FocusState.class, _status );
+        }
     }
     public static class newLog extends DBusSignal {
         private final String text;
@@ -63,7 +66,7 @@ public interface Focus extends DBusInterface {
         private final double HFR;
         private final int position;
 
-        public newHFR(String _path, double _HFR, int _position) throws DBusException {
+        public newHFR(String _path, double _HFR, int _position, boolean b, String focuser) throws DBusException {
             super(_path);
             this.HFR = _HFR;
             this.position = _position;
