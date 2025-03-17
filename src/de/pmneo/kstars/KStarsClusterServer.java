@@ -325,8 +325,26 @@ public class KStarsClusterServer extends KStarsCluster {
 
             if( parts.length > 1 ) {
                 if( parts[1].equals( "park" ) ) {
-                    logMessage( "Request dome park" );
                     parked.set( true );
+                }
+                else if( parts[1].equals( "unpark" ) ) {
+                    parked.set( false );
+                }
+            }
+
+            int targetStatus = parked.get() ? PARKED : UNPARKED;
+            int indiStatus = targetStatus;
+
+            try {
+                indiStatus = Integer.valueOf( client.GET( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.indiStatus" ).getContentAsString() );
+            }
+            catch( Throwable t ) {
+                logError( "Failed to get roof status", t);
+            }
+
+            if( indiStatus != targetStatus ) {
+                if( targetStatus == PARKED ) {
+                    logMessage( "Request dome park" );
                     try {
                         client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.CLOSE?value=true" );
                     }
@@ -334,11 +352,8 @@ public class KStarsClusterServer extends KStarsCluster {
                         logError( "Failed to request close roof", t);
                     }
                 }
-                else if( parts[1].equals( "unpark" ) ) {
+                else {
                     logMessage( "Request dome unpark" );
-
-                    parked.set( false );
-
                     try {
                         client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.OPEN?value=true" );
                     }
@@ -348,20 +363,7 @@ public class KStarsClusterServer extends KStarsCluster {
                 }
             }
 
-            try {
-                String indiStatus = client.GET( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.indiStatus" ).getContentAsString();
-                if( String.valueOf( PARKED ).equals( indiStatus ) ) {
-                    parked.set( true );
-                }
-                else {
-                    parked.set( false );
-                }
-            }
-            catch( Throwable t ) {
-                logError( "Failed to request close roof", t);
-            }
-
-            return parked.get() ? PARKED : UNPARKED;
+            return indiStatus;
 
 		} );
     }

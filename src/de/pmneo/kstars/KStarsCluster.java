@@ -688,6 +688,33 @@ public abstract class KStarsCluster extends KStarsState {
 						}
 						else {
 							logMessage( "Shutting down Ekos / KStars after " + (badWeatherDuration / 1000 / 60 ) + " Minutes" );
+
+							try {
+
+								logMessage( "Setting Filter slot to L" );
+								WaitUntil maxWait = new WaitUntil( 20, "changeFilter" );
+								this.getFilterDevice().setFilterSlot( 1 ); //switch to first filter as reference
+								while( this.getFilterDevice().getFilterSlotStatus() != IpsState.IPS_OK && maxWait.check() ) {
+									try { Thread.sleep( 10 ); } catch( Throwable t ) {};
+								}
+								
+								logMessage( "Caputure one focus image");
+								this.focus.methods.capture();
+								sleep( 1000L );
+								maxWait.reset();
+
+								while( this.focusState.get() != FocusState.FOCUS_IDLE && maxWait.check() ) {
+									try { Thread.sleep( 10 ); } catch( Throwable t ) {};
+								}
+
+								logMessage( "Caputure one focus image done");
+
+								sleep( 5000L );
+							}
+							catch( Throwable t ) {
+								logError( "Failed to go back to L before shutdown", t );
+							}
+
 							if( stopEkos() == false ) {
 								stopKStars();
 							}
