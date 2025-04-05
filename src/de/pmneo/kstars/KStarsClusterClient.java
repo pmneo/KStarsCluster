@@ -153,7 +153,7 @@ public class KStarsClusterClient extends KStarsCluster {
 
     public static String adjustCaptureLength( String sequenceContent, double sourceFRatio, double targetFRatio ) {
         if( sourceFRatio > 0 && targetFRatio > 0 ) {
-            final double factor = Math.pow( targetFRatio / sourceFRatio, 1 );
+            final double factor = Math.pow( targetFRatio / sourceFRatio, 2 );
 
             return Pattern.compile( "<Exposure>([0-9]+)</Exposure>" ).matcher( sequenceContent ).replaceAll( r -> {
             	int e = Integer.parseInt( r.group( 1 ) );
