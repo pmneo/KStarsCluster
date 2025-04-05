@@ -350,7 +350,7 @@ public class KStarsClusterClient extends KStarsCluster {
     private Stage stage = Stage.INIT;
 
     protected void stopAll() {
-        this.focus.methods.abort();
+        this.focus.methods.abort( opticalTrain.get() );
         this.align.methods.abort();
         this.scheduler.methods.stop();
     }
@@ -445,7 +445,7 @@ public class KStarsClusterClient extends KStarsCluster {
                     this.stopAll();
 
                     try {
-                        if( this.isAutoFocusEnabled() && this.focus.methods.canAutoFocus() ) {
+                        if( this.isAutoFocusEnabled() && this.focus.methods.canAutoFocus( opticalTrain.get() ) ) {
                             logMessage( "Starting Autofocus process" );
                             runAutoFocus();
                         }

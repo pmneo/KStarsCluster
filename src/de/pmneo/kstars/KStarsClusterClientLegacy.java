@@ -429,12 +429,12 @@ public class KStarsClusterClientLegacy extends KStarsCluster {
                 }
 
                 if( stage == Stage.FOCUS ) {
-                    this.focus.methods.abort();
+                    this.focus.methods.abort( opticalTrain.get() );
                     this.align.methods.abort();
                     this.stopCapture();
 
                     try {
-                        if( this.isAutoFocusEnabled() && this.focus.methods.canAutoFocus() ) {
+                        if( this.isAutoFocusEnabled() && this.focus.methods.canAutoFocus( opticalTrain.get() ) ) {
                             logMessage( "Starting Autofocus process" );
                             runAutoFocus();
                         }
@@ -453,7 +453,7 @@ public class KStarsClusterClientLegacy extends KStarsCluster {
                     }
                 }
                 else if( stage == Stage.ALIGN ) {
-                    this.focus.methods.abort();
+                    this.focus.methods.abort( opticalTrain.get() );
                     this.align.methods.abort();
                     this.stopCapture();
 

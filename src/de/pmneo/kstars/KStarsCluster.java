@@ -149,6 +149,8 @@ public abstract class KStarsCluster extends KStarsState {
 		this.mandatoryDevices.add( this.ekos );
 	}
 
+	protected AtomicReference<String> opticalTrain = new AtomicReference<String>( "unkown" );
+
 	protected synchronized void createDevices() throws DBusException {
 		this.createEkosDevices();
 
@@ -167,11 +169,17 @@ public abstract class KStarsCluster extends KStarsState {
 		this.devices.add( this.mount );
 		this.mandatoryDevices.add( this.mount );
 
-		this.align = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Align", Align.class );
+		this.align = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Align", Align.class, d -> {
+			opticalTrain.set( (String) d.read( "opticalTrain" ) );
+			return (Align.AlignState) d.read( "status" );
+		});
 		this.devices.add( this.align );
 		this.mandatoryDevices.add( this.align );
 
-		this.focus = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Focus", Focus.class );
+		this.focus = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Focus", Focus.class, d -> {
+			Object[] status = d.methods.status( opticalTrain.get() );
+			return Focus.FocusState.values()[ (int) status[0] ];
+		 } );
 		this.devices.add( this.focus );
 		this.mandatoryDevices.add( this.focus );
 		
@@ -304,7 +312,7 @@ public abstract class KStarsCluster extends KStarsState {
 		cameraDevice = new IndiCamera(foundCamera, indi);
 		cameraDevice.setPreCoolTemp( getPreCoolTemp() );
 
-		String foundFocuser = (String) this.focus.read( "focuser" );
+		String foundFocuser = (String) this.focus.methods.focuser( opticalTrain.get() );
 		focusDevice = new IndiFocuser(foundFocuser, indi);
 
 		String foundRotator = IndiRotator.findFirstDevice(indi, DriverInterface.ROTATOR_INTERFACE);
@@ -594,8 +602,7 @@ public abstract class KStarsCluster extends KStarsState {
 		kStarsMonitor.start();
 	}
 
-	private boolean 
-	tryStartKStars() throws DBusException {
+	private boolean tryStartKStars() throws DBusException {
 		
 		this.createEkosDevices();
 		
@@ -699,7 +706,7 @@ public abstract class KStarsCluster extends KStarsState {
 								}
 								
 								logMessage( "Caputure one focus image");
-								this.focus.methods.capture();
+								this.focus.methods.capture( opticalTrain.get(), 0 );
 								sleep( 1000L );
 								maxWait.reset();
 
@@ -1073,9 +1080,9 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	public int runAutoFocus() {
-		this.focus.methods.abort();
+		this.focus.methods.abort( opticalTrain.get() );
 		sleep( 1000 );
-		this.focus.methods.start();
+		this.focus.methods.start( opticalTrain.get() );
 
 		final WaitUntil maxWait = new WaitUntil( 5, "Focusing" );
 

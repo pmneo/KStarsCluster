@@ -5,6 +5,8 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.freedesktop.dbus.annotations.DBusInterfaceName;
@@ -34,39 +36,35 @@ public class Device<T extends DBusInterface> {
 	public T methods;
 	private Properties properties;
 	
-	private String checkAliveProperty = null;
-
 	public Device( DBusConnection con, String busName, String objectPath, Class<T> impl ) throws DBusException {
-		
+		this( con, busName, objectPath, impl, d -> {
+			String property = d.dbusProperties.containsKey( "status" ) ? "status" : d.dbusProperties.keySet().stream().filter( p -> p.toLowerCase().endsWith( "status" ) ).findFirst().orElse( "status" );
+			Object value =  d.read( property );
+			return (Enum<?>) value;
+		} );
+	}
+
+	private final Function< Device<T>, Enum<?>> readStatus;
+	public Device( DBusConnection con, String busName, String objectPath, Class<T> impl, Function< Device<T>, Enum<?>> readStatus ) throws DBusException {
 		this.con = con;
 
 		this.impl = impl;
 		this.busName = busName;
 		this.objectPath = objectPath;
+
+		this.readStatus = readStatus;
 		
 		this.interfaceName = impl.getAnnotation( DBusInterfaceName.class ).value();
 
 		this.parsedProperties = new HashMap<String, Object>();
 		this.parsedProperties.put( "interfaceName", interfaceName );
-		dbusProperties = Arrays.stream( impl.getAnnotationsByType( DBusProperty.class ) ).collect( Collectors.toMap( p -> p.name(), p->p.type() ) );
+		this.dbusProperties = Arrays.stream( impl.getAnnotationsByType( DBusProperty.class ) ).collect( Collectors.toMap( p -> p.name(), p->p.type() ) );
 	
-		if( dbusProperties.containsKey( "status" ) ) {
-			checkAliveProperty = "status";
-		}
-		else {
-			for( String prop : dbusProperties.keySet() ) {
-				checkAliveProperty = prop;
-				if( prop.toLowerCase().endsWith( "status" ) ) {
-					break;
-				}
-			}
-		}
-
 		this.connect();
 	}
 
 	public void checkAlive() {
-		this.read( checkAliveProperty );
+		readStatus.apply(this);
 	}
 
 	public Device<T> connect() throws DBusException {
@@ -117,7 +115,8 @@ public class Device<T extends DBusInterface> {
 		
 		if( this.newStateSignal != null ) {
 			try {
-				Enum status = (Enum) this.read( "status" );
+
+				Enum status = readStatus.apply(this);
 
 				if( prevState == status ) {
 					return;
