@@ -1210,21 +1210,17 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 
-    public double normalizePa(double pa) {
-
-		if( pa == -1000000 ) {
+    public double normalizePa(double value) {
+		if( value == -1000000 ) {
 			return 0;
 		}
 
-        pa = Math.round( pa * 100.0 ) / 100.0;
-        while( pa < 0.0 ) {
-            pa += 180.0;
-        }
-        while( pa >= 180.0 ) {
-            pa -= 180.0;
-        }
-        pa = Math.round( pa * 100.0 ) / 100.0;
-        return pa;
+		double pa = value + 180;
+		while (pa > 180)
+			pa -= 360;
+		while (pa < -180)
+			pa += 360;
+		return pa;
     }
 
 
