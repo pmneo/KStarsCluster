@@ -329,10 +329,6 @@ public abstract class KStarsCluster extends KStarsState {
 			boolean weatherSafty = false;
 
 			try {
-				Interpreter i = new Interpreter();
-				i.set( "cluster", this );
-				i.set( "client", client );
-
 				var res = client.newRequest( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.isSafeCondition" ).send();
 				weatherSafty = Boolean.parseBoolean( res.getContentAsString() );
 
