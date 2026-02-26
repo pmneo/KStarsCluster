@@ -324,22 +324,27 @@ public abstract class KStarsCluster extends KStarsState {
 	public synchronized boolean checkWeatherStatus() {
 		ensureHttpClient();
 		
-		if( this.lastCheck + 10000 < System.currentTimeMillis() ) {
+		long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - this.lastCheck );
+
+		if( delta >= 10 ) {
 
 			boolean weatherSafty = false;
 
 			try {
+				//logMessage( "Check weather status, last check was " + delta + " seconds ago");
 				var res = client.newRequest( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.isSafeCondition" ).send();
 				weatherSafty = Boolean.parseBoolean( res.getContentAsString() );
 
 				this.lastCheck = System.currentTimeMillis();
 			}
 			catch( ExecutionException e ) {
-				if( this.lastCheck + 60000 < System.currentTimeMillis() ) {
+				if( delta < 90 ) {
+					logMessage( "Failed to get weather status since "+ delta +" seconds");
+
 					weatherSafty = this.weatherSafty;
 				}
 				else {
-					logError( "Failed to get weather status since more than 60 seconds", e);
+					logError( "Failed to get weather status since more than 90 seconds: " + delta, e);
 					weatherSafty = false;
 				}
 			}
@@ -376,6 +381,7 @@ public abstract class KStarsCluster extends KStarsState {
 				client.setConnectTimeout( 2000 );
 				client.setIdleTimeout( 5000 );
 				client.setAddressResolutionTimeout( 5000L );
+				client.setMaxConnectionsPerDestination( 50 );
 				//client.setDestinationIdleTimeout( 5000L );
 				client.start();
 			}
