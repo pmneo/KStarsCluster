@@ -7,6 +7,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
+import java.net.URI;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -25,6 +26,7 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import org.apache.commons.configuration2.INIConfiguration;
 import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.eclipse.jetty.client.HttpClient;
+import org.eclipse.jetty.client.api.Request;
 import org.freedesktop.dbus.connections.impl.DBusConnection;
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.freedesktop.dbus.interfaces.Introspectable;
@@ -460,10 +462,19 @@ public abstract class KStarsCluster extends KStarsState {
 
 	protected synchronized void ensureHttpClient() {
 		if( client == null ) {
-			client = new HttpClient();
+			client = new HttpClient() {
+				@Override
+				public Request newRequest(URI uri) {
+					return super.newRequest(uri)
+						.idleTimeout( 5, TimeUnit.SECONDS )
+						.timeout( 10, TimeUnit.SECONDS );
+				}
+			};
 			try {
 				client.setConnectTimeout( 2000 );
 				client.setIdleTimeout( 5000 );
+				client.setAddressResolutionTimeout( 5000L );
+				//client.setDestinationIdleTimeout( 5000L );
 				client.start();
 			}
 			catch( Throwable t ) {
@@ -716,11 +727,14 @@ public abstract class KStarsCluster extends KStarsState {
 
 								logMessage( "Caputure one focus image done");
 
+
 								sleep( 5000L );
 							}
 							catch( Throwable t ) {
 								logError( "Failed to go back to L before shutdown", t );
 							}
+
+							ensureMountIsParked(); //ensure mount is parked
 
 							if( stopEkos() == false ) {
 								stopKStars();
@@ -739,6 +753,8 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	protected boolean ensureMountIsParked() {
+		
+
 		switch( this.mountStatus.get() ) {
 			case MOUNT_PARKING:
 				return false;
@@ -753,7 +769,7 @@ public abstract class KStarsCluster extends KStarsState {
 			case MOUNT_ERROR:
 			default:
 				
-
+				
 				Calendar[] range = getCivilTwilight();
 				range[0].add( Calendar.HOUR, 1 );
 				if( isNight(range) == false ) {
@@ -894,7 +910,7 @@ public abstract class KStarsCluster extends KStarsState {
 			break;
 			
 			case ALIGN_SLEWING:
-				if( alignProgressCounter.incrementAndGet() > 5 ) {
+				if( alignProgressCounter.incrementAndGet() > 15 ) {
 					logMessage( "Resetting mount model" );
 					this.mount.methods.resetModel();
 					alignProgressCounter.set(0);
@@ -1554,6 +1570,7 @@ public abstract class KStarsCluster extends KStarsState {
 		}
     }
 	
+
 	protected void waitForMountTracking( long timeout ) {
         sleep( 1000 );
         WaitUntil maxWait = new WaitUntil( timeout, "Mount Tracking" );

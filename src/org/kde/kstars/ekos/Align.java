@@ -37,6 +37,7 @@ public interface Align extends DBusInterface {
     public List<Double> cameraInfo();
     public List<Double> telescopeInfo();
     public List<Double> getSolutionResult();
+    public List<Double> getTargetCoords();
     public int getLoadAndSlewStatus();
     public void setBinningIndex(int binningIndex);
     public void setFOVTelescopeType(int index);

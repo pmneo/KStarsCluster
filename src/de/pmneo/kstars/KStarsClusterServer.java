@@ -8,9 +8,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import org.freedesktop.dbus.exceptions.DBusException;
+import org.kde.kstars.ekos.SchedulerJob;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus.FocusState;
@@ -20,6 +24,9 @@ import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Mount.ParkStatus;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
 import org.kde.kstars.ekos.Weather.WeatherState;
+
+import com.google.gson.GsonBuilder;
+import com.google.gson.reflect.TypeToken;
 
 import de.pmneo.kstars.web.CommandServlet.Action;
 
@@ -42,27 +49,32 @@ public class KStarsClusterServer extends KStarsCluster {
     
     private Thread serverWorker = null;
 
+
+    @Override
+    public synchronized void connectToKStars() {
+        if( serverWorker == null || serverWorker.isAlive() == false ) {
+            serverWorker = new Thread( () -> {
+                while( true ) {
+                    try {
+                        fetchRoofStatus();
+                        if( ekosReady.get() ) {
+                            checkServerState();
+                        }
+                        Thread.sleep( 5000 );
+                    }
+                    catch( Throwable t ) {
+                        logError( "Error in check server state", t);
+                    }
+                }
+            }, "serverWorker" );
+            serverWorker.start();
+        }
+
+        super.connectToKStars();
+    }
+
     public void ekosReady() {
         super.ekosReady();
-
-        synchronized( this ) {
-            if( serverWorker == null || serverWorker.isAlive() == false ) {
-                serverWorker = new Thread( () -> {
-                    while( true ) {
-                        try {
-                            if( ekosReady.get() ) {
-                                checkServerState();
-                            }
-                            Thread.sleep( 5000 );
-                        }
-                        catch( Throwable t ) {
-                            logError( "Error in check server state", t);
-                        }
-                    }
-                }, "serverWorker" );
-                serverWorker.start();
-            }
-        }
 
         loadSchedule();
     }
@@ -77,24 +89,96 @@ public class KStarsClusterServer extends KStarsCluster {
         }
     }
 
+    private int schedulerErrors = 0;
+    private long schedulerStartetAt = 0;
+
     protected synchronized void checkServerState() {
         try {
             this.updateSchedulerState( );
 
-            if( this.weatherState.get() != WeatherState.WEATHER_ALERT && this.schedulerState.get() != SchedulerState.SCHEDULER_RUNNING ) {
-                if( automationSuspended.get() == false ) {
-                    logMessage( "Weather is OK, Starting idle scheduler" );
-                    if( ensureMountIsParked() ) {
-                        scheduler.methods.start();
-                    }
-                    else {
-                        logMessage( "Weather is OK, but Mount is not yet parked" );
-                    }
+            if( automationSuspended.get() ) {
+                logMessage( "Weather is "+this.weatherState.get()+", but automation is suspended" );
+                return;
+            }
+
+            if( this.weatherState.get() != WeatherState.WEATHER_ALERT ) {
+                switch ( this.schedulerState.get() ) {
+                    case SCHEDULER_LOADING:
+                    case SCHEDULER_STARTUP:
+                    case SCHEDULER_SHUTDOWN:
+                        //WAIT
+                        logMessage( "Weather is "+this.weatherState.get()+", wait for scheduler get's started: " + this.schedulerState.get() );
+                    break;
+
+                    
+                    case SCHEDULER_ABORTED:
+                    case SCHEDULER_PAUSED:
+                    case SCHEDULER_IDLE:
+                        long startedDelta = System.currentTimeMillis() - schedulerStartetAt;
+
+                        if( startedDelta < TimeUnit.SECONDS.toMillis( 30 ) ) {
+                            schedulerErrors ++;
+                            logMessage( "Scheduler start failed within: " + TimeUnit.MILLISECONDS.toSeconds( startedDelta ) + ", failed for " + schedulerErrors + " times" );
+                        }
+         
+                        if( schedulerErrors > 5 ) {
+                            logMessage( "Scheduler start failed for " + schedulerErrors + " times. Killing kstars and retry" );
+                            schedulerErrors = 0;
+                            stopKStars();
+                            return;
+                        }
+                        else {
+                            logMessage( "Weather is OK, Starting "+this.schedulerState.get()+" scheduler" );
+                            scheduler.methods.start();
+                            schedulerStartetAt = System.currentTimeMillis();
+                        }
+                    break;
+
+                    case SCHEDULER_RUNNING:
+                        if( schedulerStartetAt == 0 ) {
+                            schedulerStartetAt = System.currentTimeMillis(); //manual start
+                        }
+                        startedDelta = System.currentTimeMillis() - schedulerStartetAt;
+
+                        SchedulerJob job = schedulerActiveJob.get();
+                        if( job != null ) {
+                            this.mount.methods.unpark();
+                            unparkRoof();    
+                        }
+                        else {
+                            parkRoof();
+                        }
+                        
+                        if( startedDelta > TimeUnit.SECONDS.toMillis( 30 ) ) {
+                            //clear errors to 0
+                            schedulerErrors = 0;
+                        }
+                    break;
                 }
-                else {
-                    logMessage( "Weather is OK, but automatio is suspended" );
+            }    
+            else if( !automationSuspended.get() ) {
+                parkRoof();
+
+                switch ( this.schedulerState.get() ) {
+                    case SCHEDULER_LOADING:
+                    case SCHEDULER_SHUTDOWN:
+                    case SCHEDULER_ABORTED:
+                    case SCHEDULER_IDLE:
+                        //do nothing
+                    break;
+                    case SCHEDULER_PAUSED:
+                        logMessage( "Stopping paused scheduler" );
+                        scheduler.methods.stop();
+                    break;
+                    case SCHEDULER_RUNNING:
+                        logMessage( "Stopping running scheduler" );
+                        scheduler.methods.stop();
+                    break;
+                    case SCHEDULER_STARTUP:
+
+                    break;
                 }
-            }            
+            }       
         }
         catch( Throwable t ) {
             logError( "Failed to check server state", t );
@@ -121,10 +205,56 @@ public class KStarsClusterServer extends KStarsCluster {
     @Override
     public AlignState handleAlignStatus(AlignState state) {
         state = super.handleAlignStatus(state);
+
+        List<Double> solutionResult = getSolutionResult();
+        List<Double> targetCoords = getTargetCoords();
+
+        SchedulerJob job = schedulerActiveJob.get();
+
+        if( job != null && targetCoords != null && targetCoords.size() >= 2 ) {
+            double targetRA = targetCoords.get(0);
+            double targetDEC = targetCoords.get(1);
+
+            //ra is in ha, convert to deg by 15° per hour
+            double raDelta = (job.targetRA * 15 - targetRA * 15) * 3600;
+            double decDelta = (job.targetDEC - targetDEC) * 3600;
+
+            double delta = Math.sqrt( Math.pow(raDelta,2) + Math.pow(decDelta,2) );
+
+            logMessage( "Job coordinates = " + job.targetRA + "/" + job.targetDEC + ", alignTargetCoords = " + targetRA + "/" + targetDEC);
+            logMessage( "Job target align delta = " + raDelta + "/" + decDelta + ", all = " + delta );
+
+            if( delta > 5 ) { //the target delta is larger then 5 arc seconds
+                logMessage( "Adjusting alignment target coordinates from the job: " + job.targetRA + "/" + job.targetDEC );
+                this.align.methods.setTargetCoords( job.targetRA, job.targetDEC );
+            }
+
+            if( state == AlignState.ALIGN_COMPLETE ) {
+                targetRA = solutionResult.get(1) / 15.0;
+                targetDEC = solutionResult.get(2);
+
+                //ra is in ha, convert to deg by 15° per hour
+                raDelta = (job.targetRA * 15 - targetRA * 15) * 3600;
+                decDelta = (job.targetDEC - targetDEC) * 3600;
+
+                delta = Math.sqrt( Math.pow(raDelta,2) + Math.pow(decDelta,2) );
+
+                logMessage( "Solution coordinates = " + targetRA + "/" + targetDEC + ", alignTargetCoords = " + job.targetRA + "/" + job.targetDEC);
+                logMessage( "Solution align delta = " + raDelta + "/" + decDelta + ", all = " + delta );
+
+                if( delta > 30 ) { //the target delta is larger then 30 arc seconds
+                    logMessage( "Stopping Scheduler, because of to big alignment delta" );
+                    this.scheduler.methods.stop();
+                }
+            }
+        }
+
         
+
         final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleAlignStatus" );
-        payload.put( "solutionResult", getSolutionResult() );
+        payload.put( "solutionResult", solutionResult );
+        payload.put( "targetCoords", targetCoords );
         payload.put( "status", state);
 
         writeToAllClients( payload );
@@ -135,11 +265,23 @@ public class KStarsClusterServer extends KStarsCluster {
     protected List<Double> getSolutionResult() {
         try {
             List<Double> result = this.align.methods.getSolutionResult();
-            System.out.println( "Solution results: " + result );
+            logMessage( "Solution results: " + result );
             return result;
         }
         catch( Throwable t ) {
             logError( "Failed to get pa from align module", t );
+            return null;
+        }
+    }
+
+        protected List<Double> getTargetCoords() {
+        try {
+            List<Double> result = this.align.methods.getTargetCoords();
+            logMessage( "Target coords: " + result );
+            return result;
+        }
+        catch( Throwable t ) {
+            logError( "Failed to get target corrds from align module", t );
             return null;
         }
     }
@@ -313,58 +455,142 @@ public class KStarsClusterServer extends KStarsCluster {
         }
     }
 
+    public static enum RoofStatus {
+        PARKED(1),
+        UNPARKING(1),
+        UNPARKED(0), //0
+        PARKING(0),
+        IDLE(0)
+        ;//1
+
+        private final int indiStatus;
+        private RoofStatus( int indiStatus ) {
+            this.indiStatus = indiStatus;
+        }
+    }
+
+    protected final AtomicReference<RoofStatus> roofStatus = new AtomicReference<>( RoofStatus.IDLE );
+
+    protected static class MapList extends TypeToken< List<Map<String,Object>> > {}
+
+    protected RoofStatus fetchRoofStatus() {
+        ensureHttpClient();
+
+        RoofStatus roofStatus = this.roofStatus.get();
+        
+        String statusJson = null;
+        Throwable lastError = null;
+
+        for( int i=0;i<10;i++) {
+            try {
+                //status = Integer.valueOf( client.GET( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.indiStatus" ).getContentAsString() );
+                statusJson = client.GET( "http://192.168.0.106:8082/getBulk/0_userdata.0.Roof.isFullyOpen,0_userdata.0.Roof.isFullyClosed,0_userdata.0.Roof.status" ).getContentAsString();
+                lastError = null;
+                break;
+            }
+            catch( Throwable t ) {
+                lastError = t;
+            }
+        }
+
+        try {
+            if( lastError != null ) {
+                throw lastError;
+            }
+        
+            List<Map<String,Object>> parsedData = new GsonBuilder().create().fromJson( statusJson, new MapList().getType() );
+            Map<String,Object> data = parsedData.stream().collect( Collectors.toMap( e -> (String)e.get( "id"), e -> e.get( "val" ) ) );
+
+            String status = (String)data.get( "0_userdata.0.Roof.status" );
+            Boolean isFullyOpen = (Boolean)data.get( "0_userdata.0.Roof.isFullyOpen" );
+            Boolean isFullyClosed = (Boolean)data.get( "0_userdata.0.Roof.isFullyClosed" );
+
+            if( isFullyClosed ) {
+                roofStatus = RoofStatus.PARKED;
+            }
+            else if( isFullyOpen ) {
+                roofStatus = RoofStatus.UNPARKED;
+            }
+            else if( "opening".equals( status ) ) {
+                roofStatus = RoofStatus.UNPARKING;
+            }
+            else if( "closing".equals( status ) ) {
+                roofStatus = RoofStatus.PARKING;
+            }
+            else {
+                logError( "Unexpected roof status " + status, null );
+                roofStatus = RoofStatus.IDLE;
+            }
+        }
+        catch( Throwable t ) {
+            logError( "Failed to get roof status", t);
+        }
+
+        RoofStatus oldState = this.roofStatus.getAndSet( roofStatus );
+
+        if( oldState != roofStatus ) {
+            logMessage( "Roof status changed from " + oldState + " to " + roofStatus );
+        }
+
+        return RoofStatus.PARKED;
+    }
+
+    protected void unparkRoof() {
+        switch( roofStatus.get() ) {
+            case IDLE:
+            case PARKED:
+            case PARKING:
+                //UNPARK
+                logMessage( "Request dome unpark, weather status = " + weatherState.get() );
+                try {
+                    client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.OPEN?value=true" );
+                }
+                catch( Throwable t ) {
+                    logError( "Failed to request open roof", t);
+                }
+            break;
+            default:
+                break;
+        }
+    }
+
+    protected void parkRoof() {
+        switch( roofStatus.get() ) {
+            case IDLE:
+            case UNPARKED:
+            case UNPARKING:
+                //PARK
+                logMessage( "Request dome park, weather status = " + weatherState.get() );
+                try {
+                    client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.CLOSE?value=true" );
+                }
+                catch( Throwable t ) {
+                    logError( "Failed to request close roof", t);
+                }
+            break;
+            default:
+                break;
+        }
+    }
+
+
     public void addActions( Map<String, Action> actions ) {
         super.addActions(actions);
 
-        final int PARKED = 1;
-        final int UNPARKED = 0;
-        
-        final AtomicBoolean parked = new AtomicBoolean( true );
         actions.put( "roof", ( parts, req, resp ) -> {
-            ensureHttpClient();
-
             if( parts.length > 1 ) {
+                ensureHttpClient();
+                
                 if( parts[1].equals( "park" ) ) {
-                    parked.set( true );
+                    parkRoof();
                 }
                 else if( parts[1].equals( "unpark" ) ) {
-                    parked.set( false );
+                    this.mount.methods.unpark();
+                    unparkRoof();
                 }
             }
 
-            int targetStatus = parked.get() ? PARKED : UNPARKED;
-            int indiStatus = targetStatus;
-
-            try {
-                indiStatus = Integer.valueOf( client.GET( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.indiStatus" ).getContentAsString() );
-            }
-            catch( Throwable t ) {
-                logError( "Failed to get roof status", t);
-            }
-
-            if( indiStatus != targetStatus ) {
-                if( targetStatus == PARKED ) {
-                    logMessage( "Request dome park" );
-                    try {
-                        client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.CLOSE?value=true" );
-                    }
-                    catch( Throwable t ) {
-                        logError( "Failed to request close roof", t);
-                    }
-                }
-                else {
-                    logMessage( "Request dome unpark" );
-                    try {
-                        client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.OPEN?value=true" );
-                    }
-                    catch( Throwable t ) {
-                        logError( "Failed to request open roof", t);
-                    }
-                }
-            }
-
-            return indiStatus;
-
+            return roofStatus.get().indiStatus;
 		} );
     }
 }
