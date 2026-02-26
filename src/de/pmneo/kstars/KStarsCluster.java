@@ -1,6 +1,7 @@
 package de.pmneo.kstars;
 
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
@@ -14,6 +15,7 @@ import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -324,29 +326,31 @@ public abstract class KStarsCluster extends KStarsState {
 		
 		if( this.lastCheck + 10000 < System.currentTimeMillis() ) {
 
-			final File isSafeCondition = new File( "./KStarsClusterScripts/isSafeCondition.bsh" );
-			
-			boolean weatherSafty = true;
+			boolean weatherSafty = false;
 
-			if( isSafeCondition.exists() ) {
-				try {
-					Interpreter i = new Interpreter();
-					i.set( "cluster", this );
-					i.set( "client", client );
+			try {
+				Interpreter i = new Interpreter();
+				i.set( "cluster", this );
+				i.set( "client", client );
 
-					Object isSafe = i.eval( new FileReader( isSafeCondition, Charset.forName( "UTF-8" ) ) );
+				var res = client.newRequest( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.isSafeCondition" ).send();
+				weatherSafty = Boolean.parseBoolean( res.getContentAsString() );
 
-					if( isSafe instanceof Boolean ) {
-						weatherSafty = ((Boolean)isSafe).booleanValue();
-					}
+				this.lastCheck = System.currentTimeMillis();
+			}
+			catch( ExecutionException e ) {
+				if( this.lastCheck + 60000 < System.currentTimeMillis() ) {
+					weatherSafty = this.weatherSafty;
 				}
-				catch( Throwable t ) {
-					logError( "Failed to get weather status", t);
+				else {
+					logError( "Failed to get weather status since more than 60 seconds", e);
 					weatherSafty = false;
 				}
 			}
-
-			this.lastCheck = System.currentTimeMillis();
+			catch( Throwable t ) {
+				logError( "Failed to get weather status", t);
+				weatherSafty = false;
+			}
 
 			if( this.weatherSafty != weatherSafty ) {
 				logMessage( "Weather saftey changed from " + this.weatherSafty + " to " + weatherSafty);
