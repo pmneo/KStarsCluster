@@ -568,6 +568,8 @@ public abstract class KStarsCluster extends KStarsState {
 	private void waitUntilEkosHasStopped() {
 		Long weatherBadSince = null;
 		while( checkEkosReady( false ) ) {
+			long start = System.currentTimeMillis();
+
 			if( checkWeatherStatus() ) {
 				if( weatherBadSince != null ) {
 					logMessage( "Weather changed to SAFE" );
@@ -660,9 +662,13 @@ public abstract class KStarsCluster extends KStarsState {
 			catch( Throwable t ) {
 				logError( "error in ekos running loop", t);
 			}
-			sleep( 5000L );
+
+			long checkTime = System.currentTimeMillis() - start;
+			sleep( Math.max( 500, ekosLoopDelay - checkTime ) ); //min 500 ms delay
 		}
 	}
+
+	protected long ekosLoopDelay = 5000;
 
 	protected void ekosRunningLoop() {
 

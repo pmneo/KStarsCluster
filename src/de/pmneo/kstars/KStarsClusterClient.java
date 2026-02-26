@@ -42,6 +42,7 @@ public class KStarsClusterClient extends KStarsCluster {
         super( "Client" );
         this.host = host;
         this.listenPort = listenPort;
+        this.ekosLoopDelay = 1000; //check every second
     }
 
     protected String captureSequence = "";
@@ -53,31 +54,21 @@ public class KStarsClusterClient extends KStarsCluster {
         this.captureSequence = captureSequence;
     }
     
-    private Thread clientWorker = null;
-
     public final AtomicBoolean syncEnabled = new AtomicBoolean( true );
 
-    public void ekosReady() {
-        super.ekosReady();
 
-        synchronized( this ) {
-            if( clientWorker == null || clientWorker.isAlive() == false ) {
-                clientWorker = new Thread( () -> {
-                    while( true ) {
-                        try {
-                            if( ekosReady.get() && serverInitDone.get() && this.automationSuspended.get() == false ) {
-                                checkClientState();
-                            }
-                            sleep( 100 );
-                        }
-                        catch( Throwable t ) {
-                            logError( "Error in check client state", t) ;
-                        }
-                    }
-                }, "clientWorker" );
-                clientWorker.start();
+    @Override
+    protected void ekosRunningLoop() {
+        try {
+            if( ekosReady.get() && serverInitDone.get() && this.automationSuspended.get() == false ) {
+                checkClientState();
             }
         }
+        catch( Throwable t ) {
+            logError( "Error in check client state", t) ;
+        }
+        
+        super.ekosRunningLoop();
     }
 
     public String getClientJobName( String name ) {
