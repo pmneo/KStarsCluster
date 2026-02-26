@@ -47,36 +47,25 @@ public class KStarsClusterServer extends KStarsCluster {
         this.loadSchedule = loadSchedule;
     }
     
-    private Thread serverWorker = null;
-
-
-    @Override
-    public synchronized void connectToKStars() {
-        if( serverWorker == null || serverWorker.isAlive() == false ) {
-            serverWorker = new Thread( () -> {
-                while( true ) {
-                    try {
-                        fetchRoofStatus();
-                        if( ekosReady.get() ) {
-                            checkServerState();
-                        }
-                        Thread.sleep( 5000 );
-                    }
-                    catch( Throwable t ) {
-                        logError( "Error in check server state", t);
-                    }
-                }
-            }, "serverWorker" );
-            serverWorker.start();
-        }
-
-        super.connectToKStars();
-    }
-
     public void ekosReady() {
         super.ekosReady();
 
         loadSchedule();
+    }
+
+    @Override
+    protected void ekosRunningLoop() {
+        try {
+            fetchRoofStatus();
+            if( ekosReady.get() ) {
+                checkServerState();
+            }
+        }
+        catch( Throwable t ) {
+            logError( "Error in check server state", t);
+        }
+
+        super.ekosRunningLoop();
     }
 
     protected void loadSchedule() {
@@ -98,10 +87,8 @@ public class KStarsClusterServer extends KStarsCluster {
 
             if( automationSuspended.get() ) {
                 logMessage( "Weather is "+this.weatherState.get()+", but automation is suspended" );
-                return;
             }
-
-            if( this.weatherState.get() != WeatherState.WEATHER_ALERT ) {
+            else if( this.weatherState.get() != WeatherState.WEATHER_ALERT ) {
                 switch ( this.schedulerState.get() ) {
                     case SCHEDULER_LOADING:
                     case SCHEDULER_STARTUP:
@@ -156,26 +143,33 @@ public class KStarsClusterServer extends KStarsCluster {
                     break;
                 }
             }    
-            else if( !automationSuspended.get() ) {
+            else {
                 parkRoof();
 
                 switch ( this.schedulerState.get() ) {
                     case SCHEDULER_LOADING:
                     case SCHEDULER_SHUTDOWN:
-                    case SCHEDULER_ABORTED:
-                    case SCHEDULER_IDLE:
                         //do nothing
                     break;
-                    case SCHEDULER_PAUSED:
-                        logMessage( "Stopping paused scheduler" );
-                        scheduler.methods.stop();
+
+                    case SCHEDULER_ABORTED:
+                    case SCHEDULER_IDLE:
+                        ensureMountIsParked();
                     break;
+
+                    case SCHEDULER_PAUSED:
+                        logMessage( "Starting paused scheduler, because in this state in can not be stopped" );
+                        scheduler.methods.start();
+                    break;
+                    
                     case SCHEDULER_RUNNING:
                         logMessage( "Stopping running scheduler" );
-                        scheduler.methods.stop();
+                        this.stopAll();
                     break;
-                    case SCHEDULER_STARTUP:
 
+                    case SCHEDULER_STARTUP:
+                        logMessage( "Stopping starting scheduler" );
+                        this.stopAll();
                     break;
                 }
             }       
@@ -244,7 +238,7 @@ public class KStarsClusterServer extends KStarsCluster {
 
                 if( delta > 30 ) { //the target delta is larger then 30 arc seconds
                     logMessage( "Stopping Scheduler, because of to big alignment delta" );
-                    this.scheduler.methods.stop();
+                    this.stopAll();
                 }
             }
         }

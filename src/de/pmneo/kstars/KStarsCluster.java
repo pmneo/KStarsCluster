@@ -47,6 +47,7 @@ import org.kde.kstars.ekos.Mount;
 import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Scheduler;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
+import org.kde.kstars.ekos.Weather.WeatherState;
 import org.kde.kstars.ekos.SchedulerJob;
 import org.qtproject.Qt.QAction;
 import org.w3c.dom.Document;
@@ -61,9 +62,6 @@ import com.google.gson.GsonBuilder;
 
 import bsh.Interpreter;
 
-import org.kde.kstars.ekos.Weather;
-
-import de.pmneo.kstars.utils.FocusAnalyser;
 import de.pmneo.kstars.utils.RaDecUtils;
 import de.pmneo.kstars.utils.SunriseSunset;
 import de.pmneo.kstars.web.CommandServlet.Action;
@@ -87,10 +85,6 @@ public abstract class KStarsCluster extends KStarsState {
 	public Device<QAction> showEkos;
 	public Device<QAction> quitKStars;
 	
-	public Device<Weather> weather;
-
-	public Device<Dome> dome;
-
 	private IndiRotator rotatorDevice = null;
 	public IndiRotator getRotatorDevice() {
 		return rotatorDevice;
@@ -203,8 +197,6 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 		subscriptions.clear();
 
-		weather = null;
-		dome = null;
 		cameraDevice = null;
 		focusDevice = null;
 		filterDevice = null;
@@ -250,66 +242,6 @@ public abstract class KStarsCluster extends KStarsState {
 			this.handleSchedulerStatus( status.getStatus() );
 		} ) );
 
-		this.devices.remove( this.weather );
-
-
-		final List<String> indiPaths = getChildPaths( "/KStars/INDI" );
-
-		logMessage( "Detecting INDI Weather Device" );
-		Device<Weather> weather = null;
-
-		if( indiPaths.contains( "/KStars/INDI/Weather" ) ) {
-			for( String path : getChildPaths( "/KStars/INDI/Weather" ) ) {
-				weather = new Device<>( con, "org.kde.kstars", path, Weather.class );
-				try {
-					String name = (String) weather.read( "name" );
-					logMessage( "Detected Weather device: " + name + " at " + path );
-					break;
-				}
-				catch( Throwable t ) {
-					//IGNORE
-					weather = null;
-				}
-			}
-		}
-		this.weather = weather;
-		if( this.weather != null ) {
-			this.devices.add( this.weather );
-			subscriptions.add( this.weather.addNewStatusHandler( Weather.newStatus.class, status -> {
-				this.handleSchedulerWeatherStatus( status.getStatus() );
-			} ) );
-		}
-		else {
-			logMessage( "No weather device detected" );
-		}
-
-		logMessage( "Detecting INDI Dome Device" );
-		Device<Dome> dome = null;
-		if( indiPaths.contains( "/KStars/INDI/Dome" ) ) {
-			for( String path : getChildPaths( "/KStars/INDI/Dome" ) ) {
-				dome = new Device<>( con, "org.kde.kstars", path, Dome.class );
-				try {
-					String name = (String) dome.read( "name" );
-					logMessage( "Detected Dome device: " + name + " at " + path );
-					break;
-				}
-				catch( Throwable t ) {
-					//IGNORE
-					dome = null;
-				}
-			}
-		}
-		this.dome = dome;
-		if( this.dome != null ) {
-			this.devices.add( this.dome );
-			subscriptions.add( this.dome.addNewStatusHandler( Dome.newStatus.class, status -> {
-				this.handleDomeStatus( status.getStatus() );
-			} ) );
-		}
-		else {
-			logMessage( "No dome device detected" );
-		}
-
 		String foundCamera = (String) this.capture.read( "camera" );
 		cameraDevice = new IndiCamera(foundCamera, indi);
 		cameraDevice.setPreCoolTemp( getPreCoolTemp() );
@@ -323,41 +255,6 @@ public abstract class KStarsCluster extends KStarsState {
 		String foundFilterWheel = (String) this.capture.read( "filterWheel" );
 		filterDevice = new IndiFilterWheel(foundFilterWheel, indi);
 	}
-
-	protected List<String> getChildPaths(String path) throws DBusException {
-		List<String> childNodes = new ArrayList<>();
-			
-		try {
-			Introspectable weatherInfo = con.getRemoteObject( "org.kde.kstars", path, Introspectable.class );
-
-			DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-			
-			//an instance of builder to parse the specified xml file  
-			DocumentBuilder db = dbf.newDocumentBuilder();
-			db.setEntityResolver( new EntityResolver() {
-				@Override
-				public InputSource resolveEntity(String publicId, String systemId) throws SAXException, IOException {
-					return new InputSource(new StringReader("") );
-				}
-			} );
-			Document doc = db.parse( new InputSource( new StringReader( weatherInfo.Introspect() ) ) );
-			NodeList nl = doc.getDocumentElement().getChildNodes();
-			
-			for( int i=0; i<nl.getLength(); i++ ) {
-				Node n = nl.item(i);
-				if( n instanceof Element && "node".equals( n.getNodeName() ) ) {
-					childNodes.add( path  + "/" + ((Element) n).getAttribute( "name" )  );
-				}
-			}
-			
-		}
-		catch( Throwable t ) {
-			logError( "Failed to introspect " + path, t );
-		}
-
-		return childNodes;
-	}
-
 	
 	protected void ekosDisconnected() {
 		try {
@@ -457,6 +354,11 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 		}
 
+		WeatherState newState = this.weatherSafty ? WeatherState.WEATHER_OK : WeatherState.WEATHER_ALERT;
+		if( this.weatherState.getAndSet( newState ) != newState ) {
+			handleSchedulerWeatherStatus( newState );
+		}
+
 		return this.weatherSafty;
 	}
 
@@ -549,6 +451,7 @@ public abstract class KStarsCluster extends KStarsState {
 						}
 
 						if( checkWeatherStatus() == false ) {
+							weatherState.set( WeatherState.WEATHER_ALERT );
 							logMessageOnce( "Weather conditions are UNSAFE, skip start of ekos");
 							sleep( 5000L );
 						}
@@ -592,6 +495,7 @@ public abstract class KStarsCluster extends KStarsState {
 						}
 
 						waitUntilEkosHasStopped();
+
 						ekosStoppedAt = checkShutdownUsb( ekosStoppedAt );
 						
 						logMessage( "Ekos has stopped, waiting to become ready again" );
@@ -654,6 +558,13 @@ public abstract class KStarsCluster extends KStarsState {
 		return false;
 	}
 
+
+    protected void stopAll() {
+        this.focus.methods.abort( opticalTrain.get() );
+        this.align.methods.abort();
+        this.scheduler.methods.stop();
+    }
+
 	private void waitUntilEkosHasStopped() {
 		Long weatherBadSince = null;
 		while( checkEkosReady( false ) ) {
@@ -678,12 +589,7 @@ public abstract class KStarsCluster extends KStarsState {
 						waitToStopReasons.append( "Weather is UNSAFE since 1 hour, check if we can shutdown ekos" );
 
 						boolean canStop = true;
-						/*
-						if( isCameraBusy() ) {
-							waitToStopReasons.append( "\n\tCamera is still busy, wait for warming" );
-							canStop = false;
-						}
-						*/
+
 						if( this.mountStatus.get() != MountStatus.MOUNT_PARKED ) {
 							waitToStopReasons.append( "\n\tMount is not yet parked, wait for parking" );
 							canStop = false;
@@ -708,7 +614,6 @@ public abstract class KStarsCluster extends KStarsState {
 							logMessage( "Shutting down Ekos / KStars after " + (badWeatherDuration / 1000 / 60 ) + " Minutes" );
 
 							try {
-
 								logMessage( "Setting Filter slot to L" );
 								WaitUntil maxWait = new WaitUntil( 20, "changeFilter" );
 								this.getFilterDevice().setFilterSlot( 1 ); //switch to first filter as reference
@@ -748,13 +653,22 @@ public abstract class KStarsCluster extends KStarsState {
 					}
 				}
 			}
+
+			try {
+				ekosRunningLoop();
+			}
+			catch( Throwable t ) {
+				logError( "error in ekos running loop", t);
+			}
 			sleep( 5000L );
 		}
 	}
 
-	protected boolean ensureMountIsParked() {
-		
+	protected void ekosRunningLoop() {
 
+	}
+
+	protected boolean ensureMountIsParked() {
 		switch( this.mountStatus.get() ) {
 			case MOUNT_PARKING:
 				return false;
@@ -793,7 +707,7 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 
-	private boolean isCameraBusy() {
+	public boolean isCameraBusy() {
 		boolean isCooling = getCameraDevice().isCooling();
 		IpsState ccdTempState = getCameraDevice().getCcdTemparaturState();
 
@@ -834,7 +748,6 @@ public abstract class KStarsCluster extends KStarsState {
 				String state = this.indi.methods.getPropertyState( device, "CONNECTION" );
 				String connected = this.indi.methods.getSwitch( device, "CONNECTION", "CONNECT" );
 				
-
 				if( "Ok".equals( state ) && "On".equals( connected ) ) {
 					continue;
 				}

@@ -350,11 +350,6 @@ public class KStarsClusterClient extends KStarsCluster {
 
     private Stage stage = Stage.INIT;
 
-    protected void stopAll() {
-        this.focus.methods.abort( opticalTrain.get() );
-        this.align.methods.abort();
-        this.scheduler.methods.stop();
-    }
 
     protected synchronized void checkClientState() {
         
@@ -562,8 +557,7 @@ public class KStarsClusterClient extends KStarsCluster {
             }
             else if( server.gudingRunning.hasChangedAndReset() ) {
                 logMessage( "Server mount stopped guiding > stopping scheduler" );
-
-                this.scheduler.methods.stop();
+                this.stopAll();
             }
         }
         else if( server.mountIsTracking.hasChangedAndReset() ) {
