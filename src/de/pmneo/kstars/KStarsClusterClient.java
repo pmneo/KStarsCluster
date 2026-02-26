@@ -93,39 +93,40 @@ public class KStarsClusterClient extends KStarsCluster {
         File seqFile = new File( System.getProperty("user.home") + "/" + jobName.toLowerCase() + ".esq" );
         File scheduleFile = new File( System.getProperty("user.home") + "/" + jobName.toLowerCase() + ".esl" );
 
-        String scheduleSample = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"+
-        "<SchedulerList version='1.6'>\n"+
-        "<Profile>Standard</Profile>\n"+
-        "<Job>\n"+
-        "<Name>{name}</Name>\n"+
-        "<Group></Group>\n"+
-        "<Coordinates>\n"+
-        "<J2000RA>{ra}</J2000RA>\n"+
-        "<J2000DE>{dec}</J2000DE>\n"+
-        "</Coordinates>\n"+
-        "<PositionAngle>{pa}</PositionAngle>\n"+
-        "<Sequence>{seq}</Sequence>\n"+
-        "<StartupCondition>\n"+
-        "<Condition>ASAP</Condition>\n"+
-        "</StartupCondition>\n"+
-        "<Constraints>\n"+
-        "<Constraint>EnforceWeather</Constraint>\n"+
-        "</Constraints>\n"+
-        "<CompletionCondition>\n"+
-        "<Condition>Loop</Condition>\n"+
-        "</CompletionCondition>\n"+
-        "<Steps>\n"+
-        "</Steps>\n"+
-        "</Job>\n"+
-        "<SchedulerAlgorithm value='1'/>\n"+
-        "<ErrorHandlingStrategy value='1'>\n"+
-        " <delay>5</delay>\n"+
-        "</ErrorHandlingStrategy>\n"+
-        "<StartupProcedure>\n"+
-        "</StartupProcedure>\n"+
-        "<ShutdownProcedure>\n"+
-        "</ShutdownProcedure>\n"+
-        "</SchedulerList>";
+        String scheduleSample = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + //
+                        "<SchedulerList version='2.2'>\n" + //
+                        "<Profile>Default</Profile>\n" + //
+                        "<Job>\n" + //
+                        "<JobType lead='true'/>\n" + //
+                        "<Name>{name}</Name>\n" + //
+                        "<Group></Group>\n" + //
+                        "<Coordinates>\n" + //
+                        "<J2000RA>{ra}</J2000RA>\n" + //
+                        "<J2000DE>{dec}</J2000DE>\n" + //
+                        "</Coordinates>\n" + //
+                        "<PositionAngle>{pa}</PositionAngle>\n" + //
+                        "<Sequence>{seq}</Sequence>\n" + //
+                        "<StartupCondition>\n" + //
+                        "<Condition>ASAP</Condition>\n" + //
+                        "</StartupCondition>\n" + //
+                        "<Constraints>\n" + //
+                        "<Constraint value='0'>MinimumAltitude</Constraint>\n" + //
+                        "</Constraints>\n" + //
+                        "<CompletionCondition>\n" + //
+                        "<Condition>Loop</Condition>\n" + //
+                        "</CompletionCondition>\n" + //
+                        "<Steps>\n" + //
+                        "</Steps>\n" + //
+                        "</Job>\n" + //
+                        "<SchedulerAlgorithm value='1'/>\n" + //
+                        "<ErrorHandlingStrategy value='1'>\n" + //
+                        "<delay>5</delay>\n" + //
+                        "</ErrorHandlingStrategy>\n" + //
+                        "<StartupProcedure enabled='false'>\n" + //
+                        "</StartupProcedure>\n" + //
+                        "<ShutdownProcedure enabled='false'>\n" + //
+                        "</ShutdownProcedure>\n" + //
+                        "</SchedulerList>";
 
         String scheduleContent = scheduleSample
             .replace( "{name}", jobName )

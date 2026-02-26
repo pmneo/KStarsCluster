@@ -885,11 +885,11 @@ public abstract class KStarsCluster extends KStarsState {
 				temp = 25;
 			}
 
-			FocusAnalyser a = new FocusAnalyser();
+			//FocusAnalyser a = new FocusAnalyser();
 
-			int pos = a.aproximatePos( "Ha", temp );
+			//int pos = a.aproximatePos( "Ha", temp );
 
-			logMessage( "Estimated focuser position for " + temp + "°C is " + pos );
+			//logMessage( "Estimated focuser position for " + temp + "°C is " + pos );
 
 			//this.focusDevice.setFocusPosition( pos );
 		}
@@ -1612,7 +1612,7 @@ public abstract class KStarsCluster extends KStarsState {
     }
 
 	public boolean executePaAlignment( double targetPa, double targetRA, double targetDEC ) {
-        Mount.ParkStatus currenParkStatus = (Mount.ParkStatus) this.mount.read( "parkStatus" );
+		Mount.ParkStatus currenParkStatus = (Mount.ParkStatus) this.mount.read( "parkStatus" );
 
         WaitUntil maxWait = new WaitUntil( 60, "Unparking Mount" );
         while( currenParkStatus != Mount.ParkStatus.PARK_UNPARKED && maxWait.check() ) {
