@@ -840,9 +840,6 @@ public abstract class KStarsCluster extends KStarsState {
 		return state;
 	}
 
-
-	protected final AtomicReference<Double> lastFocusPos = new AtomicReference<>(null);
-	protected final AtomicInteger activeCaptureJob = new AtomicInteger( -1 );
 	protected final AtomicLong activeCaptureJobStarted = new AtomicLong( -1 );
 
 	public CaptureStatus handleCaptureStatus( CaptureStatus state ) {
@@ -850,55 +847,16 @@ public abstract class KStarsCluster extends KStarsState {
 
 		state = super.handleCaptureStatus(state);
 
-		String targetName = (String) this.capture.read( "targetName" );
-                    
-		if( targetName != null && targetName.isEmpty() == false ) {
-			String oldTarget = this.captureTarget.getAndSet( targetName );
-			if( targetName.equals( oldTarget ) == false ) {
-				logMessage( "Capture target has changed from " + oldTarget + " to " + targetName );
-			}
-		}
-
-		if( CaptureStatus.CAPTURE_CAPTURING == state || lastFocusPos.get() == null ) {
-			double focusPos = getFocusDevice().getFocusPosition();
-			if( Double.valueOf( focusPos ).equals( lastFocusPos.getAndSet(focusPos) ) == false ) {
-				logMessage( "Storing last focus pos ("+state+"): " + focusPos );
-			}
-		}
-
 		if( ( captureWasRunning == false || state == CaptureStatus.CAPTURE_PROGRESS ) && captureRunning.get() ) {
-			final int jobId = this.capture.methods.getActiveJobID();
-
-			activeCaptureJob.set( jobId );
 			activeCaptureJobStarted.set( System.currentTimeMillis() );
-
-			final CaptureDetails details = getCaptureDetails( jobId );
-
-			checkBin1();
-
-			logMessage( "Capture started " + details );
 		}
 		else if( captureWasRunning == true && captureRunning.get() == false ) {
-			logMessage( "Capture " + activeCaptureJob.get() + " stopped");
-
-			this.activeCaptureJob.set( -1 );
 			this.activeCaptureJobStarted.set( -1 );
 		}
 
 		return state;
 	}
-	private boolean checkBin1() {
-		final int binning = this.cameraDevice.getBinning();
-		if( binning != 1 ) {
-			logMessage( "WARNING: Camera binning was not set to bin1: " + " bin" + binning);
-			//this.cameraDevice.resetFrameSettings();
-			//this.cameraDevice.setGain( 100 );
-			return false;
-		}
-		else {
-			return true;
-		}
-	}
+
 
 	public FocusState handleFocusStatus( FocusState state ) {
 		state = super.handleFocusStatus( state );
@@ -906,13 +864,6 @@ public abstract class KStarsCluster extends KStarsState {
 		try {
 			switch( state ) {
 				case FOCUS_ABORTED:
-				/*
-					Double lastPos = lastFocusPos.get();
-					if( lastPos != null ) {
-						logMessage( "Restoring focuser position to " + lastPos );
-						getFocusDevice().setFocusPosition( lastPos.doubleValue() );
-					}
-				*/
 					break;
 					
 				case FOCUS_CHANGING_FILTER:
@@ -925,9 +876,11 @@ public abstract class KStarsCluster extends KStarsState {
 				case FOCUS_COMPLETE:
 					//checkBin1();
 				case FOCUS_IDLE:
+					/*
 					double focusPos = getFocusDevice().getFocusPosition();
 					logMessage( "Storing last focus pos ("+state+"): " + focusPos );
 					lastFocusPos.set(focusPos);
+					*/
 				break;
 				case FOCUS_PROGRESS:
 					break;

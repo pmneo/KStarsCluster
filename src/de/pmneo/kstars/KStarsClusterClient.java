@@ -203,12 +203,6 @@ public class KStarsClusterClient extends KStarsCluster {
                 else if( "handleCaptureStatus".equals( action ) ) {
                     final CaptureStatus status = (CaptureStatus) payload.get( "status" );
                     server.handleCaptureStatus(status);
-
-                    String serverTarget = (String) payload.get( "targetName" );
-                    
-                    if( serverTarget != null ) {
-                        server.captureTarget.set( serverTarget );
-                    }
                 }
                 else if( "handleFocusStatus".equals( action ) ) {
                     final FocusState status = (FocusState) payload.get( "status" );
@@ -486,8 +480,8 @@ public class KStarsClusterClient extends KStarsCluster {
                                 //todo: check capture
                                 //no capture possible, check if we have to abort
                                 if( this.captureRunning.get() ) {
-                                    final int jobId = activeCaptureJob.get();
 
+                                    final int jobId = this.capture.methods.getActiveJobID();
                                     CaptureDetails job = getCaptureDetails(jobId, false);
 
                                     //if more than 2 seconds left, or more than 2 seconds exposed

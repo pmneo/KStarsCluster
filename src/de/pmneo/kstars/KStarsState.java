@@ -26,8 +26,6 @@ public class KStarsState {
     public final DirtyBoolean gudingRunning = new DirtyBoolean( false );
     public final DirtyBoolean mountIsTracking = new DirtyBoolean( false );
     public final DirtyBoolean ditheringActive = new DirtyBoolean( false );
-    public final AtomicReference<String> captureTarget = new AtomicReference<>( "" );
-    
 
     private final String logPrefix;
 
@@ -355,7 +353,6 @@ public class KStarsState {
         res.put( "captureStatus", this.captureStatus.get() );
         res.put( "focusState", this.focusState.get() );
         res.put( "guideStatus", this.guideStatus.get() );
-        res.put( "captureTarget", this.captureTarget.get() );
 
         res.put( "activeJob", this.schedulerActiveJob.get() );
         
