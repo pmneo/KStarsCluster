@@ -536,7 +536,7 @@ public class KStarsClusterClient extends KStarsCluster {
                                 if( captureStatus.get() == CaptureStatus.CAPTURE_CHANGING_FILTER ) {
                                     long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - captureStateChangedAt.get() );
 
-                                    if( delta > 15 ) {
+                                    if( delta >= 15 ) {
                                         logMessage( "Changing filter since " + delta + " seconds, abort capture");
                                         this.capture.methods.abort(opticalTrain.get());
                                     }

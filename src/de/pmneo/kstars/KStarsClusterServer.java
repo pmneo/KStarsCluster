@@ -140,6 +140,16 @@ public class KStarsClusterServer extends KStarsCluster {
                             //clear errors to 0
                             schedulerErrors = 0;
                         }
+
+
+                        if( captureStatus.get() == CaptureStatus.CAPTURE_CHANGING_FILTER ) {
+                            long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - captureStateChangedAt.get() );
+
+                            if( delta >= 15 ) {
+                                logMessage( "Changing filter since " + delta + " seconds, abort capture");
+                                this.capture.methods.abort(opticalTrain.get());
+                            }
+                        }
                     break;
                 }
             }    
