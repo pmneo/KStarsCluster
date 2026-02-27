@@ -20,8 +20,8 @@ import org.freedesktop.dbus.messages.DBusSignal;
 @DBusProperty(name = "logText", type = String[].class, access = Access.READ)
 @DBusProperty(name = "status", type = Capture.CaptureStatus.class, access = Access.READ)
 public interface Capture extends DBusInterface {
-    public void start();
-    public void abort();
+    public void start(String train);
+    public void abort(String train);
     public void suspend();
     public void stop();
     public void pause();

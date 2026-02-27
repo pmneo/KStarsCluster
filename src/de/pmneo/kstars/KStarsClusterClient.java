@@ -6,6 +6,7 @@ import java.net.Socket;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
@@ -327,6 +328,13 @@ public class KStarsClusterClient extends KStarsCluster {
 
 
     protected void checkClientState() {
+
+        if( opticalTrain.get() == null ) {
+            logMessage( "No optical train detected" );
+            return;
+        }
+        
+
         
         this.updateSchedulerState();
 
@@ -487,7 +495,7 @@ public class KStarsClusterClient extends KStarsCluster {
                                     //if more than 2 seconds left, or more than 2 seconds exposed
                                     if( job.timeLeft >= 2.0 && job.exposure >= 2.0 ) {
                                         logMessage( "Aborting job " + job );
-                                        this.capture.methods.abort();
+                                        this.capture.methods.abort(opticalTrain.get());
                                     }
                                     else {
                                         logMessage( "Do not abort job " + job );
@@ -524,6 +532,16 @@ public class KStarsClusterClient extends KStarsCluster {
                                 logMessage( "Waiting, scheduler state is " + this.schedulerState.get() );
                             break;
                             case SCHEDULER_RUNNING:
+
+                                if( captureStatus.get() == CaptureStatus.CAPTURE_CHANGING_FILTER ) {
+                                    long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - captureStateChangedAt.get() );
+
+                                    if( delta > 15 ) {
+                                        logMessage( "Changing filter since " + delta + " seconds, abort capture");
+                                        this.capture.methods.abort(opticalTrain.get());
+                                    }
+                                }
+
                                 //OK
                                 break;
                         }

@@ -157,7 +157,7 @@ public abstract class KStarsCluster extends KStarsState {
 		this.mandatoryDevices.add( this.ekos );
 	}
 
-	protected AtomicReference<String> opticalTrain = new AtomicReference<String>( "unkown" );
+	protected AtomicReference<String> opticalTrain = new AtomicReference<String>( null );
 
 	protected void createDevices() throws DBusException {
 		this.createEkosDevices();
@@ -178,13 +178,16 @@ public abstract class KStarsCluster extends KStarsState {
 		this.mandatoryDevices.add( this.mount );
 
 		this.align = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Align", Align.class, d -> {
-			opticalTrain.set( (String) d.read( "opticalTrain" ) );
 			return (Align.AlignState) d.read( "status" );
 		});
 		this.devices.add( this.align );
 		this.mandatoryDevices.add( this.align );
 
 		this.focus = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Focus", Focus.class, d -> {
+			if( opticalTrain.get() == null ) {
+				return Focus.FocusState.FOCUS_IDLE;
+			}
+
 			Object[] status = d.methods.status( opticalTrain.get() );
 			return Focus.FocusState.values()[ (int) status[0] ];
 		 } );
@@ -257,6 +260,9 @@ public abstract class KStarsCluster extends KStarsState {
 		String foundCamera = (String) this.capture.read( "camera" );
 		cameraDevice = new IndiCamera(foundCamera, indi);
 		cameraDevice.setPreCoolTemp( getPreCoolTemp() );
+
+
+		opticalTrain.set( (String) align.read( "opticalTrain" ) );
 
 		String foundFocuser = (String) this.focus.methods.focuser( opticalTrain.get() );
 		focusDevice = new IndiFocuser(foundFocuser, indi);
@@ -544,7 +550,9 @@ public abstract class KStarsCluster extends KStarsState {
 
 
     protected void stopAll() {
-        this.focus.methods.abort( opticalTrain.get() );
+		if( opticalTrain.get() != null ) {
+        	this.focus.methods.abort( opticalTrain.get() );
+		}
         this.align.methods.abort();
         this.scheduler.methods.stop();
     }
@@ -608,8 +616,10 @@ public abstract class KStarsCluster extends KStarsState {
 								}
 								
 								logMessage( "Caputure one focus image");
-								this.focus.methods.capture( opticalTrain.get(), 0 );
-								sleep( 1000L );
+								if( opticalTrain.get() != null ) {
+									this.focus.methods.capture( opticalTrain.get(), 0 );
+									sleep( 1000L );
+								}
 								maxWait.reset();
 
 								while( this.focusState.get() != FocusState.FOCUS_IDLE && maxWait.check() ) {
@@ -841,11 +851,14 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	protected final AtomicLong activeCaptureJobStarted = new AtomicLong( -1 );
+	protected final AtomicLong captureStateChangedAt = new AtomicLong( -1 );
 
 	public CaptureStatus handleCaptureStatus( CaptureStatus state ) {
 		boolean captureWasRunning = captureRunning.get();
 
 		state = super.handleCaptureStatus(state);
+
+		captureStateChangedAt.set( System.currentTimeMillis() );
 
 		if( ( captureWasRunning == false || state == CaptureStatus.CAPTURE_PROGRESS ) && captureRunning.get() ) {
 			activeCaptureJobStarted.set( System.currentTimeMillis() );
@@ -955,6 +968,10 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	public int runAutoFocus() {
+		if( opticalTrain.get() == null ) {
+			return -1;
+		}
+
 		this.focus.methods.abort( opticalTrain.get() );
 		sleep( 1000 );
 		this.focus.methods.start( opticalTrain.get() );
@@ -1331,7 +1348,7 @@ public abstract class KStarsCluster extends KStarsState {
 				sleep( 500 );
 			}
 
-			return alignFailed.get();
+			return !alignFailed.get();
 		}
 		catch( Throwable t ) {
 			logError( "error in capture an solve", t);
