@@ -346,9 +346,12 @@ public abstract class KStarsCluster extends KStarsState {
 
 			try {
 				//logMessage( "Check weather status, last check was " + delta + " seconds ago");
-				var res = client.newRequest( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.isSafeCondition" ).send();
+				var res = client.newRequest( "http://192.168.0.106:8087/getPlainValue/0_userdata.0.Roof.isSafeCondition" ).send();
 				weatherSafty = Boolean.parseBoolean( res.getContentAsString() );
 
+				if( delta >= 15 ) {
+					logMessage( "Resumed weather status after "+ delta +" seconds");
+				}
 				this.lastWeatherCheck = System.currentTimeMillis();
 			}
 			catch( ExecutionException e ) {

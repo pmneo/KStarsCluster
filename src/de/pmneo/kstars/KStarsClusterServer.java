@@ -307,7 +307,9 @@ public class KStarsClusterServer extends KStarsCluster {
     public SchedulerState handleSchedulerStatus(SchedulerState state) {
         state = super.handleSchedulerStatus(state);
 
-        checkCameraCooling( this );
+        if( ekosReady.get() ) {
+            checkCameraCooling( this );
+        }
 
         
         final Map<String,Object> payload = new HashMap<>();
@@ -355,7 +357,9 @@ public class KStarsClusterServer extends KStarsCluster {
     public MountStatus handleMountStatus(MountStatus state) {
         state = super.handleMountStatus(state);
         
-        checkCameraCooling( this );
+        if( ekosReady.get() ) {
+            checkCameraCooling( this );
+        }
 
         final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleMountStatus" );
@@ -480,8 +484,8 @@ public class KStarsClusterServer extends KStarsCluster {
 
         for( int i=0;i<10;i++) {
             try {
-                //status = Integer.valueOf( client.GET( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.indiStatus" ).getContentAsString() );
-                statusJson = client.GET( "http://192.168.0.106:8082/getBulk/0_userdata.0.Roof.isFullyOpen,0_userdata.0.Roof.isFullyClosed,0_userdata.0.Roof.status" ).getContentAsString();
+                //status = Integer.valueOf( client.GET( "http://192.168.0.106:8087/getPlainValue/0_userdata.0.Roof.indiStatus" ).getContentAsString() );
+                statusJson = client.GET( "http://192.168.0.106:8087/getBulk/0_userdata.0.Roof.isFullyOpen,0_userdata.0.Roof.isFullyClosed,0_userdata.0.Roof.status" ).getContentAsString();
                 lastError = null;
                 break;
             }
@@ -540,7 +544,7 @@ public class KStarsClusterServer extends KStarsCluster {
                 //UNPARK
                 logMessage( "Request dome unpark, weather status = " + weatherState.get() );
                 try {
-                    client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.OPEN?value=true" );
+                    client.GET( "http://192.168.0.106:8087/set/0_userdata.0.Roof.OPEN?value=true" );
                 }
                 catch( Throwable t ) {
                     logError( "Failed to request open roof", t);
@@ -559,7 +563,7 @@ public class KStarsClusterServer extends KStarsCluster {
                 //PARK
                 logMessage( "Request dome park, weather status = " + weatherState.get() );
                 try {
-                    client.GET( "http://192.168.0.106:8082/set/0_userdata.0.Roof.CLOSE?value=true" );
+                    client.GET( "http://192.168.0.106:8087/set/0_userdata.0.Roof.CLOSE?value=true" );
                 }
                 catch( Throwable t ) {
                     logError( "Failed to request close roof", t);
