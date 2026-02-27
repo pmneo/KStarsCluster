@@ -1074,10 +1074,6 @@ public abstract class KStarsCluster extends KStarsState {
 		fillStatus( res );
 
 		res.put( "calibrateFilterInProgress", calibrateFilterInProgress.get() );
-
-		if( this.captureRunning.get() ) {
-			res.put( "capture", getCaptureDetails( activeCaptureJob.get() ) ); 
-		}
 		
 		res.put( "alignment", fillAlignment(new HashMap<>(), this.align.methods.getSolutionResult() ) );
 		
