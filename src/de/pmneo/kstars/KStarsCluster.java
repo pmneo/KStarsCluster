@@ -1,13 +1,11 @@
 package de.pmneo.kstars;
 
 import java.io.ByteArrayOutputStream;
-import java.io.EOFException;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.StringReader;
 import java.net.URI;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
@@ -16,22 +14,21 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-
 import org.apache.commons.configuration2.INIConfiguration;
 import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.Request;
 import org.freedesktop.dbus.connections.impl.DBusConnection;
+import org.freedesktop.dbus.errors.UnknownObject;
 import org.freedesktop.dbus.exceptions.DBusException;
-import org.freedesktop.dbus.interfaces.Introspectable;
 import org.freedesktop.dbus.messages.MethodCall;
 import org.kde.kstars.Ekos;
 import org.kde.kstars.INDI;
@@ -40,7 +37,6 @@ import org.kde.kstars.INDI.IpsState;
 import org.kde.kstars.ekos.Align;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture;
-import org.kde.kstars.ekos.Dome;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus;
 import org.kde.kstars.ekos.Focus.FocusState;
@@ -52,13 +48,6 @@ import org.kde.kstars.ekos.Scheduler.SchedulerState;
 import org.kde.kstars.ekos.Weather.WeatherState;
 import org.kde.kstars.ekos.SchedulerJob;
 import org.qtproject.Qt.QAction;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.Node;
-import org.w3c.dom.NodeList;
-import org.xml.sax.EntityResolver;
-import org.xml.sax.InputSource;
-import org.xml.sax.SAXException;
 
 import com.google.gson.GsonBuilder;
 
@@ -124,17 +113,38 @@ public abstract class KStarsCluster extends KStarsState {
 
 	private List<Runnable> subscriptions = new ArrayList<>();
 
+	protected final HttpClient client;
+
 	public KStarsCluster( String logPrefix ) throws DBusException {
 		super( logPrefix );
 
-		MethodCall.setDefaultTimeout( 20000 );
+		MethodCall.setDefaultTimeout( 5000 );
 
 		/* Get a connection to the session bus so we can get data */
 		con = DBusConnection.getConnection( DBusConnection.DBusBusType.SESSION );
 
+		client = new HttpClient() {
+				@Override
+				public Request newRequest(URI uri) {
+					return super.newRequest(uri)
+						.idleTimeout( 5, TimeUnit.SECONDS )
+						.timeout( 10, TimeUnit.SECONDS );
+				}
+			};
+			try {
+				client.setConnectTimeout( 2000 );
+				client.setIdleTimeout( 5000 );
+				client.setAddressResolutionTimeout( 5000L );
+				client.setMaxConnectionsPerDestination( 50 );
+				//client.setDestinationIdleTimeout( 5000L );
+				client.start();
+			}
+			catch( Throwable t ) {
+				logError( "Failed to start http client", t);
+			}
 	}
 
-	protected synchronized void createEkosDevices() throws DBusException {
+	protected void createEkosDevices() throws DBusException {
 		this.unsubscribe();
 
 		this.mandatoryDevices.clear();
@@ -149,7 +159,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 	protected AtomicReference<String> opticalTrain = new AtomicReference<String>( "unkown" );
 
-	protected synchronized void createDevices() throws DBusException {
+	protected void createDevices() throws DBusException {
 		this.createEkosDevices();
 
 		this.indi = new Device<>( con, "org.kde.kstars", "/KStars/INDI", INDI.class );
@@ -186,7 +196,7 @@ public abstract class KStarsCluster extends KStarsState {
 		this.mandatoryDevices.add( this.scheduler );
 	}
 
-	protected synchronized void unsubscribe() throws DBusException {
+	protected void unsubscribe() throws DBusException {
 		resetValues();
 
 		for( Runnable unsub : subscriptions ) {
@@ -205,7 +215,7 @@ public abstract class KStarsCluster extends KStarsState {
 		rotatorDevice = null;
 	}
 
-	protected synchronized void subscribe() throws DBusException {
+	protected void subscribe() throws DBusException {
 		unsubscribe();
 
 		logMessage( "Subscribing to KStars" );
@@ -238,7 +248,7 @@ public abstract class KStarsCluster extends KStarsState {
 			this.handleFocusStatus( status.getStatus() );
 		} ) );
 		subscriptions.add( this.focus.addSigHandler( Focus.newHFR.class, hfr -> {
-			System.out.println( "new hfr " + hfr.getHFR() );
+			logDebug( "new hfr " + hfr.getHFR() );
 		} ) );
 		subscriptions.add( this.scheduler.addNewStatusHandler( Scheduler.newStatus.class, status -> {
 			this.handleSchedulerStatus( status.getStatus() );
@@ -310,21 +320,19 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 	
-	private synchronized void loadConfig() throws ConfigurationException, IOException, FileNotFoundException {
+	private void loadConfig() throws ConfigurationException, IOException, FileNotFoundException {
 		if( config == null ) {
 			config = new INIConfiguration();
 			config.read( new FileReader( System.getProperty("user.home") + "/.config/kstarsrc" ) );
 		}
 	}
 
-	protected HttpClient client = null;
 	private boolean weatherSafty = false;
-	private long lastCheck = -1;
+	private long lastWeatherCheck = -1;
 
-	public synchronized boolean checkWeatherStatus() {
-		ensureHttpClient();
+	public boolean checkWeatherStatus() {
 		
-		long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - this.lastCheck );
+		long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - this.lastWeatherCheck );
 
 		if( delta >= 10 ) {
 
@@ -335,7 +343,7 @@ public abstract class KStarsCluster extends KStarsState {
 				var res = client.newRequest( "http://192.168.0.106:8082/getPlainValue/0_userdata.0.Roof.isSafeCondition" ).send();
 				weatherSafty = Boolean.parseBoolean( res.getContentAsString() );
 
-				this.lastCheck = System.currentTimeMillis();
+				this.lastWeatherCheck = System.currentTimeMillis();
 			}
 			catch( ExecutionException e ) {
 				if( delta < 90 ) {
@@ -367,33 +375,7 @@ public abstract class KStarsCluster extends KStarsState {
 		return this.weatherSafty;
 	}
 
-	protected synchronized void ensureHttpClient() {
-		if( client == null ) {
-			client = new HttpClient() {
-				@Override
-				public Request newRequest(URI uri) {
-					return super.newRequest(uri)
-						.idleTimeout( 5, TimeUnit.SECONDS )
-						.timeout( 10, TimeUnit.SECONDS );
-				}
-			};
-			try {
-				client.setConnectTimeout( 2000 );
-				client.setIdleTimeout( 5000 );
-				client.setAddressResolutionTimeout( 5000L );
-				client.setMaxConnectionsPerDestination( 50 );
-				//client.setDestinationIdleTimeout( 5000L );
-				client.start();
-			}
-			catch( Throwable t ) {
-				logError( "Failed to start http client", t);
-			}
-		}
-	}
-
 	public void stopUsbDevices() {
-		ensureHttpClient();
-
 		final File stopScript = new File( "./KStarsClusterScripts/stopUsb.bsh" );
 		if( stopScript.exists() ) {
 			try {
@@ -423,7 +405,7 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	private Thread kStarsMonitor = null;
-	public synchronized void connectToKStars() {
+	public void connectToKStars() {
 		if( kStarsMonitor != null ) {
 			if( kStarsMonitor.isAlive() ) {
 				return;
@@ -462,7 +444,6 @@ public abstract class KStarsCluster extends KStarsState {
 							sleep( 5000L );
 						}
 						else {
-							
 							logMessage( "Weather conditions are SAFE, starting ekos now" );
 
 							try {
@@ -474,6 +455,7 @@ public abstract class KStarsCluster extends KStarsState {
 								logError( "Failed to start ekos, is kstars running?", t );
 								continue; //repeat check
 							}
+
 							boolean ekosStarted = false;
 							for( int i=0; i<60; i++ ) {
 								if( checkEkosReady( true ) == false ) {
@@ -493,12 +475,10 @@ public abstract class KStarsCluster extends KStarsState {
 					else {
 						ekosStoppedAt = 0;
 
-						synchronized( this ) {
-							subscribe();
-							ekosReady();
+						subscribe();
+						ekosReady();
 
-							ekosReady.set( true );
-						}
+						ekosReady.set( true );
 
 						waitUntilEkosHasStopped();
 
@@ -506,9 +486,7 @@ public abstract class KStarsCluster extends KStarsState {
 						
 						logMessage( "Ekos has stopped, waiting to become ready again" );
 						
-						synchronized( this ) {
-							ekosDisconnected();
-						}
+						ekosDisconnected();
 					}
 				}
 			}
@@ -694,8 +672,6 @@ public abstract class KStarsCluster extends KStarsState {
 			case MOUNT_TRACKING:
 			case MOUNT_ERROR:
 			default:
-				
-				
 				Calendar[] range = getCivilTwilight();
 				range[0].add( Calendar.HOUR, 1 );
 				if( isNight(range) == false ) {
@@ -748,9 +724,12 @@ public abstract class KStarsCluster extends KStarsState {
 			try {
 				d.checkAlive();
 			}
-			catch( Throwable t ) {
+			catch( UnknownObject uo ) {
 				ekosReady.set( false );
 				return false;
+			}
+			catch( Throwable t ) {
+				logError( "Failed to check device " + d.interfaceName, t );
 			}
 		}
 
@@ -765,11 +744,13 @@ public abstract class KStarsCluster extends KStarsState {
 				}
 				else {
 					allConnected = false;
-					logMessage( "The device " + device + " is not connected: " + state );
+					logMessage( "The device " + device + " is not connected: " + state + "/" + connected );
+					/*
 					if( autoConnect ) {
 						this.indi.methods.setSwitch( device, "CONNECTION", "CONNECT", "On" );
 						this.indi.methods.sendProperty( device, "CONNECTION" );
 					}
+					*/
 				}
 			}
 		}

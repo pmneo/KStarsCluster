@@ -5,6 +5,9 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -21,7 +24,6 @@ import org.kde.kstars.ekos.AbstractStateSignal;
 
 public class Device<T extends DBusInterface> {
 
-	
 	public final Class<T> impl;
 	public final String interfaceName;
 	public final String busName;
@@ -47,6 +49,8 @@ public class Device<T extends DBusInterface> {
 	public Device( DBusConnection con, String busName, String objectPath, Class<T> impl, Function< Device<T>, Enum<?>> readStatus ) throws DBusException {
 		this.con = con;
 
+		this.con.changeThreadCount( (byte)50 );
+
 		this.impl = impl;
 		this.busName = busName;
 		this.objectPath = objectPath;
@@ -55,7 +59,7 @@ public class Device<T extends DBusInterface> {
 		
 		this.interfaceName = impl.getAnnotation( DBusInterfaceName.class ).value();
 
-		this.parsedProperties = new HashMap<String, Object>();
+		this.parsedProperties = new ConcurrentHashMap<String, Object>();
 		this.parsedProperties.put( "interfaceName", interfaceName );
 		this.dbusProperties = Arrays.stream( impl.getAnnotationsByType( DBusProperty.class ) ).collect( Collectors.toMap( p -> p.name(), p->p.type() ) );
 	
@@ -86,9 +90,7 @@ public class Device<T extends DBusInterface> {
 	
 	public <S extends DBusSignal> Runnable addSigHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
 		final DBusSigHandler<S> handler = status -> {
-			synchronized( this ) {
-				_handler.handle( status );
-			}
+			_handler.handle( status );
 		};
 
 		con.<S>addSigHandler( _type, this.methods, handler );
@@ -176,7 +178,7 @@ public class Device<T extends DBusInterface> {
 		
 	}
 	
-	public synchronized Map<String,Object> readAll() {
+	public Map<String,Object> readAll() {
 		final Map<String,Variant<?>> all = this.properties.GetAll( interfaceName );
 		all.forEach( this::parseProperty );
 		if( all.size() == 0 ) {
@@ -185,7 +187,7 @@ public class Device<T extends DBusInterface> {
 		return parsedProperties;
 	}
 	
-	public synchronized Object read( String name ) {
+	public Object read( String name ) {
 		Object value = this.properties.Get( interfaceName, name );
 		
 		if( value instanceof Map ) {
@@ -200,7 +202,7 @@ public class Device<T extends DBusInterface> {
 		return this.parsedProperties.get( name );
 	}
 	
-	public synchronized Object write( String name, Object value ) {
+	public Object write( String name, Object value ) {
 		this.properties.Set( interfaceName, name, value );
 		return this.read( name );
 	}

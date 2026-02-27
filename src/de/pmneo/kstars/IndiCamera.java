@@ -27,7 +27,7 @@ public class IndiCamera extends IndiDevice {
         }
     }
 
-    public synchronized void preCool() {
+    public void preCool() {
         if( !isCooling() ) {
             logMessage( "Precooling Camera to " + preCoolTemp );
             this.setCcdTemparatur( preCoolTemp );

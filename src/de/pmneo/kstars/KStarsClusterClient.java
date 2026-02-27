@@ -270,51 +270,41 @@ public class KStarsClusterClient extends KStarsCluster {
     protected void ekosDisconnected() {
         super.ekosDisconnected();
 
-        synchronized ( this ) {
-            try {
-                if( clientHandler != null ) {
-                    clientHandler.socket.close();
-                }
-            } catch (IOException e) {
-                //ignore
+        try {
+            final SocketHandler ch = clientHandler.get();
+            if( ch != null ) {
+                ch.socket.close();
             }
-            clientHandler = null;
+        } catch (IOException e) {
+            //ignore
         }
+
     }
     
-    private SocketHandler clientHandler;
-    
+    private final AtomicReference<SocketHandler> clientHandler = new AtomicReference<>();
     public void listen()  {
         while( true ) {
             while( ekosReady.get() ) {
                 try {
-                    synchronized ( this ) {
-                        clientHandler = new SocketHandler( new Socket( host, listenPort ) );
-                    }
-                    clientHandler.writeObject( "Hello Server" );
+                    SocketHandler handler = new SocketHandler( new Socket( host, listenPort ) );
+                    handler.writeObject( "Hello Server" );
                     logMessage( "Connected to " + host + " ...");
-                    clientHandler.receive( 
+
+                    handler.receive( 
                         this::serverFrameReceived, 
                         (c,t) -> {
                             logMessage( "Disconnected from " + host + " ");
+                            clientHandler.compareAndSet( handler, null );
                         } 
                     );
+
+                    clientHandler.compareAndSet( handler, null );
                 }
                 catch( Throwable t ) {
                     sleep( 1000 );
                 }
             }
-            
-            synchronized ( this ) {
-                if( clientHandler != null ) {
-                    try {
-                        clientHandler.socket.close();
-                    } catch (IOException e) {
-                        //ignore
-                    }
-                    clientHandler = null;
-                }
-            }
+
             sleep( 1000 );
         }
     }
@@ -342,7 +332,7 @@ public class KStarsClusterClient extends KStarsCluster {
     private Stage stage = Stage.INIT;
 
 
-    protected synchronized void checkClientState() {
+    protected void checkClientState() {
         
         this.updateSchedulerState();
 

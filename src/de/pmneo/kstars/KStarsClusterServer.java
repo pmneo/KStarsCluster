@@ -81,7 +81,7 @@ public class KStarsClusterServer extends KStarsCluster {
     private int schedulerErrors = 0;
     private long schedulerStartetAt = 0;
 
-    protected synchronized void checkServerState() {
+    protected void checkServerState() {
         try {
             this.updateSchedulerState( );
 
@@ -383,23 +383,20 @@ public class KStarsClusterServer extends KStarsCluster {
     }
     
 
-    protected final Map<String, Map<String, Object> > actionCache = new HashMap<>();
+    protected final Map<String, Map<String, Object> > actionCache = new ConcurrentHashMap<>();
     protected void writeToAllClients( Map<String, Object> payload ) {
+        String action = (String) payload.get( "action" );
+        actionCache.put( action, payload );
 
-        synchronized( actionCache ) {
-            String action = (String) payload.get( "action" );
-            actionCache.put( action, payload );
-
-            payload.remove( "logText" ); 
-            logMessage( "Sending " + action + ": " + payload.get( "status" ) + " to " + clients.size() + " clients" );
-            for( SocketHandler handler : clients.keySet() ) {
-                try {
-                    handler.writeObject( payload );
-                } catch (IOException e) {
-                    logError( "Failed to inform client " + handler, e );
-                }
+        payload.remove( "logText" ); 
+        logMessage( "Sending " + action + ": " + payload.get( "status" ) + " to " + clients.size() + " clients" );
+        for( SocketHandler handler : clients.keySet() ) {
+            try {
+                handler.writeObject( payload );
+            } catch (IOException e) {
+                logError( "Failed to inform client " + handler, e );
             }
-        }
+        }        
     }
     
     protected ConcurrentHashMap< SocketHandler, Thread > clients = new ConcurrentHashMap<SocketHandler, Thread>();
@@ -433,10 +430,8 @@ public class KStarsClusterServer extends KStarsCluster {
                     synchronized ( clientHandler._output ) {
                         clientHandler.writeObject( "Begin init" );
 
-                        synchronized( actionCache ) {
-                            for( Map<String,Object> payload : actionCache.values() ) {
-                                clientHandler.writeNotNullObject( payload );
-                            }
+                        for( Map<String,Object> payload : actionCache.values() ) {
+                            clientHandler.writeNotNullObject( payload );
                         }
 
                         clientHandler.writeObject( "Init done" );
@@ -468,8 +463,6 @@ public class KStarsClusterServer extends KStarsCluster {
     protected static class MapList extends TypeToken< List<Map<String,Object>> > {}
 
     protected RoofStatus fetchRoofStatus() {
-        ensureHttpClient();
-
         RoofStatus roofStatus = this.roofStatus.get();
         
         String statusJson = null;
@@ -573,8 +566,6 @@ public class KStarsClusterServer extends KStarsCluster {
 
         actions.put( "roof", ( parts, req, resp ) -> {
             if( parts.length > 1 ) {
-                ensureHttpClient();
-                
                 if( parts[1].equals( "park" ) ) {
                     parkRoof();
                 }
@@ -583,7 +574,6 @@ public class KStarsClusterServer extends KStarsCluster {
                     unparkRoof();
                 }
             }
-
             return roofStatus.get().indiStatus;
 		} );
     }
