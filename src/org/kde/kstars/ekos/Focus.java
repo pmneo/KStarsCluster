@@ -7,6 +7,8 @@ import org.freedesktop.dbus.exceptions.DBusException;
 import org.freedesktop.dbus.interfaces.DBusInterface;
 import org.freedesktop.dbus.messages.DBusSignal;
 
+import de.pmneo.kstars.KStarsCluster;
+
 /**
  * Auto-generated class.
  */
@@ -54,11 +56,15 @@ public interface Focus extends DBusInterface {
         FOCUS_CHANGING_FILTER
     }
     public static class newStatus extends AbstractStateSignal<FocusState> {
+        public final String train;
+
         public newStatus(String _path, Object[] _status) throws DBusException {
             super(_path, FocusState.class, _status );
+            train = KStarsCluster.PRIMARY_TRAIN;
         }
-        public newStatus(String _path, Object[] _status, String focuser) throws DBusException {
+        public newStatus(String _path, Object[] _status, String train) throws DBusException {
             super(_path, FocusState.class, _status );
+            this.train = train;
         }
     }
     public static class newLog extends DBusSignal {
@@ -75,11 +81,15 @@ public interface Focus extends DBusInterface {
     public static class newHFR extends DBusSignal {
         private final double HFR;
         private final int position;
+        private final boolean inAutoFocus;
+        private final String train;
 
-        public newHFR(String _path, double _HFR, int _position, boolean b, String focuser) throws DBusException {
+        public newHFR(String _path, double _HFR, int _position, boolean inAutoFocus, String train) throws DBusException {
             super(_path);
             this.HFR = _HFR;
+            this.inAutoFocus = inAutoFocus;
             this.position = _position;
+            this.train = train;
         }
 
         public double getHFR() {

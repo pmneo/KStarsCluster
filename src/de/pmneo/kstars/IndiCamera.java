@@ -55,15 +55,20 @@ public class IndiCamera extends IndiDevice {
         }
     }
     public void setCooling( boolean value ) {
-        if( value ) {
-            indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_ON", "On" );
-            indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_OFF", "Off" );
+        try {
+            if( value ) {
+                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_ON", "On" );
+                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_OFF", "Off" );
+            }
+            else {
+                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_ON", "Off" ); 
+                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_OFF", "On" );   
+            }
+            this.indi.methods.sendProperty( deviceName, "CCD_COOLER" );
         }
-        else {
-            indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_ON", "Off" ); 
-            indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_OFF", "On" );   
+        catch( Throwable t ) {
+            logMessage( "The camera " + deviceName + " does not support cooling" );
         }
-        this.indi.methods.sendProperty( deviceName, "CCD_COOLER" );
     }
 
     public boolean isAntiDewHeaterOn() {

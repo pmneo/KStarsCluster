@@ -1,6 +1,7 @@
 package de.pmneo.kstars;
 
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.kde.kstars.Ekos.CommunicationStatus;
@@ -20,8 +21,9 @@ import de.pmneo.kstars.utils.DirtyBoolean;
 
 public class KStarsState {
 		
-    public final DirtyBoolean captureRunning = new DirtyBoolean( false );
-    public final DirtyBoolean focusRunning = new DirtyBoolean( false );
+    public final ConcurrentHashMap<String,Boolean> captureRunning = new ConcurrentHashMap<String,Boolean>();
+    public final ConcurrentHashMap<String,Boolean> focusRunning = new ConcurrentHashMap<String,Boolean> ();
+
     public final DirtyBoolean schedulerRunning = new DirtyBoolean( false );
     public final DirtyBoolean gudingRunning = new DirtyBoolean( false );
     public final DirtyBoolean mountIsTracking = new DirtyBoolean( false );
@@ -56,8 +58,8 @@ public class KStarsState {
 
 
     public void resetValues() {
-        captureRunning.set( false );
-        focusRunning.set( false );
+        captureRunning.clear();
+        focusRunning.clear();
         schedulerRunning.set(false);
         gudingRunning.set(false);
         ditheringActive.set(false);
@@ -174,31 +176,31 @@ public class KStarsState {
     }
 
     
-    public final AtomicReference<FocusState> focusState = new AtomicReference<FocusState>( FocusState.FOCUS_IDLE );
-    protected FocusState handleFocusStatus( FocusState state ) {
+    public final ConcurrentHashMap<String,FocusState> focusState = new ConcurrentHashMap<String,FocusState>();
+    protected FocusState handleFocusStatus( FocusState state, String train ) {
         if( state != null ) {
-            focusState.set( state );
+            focusState.put( train, state );
         }
 
-        logMessage( "handleFocusStatus(" + state + ")" );
-        state = focusState.get();
+        logMessage( "handleFocusStatus(" + train + ", " + state + ")" );
+        state = focusState.computeIfAbsent( train, t -> FocusState.FOCUS_IDLE );
 
         switch( state ) {
             case FOCUS_COMPLETE:
-                focusRunning.set( false );
+                focusRunning.put( train, false );
             break;
             
             case FOCUS_ABORTED:
             case FOCUS_FAILED:
-                focusRunning.set( false );
+                focusRunning.put( train, false );
             break;
             
             case FOCUS_IDLE:
-                focusRunning.set( false );
+                focusRunning.put( train, false );
             break;
             
             case FOCUS_PROGRESS:
-                focusRunning.set( true );
+                focusRunning.put( train, true );
             break;
 
             case FOCUS_FRAMING:
@@ -211,37 +213,39 @@ public class KStarsState {
         return state;
     }
 
-    public final AtomicReference<CaptureStatus> captureStatus = new AtomicReference<CaptureStatus>( CaptureStatus.CAPTURE_IDLE );
-    public CaptureStatus handleCaptureStatus( CaptureStatus state ) {
+    public final ConcurrentHashMap<String,CaptureStatus> captureStatus = new ConcurrentHashMap<>();
+
+    public CaptureStatus handleCaptureStatus( CaptureStatus state, String train ) {
+
         if( state != null ) {
-            captureStatus.set( state );
+            captureStatus.put( train, state );
         }
 
-        logMessage( "handleCaptureStatus(" + state + ")" );
-        state = captureStatus.get();
+        logMessage( "handleCaptureStatus(" + train + ", " + state + ")" );
+        state = captureStatus.computeIfAbsent( train, t -> CaptureStatus.CAPTURE_IDLE );
 
         switch (state) {
             case CAPTURE_CAPTURING:
-                captureRunning.set( true );
+                captureRunning.put( train, true );
             break;
             
             case CAPTURE_PROGRESS:
-                captureRunning.set( true );
+                captureRunning.put( train, true );
             break;
             case CAPTURE_SETTING_TEMPERATURE:
-                captureRunning.set( true );
+                captureRunning.put( train, true );
             break;
             
             case CAPTURE_IMAGE_RECEIVED:
             break;
             
             case CAPTURE_ABORTED:
-                captureRunning.set( false );
+                captureRunning.put( train, false );
             break;
             
             case CAPTURE_COMPLETE:
             case CAPTURE_SUSPENDED:
-                captureRunning.set( false );
+                captureRunning.put( train, false );
             break;
             
             case CAPTURE_PAUSED:
@@ -340,8 +344,8 @@ public class KStarsState {
 
     public Map<String, Object> fillStatus(Map<String, Object> res) {
 		
-		res.put( "captureRunning", this.captureRunning.get() );
-		res.put( "focusRunning", this.focusRunning.get() );
+		res.put( "captureRunning", this.captureRunning );
+		res.put( "focusRunning", this.focusRunning );
         res.put( "gudingRunning", this.gudingRunning.get() );
         res.put( "ditheringActive", this.ditheringActive.get() );
         
@@ -350,8 +354,8 @@ public class KStarsState {
 		res.put( "weatherState", this.weatherState.get() );
         res.put( "mountStatus", this.mountStatus.get() );
         res.put( "schedulerState", this.schedulerState.get() );
-        res.put( "captureStatus", this.captureStatus.get() );
-        res.put( "focusState", this.focusState.get() );
+        res.put( "captureStatus", this.captureStatus );
+        res.put( "focusState", this.focusState );
         res.put( "guideStatus", this.guideStatus.get() );
 
         res.put( "activeJob", this.schedulerActiveJob.get() );

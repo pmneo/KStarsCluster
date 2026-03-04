@@ -7,6 +7,8 @@ import org.freedesktop.dbus.exceptions.DBusException;
 import org.freedesktop.dbus.interfaces.DBusInterface;
 import org.freedesktop.dbus.messages.DBusSignal;
 
+import de.pmneo.kstars.KStarsCluster;
+
 /**
  * Auto-generated class.
  */
@@ -101,11 +103,18 @@ public interface Capture extends DBusInterface {
         CAPTURE_COMPLETE             /*!< capture job sequence completed successfully */  
 	}
     public static class newStatus extends AbstractStateSignal<CaptureStatus> {
+        public final String train;
+        public final int cameraID;
+
         public newStatus(String _path, Object[] _status) throws DBusException {
-            super(_path, CaptureStatus.class, _status);
+            super(_path, CaptureStatus.class, _status );
+            train = KStarsCluster.PRIMARY_TRAIN;
+            cameraID = -1;
         }
-        public newStatus(String _path, Object[] _status, String train, int i) throws DBusException {
+        public newStatus(String _path, Object[] _status, String train, int cameraID) throws DBusException {
             super(_path, CaptureStatus.class, _status);
+            this.train = train;
+            this.cameraID = cameraID;
         }
     }
 }

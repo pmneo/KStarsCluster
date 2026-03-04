@@ -4,6 +4,9 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiFunction;
+import java.util.stream.Collector;
+import java.util.stream.Collectors;
 
 import org.kde.kstars.INDI;
 import org.kde.kstars.INDI.DriverInterface;
@@ -41,6 +44,15 @@ public class IndiDevice {
 		}
 
 		return devices;
+	}
+
+	public static <D extends IndiDevice> Map<String,D> createDevices( Device< INDI > indi, DriverInterface ofInterface, BiFunction<String,Device<INDI>,D> factory ) {
+		Map<DriverInterface, List<String> > devices = getDevices(indi);
+		List<String> devList = devices.get( ofInterface );
+		if( devList != null ) {
+			return devList.stream().collect( Collectors.toMap( k -> k, k -> factory.apply( k, indi ) ) );
+		}
+		return new HashMap<>();
 	}
 
     public IndiDevice( String deviceName, Device<INDI> indi ) {

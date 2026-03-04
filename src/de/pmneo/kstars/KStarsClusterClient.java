@@ -203,12 +203,13 @@ public class KStarsClusterClient extends KStarsCluster {
                 }
                 else if( "handleCaptureStatus".equals( action ) ) {
                     final CaptureStatus status = (CaptureStatus) payload.get( "status" );
-                    server.handleCaptureStatus(status);
+                    final String train = (String) payload.get( "train" );
+                    server.handleCaptureStatus(status, train);
                 }
                 else if( "handleFocusStatus".equals( action ) ) {
                     final FocusState status = (FocusState) payload.get( "status" );
-                    
-                    server.handleFocusStatus(status);
+                    final String train = (String) payload.get( "train" );
+                    server.handleFocusStatus(status, train);
                 }
                 else if( "handleSchedulerStatus".equals( action ) ) {
                     final SchedulerState status = (SchedulerState) payload.get( "status" );
@@ -311,11 +312,6 @@ public class KStarsClusterClient extends KStarsCluster {
         super.resetValues();
     }
     
-    @Override
-    public CaptureStatus handleCaptureStatus(CaptureStatus state) {
-        state = super.handleCaptureStatus(state);
-        return state;
-    }
         
     public static enum Stage {
         INIT,
@@ -328,14 +324,6 @@ public class KStarsClusterClient extends KStarsCluster {
 
 
     protected void checkClientState() {
-
-        if( opticalTrain.get() == null ) {
-            logMessage( "No optical train detected" );
-            return;
-        }
-        
-
-        
         this.updateSchedulerState();
 
         if( server.mountIsTracking.get() ) {
@@ -399,7 +387,7 @@ public class KStarsClusterClient extends KStarsCluster {
                         break;
                     
                     case INIT:
-                        if( captureRunning.get() ) {
+                        if( captureRunning.get( PRIMARY_TRAIN ) ) {
                             this.stage = Stage.CAPTURE;
                             logMessage( "Resume to capture after restart" );
                         }
@@ -424,7 +412,7 @@ public class KStarsClusterClient extends KStarsCluster {
                     this.stopAll();
 
                     try {
-                        if( this.isAutoFocusEnabled() && this.focus.methods.canAutoFocus( opticalTrain.get() ) ) {
+                        if( this.isAutoFocusEnabled() && this.focus.methods.canAutoFocus( PRIMARY_TRAIN ) ) {
                             logMessage( "Starting Autofocus process" );
                             runAutoFocus();
                         }
@@ -487,7 +475,7 @@ public class KStarsClusterClient extends KStarsCluster {
                             case SCHEDULER_RUNNING:
                                 //todo: check capture
                                 //no capture possible, check if we have to abort
-                                if( this.captureRunning.get() ) {
+                                if( this.captureRunning.get( PRIMARY_TRAIN ) ) {
 
                                     final int jobId = this.capture.methods.getActiveJobID();
                                     CaptureDetails job = getCaptureDetails(jobId, false);
@@ -495,7 +483,7 @@ public class KStarsClusterClient extends KStarsCluster {
                                     //if more than 2 seconds left, or more than 2 seconds exposed
                                     if( job.timeLeft >= 2.0 && job.exposure >= 2.0 ) {
                                         logMessage( "Aborting job " + job );
-                                        this.capture.methods.abort(opticalTrain.get());
+                                        this.capture.methods.abort( PRIMARY_TRAIN );
                                     }
                                     else {
                                         logMessage( "Do not abort job " + job );
@@ -505,14 +493,8 @@ public class KStarsClusterClient extends KStarsCluster {
                         }
                     }
                     else {
-                        if( this.focusRunning.get() ) {
-                            if( this.focusRunning.hasChangedAndReset() ) {
-                                logMessage( "Focus process is running" );
-                            }
-                            return;
-                        }
-                        else if( this.focusRunning.hasChangedAndReset() ) {
-                            logMessage( "Focus process has finished" );
+                        if( this.focusRunning.get( PRIMARY_TRAIN ) ) {
+                            logMessage( "Focus process is running" );
                             return;
                         }
 
@@ -533,12 +515,12 @@ public class KStarsClusterClient extends KStarsCluster {
                             break;
                             case SCHEDULER_RUNNING:
 
-                                if( captureStatus.get() == CaptureStatus.CAPTURE_CHANGING_FILTER ) {
-                                    long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - captureStateChangedAt.get() );
+                                if( captureStatus.get( PRIMARY_TRAIN ) == CaptureStatus.CAPTURE_CHANGING_FILTER ) {
+                                    long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - captureStateChangedAt.get( PRIMARY_TRAIN ) );
 
                                     if( delta >= 15 ) {
                                         logMessage( "Changing filter since " + delta + " seconds, abort capture");
-                                        this.capture.methods.abort(opticalTrain.get());
+                                        this.capture.methods.abort( PRIMARY_TRAIN );
                                     }
                                 }
 

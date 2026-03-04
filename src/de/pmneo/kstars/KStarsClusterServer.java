@@ -141,13 +141,14 @@ public class KStarsClusterServer extends KStarsCluster {
                             schedulerErrors = 0;
                         }
 
+                        for( String train : captureStatus.keySet() ) {
+                            if( captureStatus.get( train ) == CaptureStatus.CAPTURE_CHANGING_FILTER ) {
+                                long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - captureStateChangedAt.get( train ) );
 
-                        if( captureStatus.get() == CaptureStatus.CAPTURE_CHANGING_FILTER ) {
-                            long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - captureStateChangedAt.get() );
-
-                            if( delta >= 15 ) {
-                                logMessage( "Changing filter since " + delta + " seconds, abort capture");
-                                this.capture.methods.abort(opticalTrain.get());
+                                if( delta >= 15 ) {
+                                    logMessage( "Changing filter on train " + train + " since " + delta + " seconds, abort capture");
+                                    this.capture.methods.abort( train );
+                                }
                             }
                         }
                     break;
@@ -193,12 +194,13 @@ public class KStarsClusterServer extends KStarsCluster {
 
 
     @Override
-    public CaptureStatus handleCaptureStatus(CaptureStatus state) {
-        state = super.handleCaptureStatus(state);
+    public CaptureStatus handleCaptureStatus(CaptureStatus state, String train ) {
+        state = super.handleCaptureStatus(state, train);
         
         final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleCaptureStatus" );
         payload.put( "status", state);
+        payload.put( "train", train);
         payload.put( "targetName", capture.read( "targetName" ) );
 
         writeToAllClients( payload );
@@ -291,12 +293,13 @@ public class KStarsClusterServer extends KStarsCluster {
     }
     
     @Override
-    public FocusState handleFocusStatus(FocusState state) {
-        state = super.handleFocusStatus(state);
+    public FocusState handleFocusStatus(FocusState state, String train) {
+        state = super.handleFocusStatus(state, train);
         
         final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleFocusStatus" );
         payload.put( "status", state );
+        payload.put( "train", train );
 
         writeToAllClients( payload );
 
@@ -402,8 +405,10 @@ public class KStarsClusterServer extends KStarsCluster {
         String action = (String) payload.get( "action" );
         actionCache.put( action, payload );
 
+        String train = (String) payload.get( "train" );
+
         payload.remove( "logText" ); 
-        logMessage( "Sending " + action + ": " + payload.get( "status" ) + " to " + clients.size() + " clients" );
+        logMessage( "Sending " + action + ": " + payload.get( "status" ) + (train != null ? " of " + train : "") + " to " + clients.size() + " clients" );
         for( SocketHandler handler : clients.keySet() ) {
             try {
                 handler.writeObject( payload );
