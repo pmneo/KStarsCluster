@@ -129,7 +129,9 @@ public class KStarsClusterServer extends KStarsCluster {
 
                         SchedulerJob job = schedulerActiveJob.get();
                         if( job != null ) {
-                            this.mount.methods.unpark();
+                            if( this.mountParkStatus.get() != ParkStatus.PARK_UNPARKED ) {
+                                this.mount.methods.unpark();
+                            }
                             unparkRoof();    
                         }
                         else {
