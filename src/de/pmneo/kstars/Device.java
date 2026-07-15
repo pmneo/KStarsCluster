@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -23,6 +25,16 @@ import org.freedesktop.dbus.types.Variant;
 import org.kde.kstars.ekos.AbstractStateSignal;
 
 public class Device<T extends DBusInterface> {
+
+	// Shared executor for signal handlers — keeps D-Bus dispatch thread free so KStars can't deadlock
+	private static final ExecutorService signalExecutor = Executors.newCachedThreadPool( new ThreadFactory() {
+		private final AtomicInteger counter = new AtomicInteger();
+		public Thread newThread( Runnable r ) {
+			Thread t = new Thread( r, "DBus-Signal-" + counter.incrementAndGet() );
+			t.setDaemon( true );
+			return t;
+		}
+	} );
 
 	public final Class<T> impl;
 	public final String interfaceName;
@@ -89,8 +101,16 @@ public class Device<T extends DBusInterface> {
 	}
 	
 	public <S extends DBusSignal> Runnable addSigHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
+		// Dispatch to signalExecutor so the D-Bus thread is never blocked by re-entrant KStars calls
 		final DBusSigHandler<S> handler = status -> {
-			_handler.handle( status );
+			signalExecutor.submit( () -> {
+				try {
+					_handler.handle( status );
+				}
+				catch( Throwable t ) {
+					t.printStackTrace();
+				}
+			} );
 		};
 
 		con.<S>addSigHandler( _type, this.methods, handler );
