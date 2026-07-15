@@ -11,9 +11,11 @@ import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -29,6 +31,7 @@ import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.Request;
 import org.freedesktop.dbus.connections.impl.DBusConnection;
+import org.freedesktop.dbus.errors.ServiceUnknown;
 import org.freedesktop.dbus.errors.UnknownObject;
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.freedesktop.dbus.messages.MethodCall;
@@ -85,6 +88,7 @@ public abstract class KStarsCluster extends KStarsState {
 	protected Map<String, IndiCamera> cameraDevices = new HashMap<>();
 	protected Map<String, IndiFilterWheel> filterDevices = new HashMap<>();
 	protected Map<String, IndiRotator> rotatorDevices = new HashMap<>();
+	protected Map<String, IndiCap> capDevices = new HashMap<>();
 
 	protected final List< Device<?> > mandatoryDevices = new ArrayList<Device<?>>();
 	protected final List< Device<?> > devices = new ArrayList<Device<?>>();
@@ -118,7 +122,8 @@ public abstract class KStarsCluster extends KStarsState {
 				public Request newRequest(URI uri) {
 					return super.newRequest(uri)
 						.idleTimeout( 5, TimeUnit.SECONDS )
-						.timeout( 10, TimeUnit.SECONDS );
+						.timeout( 10, TimeUnit.SECONDS )
+					;
 				}
 			};
 			try {
@@ -126,6 +131,7 @@ public abstract class KStarsCluster extends KStarsState {
 				client.setIdleTimeout( 5000 );
 				client.setAddressResolutionTimeout( 5000L );
 				client.setMaxConnectionsPerDestination( 50 );
+				
 				//client.setDestinationIdleTimeout( 5000L );
 				client.start();
 			}
@@ -155,11 +161,9 @@ public abstract class KStarsCluster extends KStarsState {
 
 		this.guide = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Guide", Guide.class );
 		this.devices.add( this.guide );
-		this.mandatoryDevices.add( this.guide );
 
 		this.capture = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Capture", Capture.class );
 		this.devices.add( this.capture );
-		this.mandatoryDevices.add( this.capture );
 
 		this.mount = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Mount", Mount.class );
 		this.devices.add( this.mount );
@@ -169,7 +173,6 @@ public abstract class KStarsCluster extends KStarsState {
 			return (Align.AlignState) d.read( "status" );
 		});
 		this.devices.add( this.align );
-		this.mandatoryDevices.add( this.align );
 
 		final AtomicReference<String> opticalTrain = new AtomicReference<>();
 		this.focus = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Focus", Focus.class, d -> {
@@ -180,11 +183,9 @@ public abstract class KStarsCluster extends KStarsState {
 			return Focus.FocusState.values()[ (int) status[0] ];
 		 } );
 		this.devices.add( this.focus );
-		this.mandatoryDevices.add( this.focus );
 		
 		this.scheduler = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Scheduler", Scheduler.class );
 		this.devices.add( this.scheduler );
-		this.mandatoryDevices.add( this.scheduler );
 	}
 
 	protected void unsubscribe() throws DBusException {
@@ -244,6 +245,7 @@ public abstract class KStarsCluster extends KStarsState {
 		cameraDevices = IndiDevice.createDevices( indi, DriverInterface.CCD_INTERFACE, IndiCamera::new );
 		filterDevices = IndiDevice.createDevices( indi, DriverInterface.FILTER_INTERFACE, IndiFilterWheel::new );
 		rotatorDevices = IndiDevice.createDevices( indi, DriverInterface.ROTATOR_INTERFACE, IndiRotator::new );
+		capDevices = IndiDevice.createDevices( indi, DriverInterface.DUSTCAP_INTERFACE, IndiCap::new );
 
 		/*
 		String foundCamera = (String) this.capture.read( "camera" );
@@ -327,7 +329,10 @@ public abstract class KStarsCluster extends KStarsState {
 		
 		long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - this.lastWeatherCheck );
 
-		if( delta >= 10 ) {
+
+		long updateDelta = 15;
+
+		if( delta >= updateDelta ) {
 
 			boolean weatherSafty = false;
 
@@ -336,7 +341,7 @@ public abstract class KStarsCluster extends KStarsState {
 				var res = client.newRequest( "http://192.168.0.106:8087/getPlainValue/0_userdata.0.Roof.isSafeCondition" ).send();
 				weatherSafty = Boolean.parseBoolean( res.getContentAsString() );
 
-				if( delta >= 15 ) {
+				if( delta >= ( updateDelta + 5 ) ) {
 					logMessage( "Resumed weather status after "+ delta +" seconds");
 				}
 				this.lastWeatherCheck = System.currentTimeMillis();
@@ -720,7 +725,7 @@ public abstract class KStarsCluster extends KStarsState {
 			try {
 				d.checkAlive();
 			}
-			catch( UnknownObject uo ) {
+			catch( UnknownObject | ServiceUnknown uo ) {
 				ekosReady.set( false );
 				return false;
 			}
@@ -730,29 +735,32 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 
 		boolean allConnected = true;
-		try {
-			for( String device : this.indi.methods.getDevices() ) {
-				String state = this.indi.methods.getPropertyState( device, "CONNECTION" );
-				String connected = this.indi.methods.getSwitch( device, "CONNECTION", "CONNECT" );
-				
-				if( "Ok".equals( state ) && "On".equals( connected ) ) {
-					continue;
-				}
-				else {
-					allConnected = false;
-					logMessage( "The device " + device + " is not connected: " + state + "/" + connected );
-					/*
-					if( autoConnect ) {
-						this.indi.methods.setSwitch( device, "CONNECTION", "CONNECT", "On" );
-						this.indi.methods.sendProperty( device, "CONNECTION" );
+		if( autoConnect ) {
+			try {
+				for( String device : this.indi.methods.getDevices() ) {
+					String state = this.indi.methods.getPropertyState( device, "CONNECTION" );
+					String connected = this.indi.methods.getSwitch( device, "CONNECTION", "CONNECT" );
+					
+					if( "Ok".equals( state ) && "On".equals( connected ) ) {
+						continue;
 					}
-					*/
+					else {
+						allConnected = false;
+						logMessage( "The device " + device + " is not connected: " + state + "/" + connected );
+						/*
+						if( autoConnect ) {
+							this.indi.methods.setSwitch( device, "CONNECTION", "CONNECT", "On" );
+							this.indi.methods.sendProperty( device, "CONNECTION" );
+						}
+						*/
+					}
 				}
 			}
+			catch( Throwable t ) {
+				logError( "Failed to query indi device status", t );
+			}
 		}
-		catch( Throwable t ) {
-			logError( "Failed to query indi device status", t );
-		}
+		
 
 		return allConnected;
 	}
@@ -935,6 +943,34 @@ public abstract class KStarsCluster extends KStarsState {
 	public abstract void listen();
 
 
+	protected void unparkCap() {
+        for( IndiCap cap : capDevices.values() ) {
+            try {
+                if( cap.isParked() ) {
+                    logMessage( "Request cap unpark for " + cap.deviceName );
+                    cap.unpark();
+                }
+            }
+            catch( Throwable t ) {
+                logError( "Failed to request unpark cap " + cap.deviceName, t);
+            }
+        }
+    }
+
+    protected void parkCap() {
+        for( IndiCap cap : capDevices.values() ) {
+            try {
+                if( !cap.isParked() ) {
+                    logMessage( "Request cap park for " + cap.deviceName );
+                    cap.park();
+                }
+            }
+            catch( Throwable t ) {
+                logError( "Failed to request unpark cap " + cap.deviceName, t);
+            }
+        }
+    }
+
 	public AtomicBoolean automationSuspended = new AtomicBoolean( false );
 
 	public void addActions( Map<String, Action> actions ) {
@@ -983,12 +1019,11 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 		
 		
-        
-		Map<String,Object> res = new HashMap<>();
+		Map<String,Object> res = new LinkedHashMap<>();
 		
 
 		for( IndiFilterWheel filterDevice : filterDevices.values() ) {
-			Map<String,Object> device = new HashMap<>();
+			Map<String,Object> device = new LinkedHashMap<>();
 			List<String> filters = filterDevice.getFilters() ;
 			device.put( "filters", filters );
 			device.put( "currentFilter", filters.get( filterDevice.getFilterSlot() - 1 ) );
@@ -998,7 +1033,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 
 		for( IndiCamera cameraDevice : cameraDevices.values() ) {
-			Map<String,Object> camera = new HashMap<>();
+			Map<String,Object> camera = new LinkedHashMap<>();
 
 			camera.put( "name", cameraDevice.deviceName );
 			camera.put( "temperature", cameraDevice.getCcdTemparatur() );
@@ -1006,6 +1041,23 @@ public abstract class KStarsCluster extends KStarsState {
 			camera.put( "isCooling", cameraDevice.isCooling() );
 
 			res.put( cameraDevice.deviceName, camera );
+		}
+
+		for( IndiCap capDevice : capDevices.values() ) {
+			Map<String,Object> cap = new LinkedHashMap<>();
+
+			cap.put( "name", capDevice.deviceName );
+			cap.put( "parked", capDevice.isParked() );
+
+			if( "park".equals( req.getParameter( "capPark" ) ) ) {
+				capDevice.park();
+			}
+			else if( "unpark".equals( req.getParameter( "capPark" ) ) ) {
+				capDevice.unpark();
+			}
+		
+
+			res.put( capDevice.deviceName, cap );
 		}
 
 		res.put( "automationSuspended", this.automationSuspended.get() );

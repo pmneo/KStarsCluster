@@ -129,7 +129,7 @@ public class KStarsClusterServer extends KStarsCluster {
 
                         SchedulerJob job = schedulerActiveJob.get();
                         if( job != null ) {
-                            if( this.mountParkStatus.get() != ParkStatus.PARK_UNPARKED ) {
+                            if( this.mountStatus.get() == MountStatus.MOUNT_PARKED ) {
                                 this.mount.methods.unpark();
                             }
                             unparkRoof();    
@@ -560,6 +560,8 @@ public class KStarsClusterServer extends KStarsCluster {
             default:
                 break;
         }
+
+        unparkCap();
     }
 
     protected void parkRoof() {
@@ -579,7 +581,10 @@ public class KStarsClusterServer extends KStarsCluster {
             default:
                 break;
         }
+
+        parkCap();
     }
+
 
 
     public void addActions( Map<String, Action> actions ) {
