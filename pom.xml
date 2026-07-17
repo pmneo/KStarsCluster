@@ -150,18 +150,18 @@
             <version>2.0b6</version>
         </dependency>
 
-        <!-- CLI argument parser (via JitPack) -->
+        <!-- CLI argument parser (via JitPack — tag name is the version string) -->
         <dependency>
             <groupId>com.github.spullara</groupId>
             <artifactId>cli-parser</artifactId>
-            <version>1.1.2</version>
+            <version>cli-parser-1.1.5</version>
         </dependency>
 
         <!-- JavaPlot (gnuplot wrapper, via JitPack) -->
         <dependency>
             <groupId>com.github.panayotis</groupId>
             <artifactId>JavaPlot</artifactId>
-            <version>0.5.0</version>
+            <version>master-SNAPSHOT</version>
         </dependency>
     </dependencies>
 
