@@ -1,5 +1,6 @@
 package org.kde;
 
+import org.freedesktop.dbus.annotations.DBusInterfaceName;
 import org.freedesktop.dbus.annotations.DBusProperty;
 import org.freedesktop.dbus.annotations.DBusProperty.Access;
 import org.freedesktop.dbus.interfaces.DBusInterface;
@@ -7,6 +8,7 @@ import org.freedesktop.dbus.interfaces.DBusInterface;
 /**
  * Auto-generated class.
  */
+@DBusInterfaceName("org.kde.kstars")
 @DBusProperty(name = "colorScheme", type = String.class, access = Access.READ_WRITE)
 public interface Kstars extends DBusInterface {
 

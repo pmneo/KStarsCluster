@@ -2,7 +2,8 @@ package org.kde.kstars.ekos;
 
 import java.util.List;
 
-import org.freedesktop.dbus.DBusMap;
+import java.util.Map;
+
 import org.freedesktop.dbus.annotations.DBusInterfaceName;
 import org.freedesktop.dbus.annotations.DBusProperty;
 import org.freedesktop.dbus.annotations.DBusProperty.Access;
@@ -62,12 +63,12 @@ public interface Align extends DBusInterface {
     }
 
     public static class newSolution extends DBusSignal {
-        private final DBusMap<String,Object> solution;
-        public newSolution(String _path, DBusMap<String,Object> dbusMap) throws DBusException {
+        private final Map<String,Object> solution;
+        public newSolution(String _path, Map<String,Object> dbusMap) throws DBusException {
             super(_path);
             this.solution = dbusMap;
         }
-        public DBusMap<String,Object> getSolution() {
+        public Map<String,Object> getSolution() {
             return solution;
         }
     }

@@ -32,6 +32,7 @@ import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.Request;
 import org.freedesktop.dbus.connections.impl.DBusConnection;
+import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder;
 import org.freedesktop.dbus.errors.ServiceUnknown;
 import org.freedesktop.dbus.errors.UnknownObject;
 import org.freedesktop.dbus.exceptions.DBusException;
@@ -118,7 +119,11 @@ public abstract class KStarsCluster extends KStarsState {
 		MethodCall.setDefaultTimeout( 5000 );
 
 		/* Get a connection to the session bus so we can get data */
-		con = DBusConnection.getConnection( DBusConnection.DBusBusType.SESSION );
+		con = DBusConnectionBuilder.forSessionBus()
+			.receivingThreadConfig()
+				.withSignalThreadCount( 50 )
+			.connectionConfig()
+			.build();
 
 		client = new HttpClient() {
 				@Override

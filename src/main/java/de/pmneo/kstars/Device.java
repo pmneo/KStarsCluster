@@ -61,8 +61,6 @@ public class Device<T extends DBusInterface> {
 	public Device( DBusConnection con, String busName, String objectPath, Class<T> impl, Function< Device<T>, Enum<?>> readStatus ) throws DBusException {
 		this.con = con;
 
-		this.con.changeThreadCount( (byte)50 );
-
 		this.impl = impl;
 		this.busName = busName;
 		this.objectPath = objectPath;
