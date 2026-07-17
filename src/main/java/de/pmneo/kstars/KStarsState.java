@@ -11,7 +11,6 @@ import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus.FocusState;
 import org.kde.kstars.ekos.Guide.GuideStatus;
-import org.kde.kstars.ekos.Mount.MeridianFlipStatus;
 import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Mount.ParkStatus;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
@@ -154,16 +153,6 @@ public class KStarsState {
         return mountParkStatus.get();
     }
 
-    public final AtomicReference<MeridianFlipStatus> meridianFlipStatus = new AtomicReference<MeridianFlipStatus>( MeridianFlipStatus.FLIP_NONE );
-    public MeridianFlipStatus handleMeridianFlipStatus( MeridianFlipStatus state ) {
-        if( state != null ) {
-            meridianFlipStatus.set( state );
-        }
-
-        logMessage( "handleMeridianFlipStatus(" + state + ")" );
-        return meridianFlipStatus.get();
-    }
-    
     public final AtomicReference<AlignState> alignStatus = new AtomicReference<AlignState>( AlignState.ALIGN_IDLE );
     public AlignState handleAlignStatus( AlignState state ) {
         if( state != null ) {

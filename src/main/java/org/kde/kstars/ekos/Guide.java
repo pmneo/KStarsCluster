@@ -1,7 +1,5 @@
 package org.kde.kstars.ekos;
 
-import java.util.List;
-
 import org.freedesktop.dbus.annotations.DBusInterfaceName;
 import org.freedesktop.dbus.annotations.DBusProperty;
 import org.freedesktop.dbus.annotations.DBusProperty.Access;
@@ -14,7 +12,7 @@ import org.freedesktop.dbus.messages.DBusSignal;
  */
 @DBusInterfaceName("org.kde.kstars.Ekos.Guide")
 @DBusProperty(name = "camera", type = String.class, access = Access.READ_WRITE)
-@DBusProperty(name = "st4", type = String.class, access = Access.READ_WRITE)
+@DBusProperty(name = "guider", type = String.class, access = Access.READ_WRITE)
 @DBusProperty(name = "logText", type = String[].class, access = Access.READ)
 @DBusProperty(name = "exposure", type = Double.class, access = Access.READ_WRITE)
 @DBusProperty(name = "status", type = Guide.GuideStatus.class, access = Access.READ)
@@ -32,17 +30,9 @@ public interface Guide extends DBusInterface {
     public boolean suspend();
     public boolean resume();
     public void clearCalibration();
-    public List<String> getST4Devices();
-    public void setImageFilter(String value);
-    public void setCalibrationTwoAxis(boolean enable);
-    public void setCalibrationAutoStar(boolean enable);
-    public void setCalibrationAutoSquareSize(boolean enable);
     public void setDarkFrameEnabled(boolean enable);
-    public void setCalibrationPulseDuration(int pulseDuration);
-    public void setGuideBoxSizeIndex(int boxSizeIndex);
-    public void setGuideAlgorithmIndex(int index);
     public void setSubFrameEnabled(boolean enable);
-    public void setDitherSettings(boolean enable, double value);
+    public void setAutoStarEnabled(boolean enable);
     public boolean setGuiderType(int guideType);
 
 

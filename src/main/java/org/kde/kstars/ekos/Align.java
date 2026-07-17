@@ -40,9 +40,7 @@ public interface Align extends DBusInterface {
     public List<Double> getTargetCoords();
     public int getLoadAndSlewStatus();
     public void setBinningIndex(int binningIndex);
-    public void setFOVTelescopeType(int index);
     public void setTargetCoords(double ra, double de);
-    public void setTargetRotation(double rotation);
     public void setTargetPositionAngle (double value);
 
     public static enum AlignState {

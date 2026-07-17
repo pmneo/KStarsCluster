@@ -33,7 +33,6 @@ public interface Mount extends DBusInterface {
     public boolean park();
     public boolean unpark();
     public boolean resetModel();
-    public boolean executeMeridianFlip();
     public void setMeridianFlipValues(boolean activate, double hours);
 
 	public static enum MountStatus {
@@ -73,21 +72,6 @@ public interface Mount extends DBusInterface {
     public static class pierSideChanged extends AbstractStateSignal<PierSide> {
         public pierSideChanged(String _path, Object[] _status) throws DBusException {
             super(_path, PierSide.class, _status );
-        }
-    }
-    
-    public static enum MeridianFlipStatus {
-	  FLIP_NONE, 
-	  FLIP_PLANNED, 
-	  FLIP_WAITING, 
-	  FLIP_ACCEPTED,
-	  FLIP_RUNNING, 
-	  FLIP_COMPLETED, 
-	  FLIP_ERROR
-	}
-    public static class newMeridianFlipStatus extends AbstractStateSignal<MeridianFlipStatus> {
-        public newMeridianFlipStatus(String _path, Object[] _status) throws DBusException {
-            super(_path, MeridianFlipStatus.class, _status );
         }
     }
 }

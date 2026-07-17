@@ -225,9 +225,6 @@ public abstract class KStarsCluster extends KStarsState {
 		subscriptions.add( this.mount.addSigHandler( Mount.newParkStatus.class, status -> {
 			this.handleMountParkStatus( status.getStatus() );
 		} ) );
-		subscriptions.add( this.mount.addSigHandler( Mount.newMeridianFlipStatus.class, status -> {
-			this.handleMeridianFlipStatus( status.getStatus() );
-		} ) );
 		subscriptions.add( this.align.addNewStatusHandler( Align.newStatus.class, status -> {
 			this.handleAlignStatus( status.getStatus() );
 		} ) );

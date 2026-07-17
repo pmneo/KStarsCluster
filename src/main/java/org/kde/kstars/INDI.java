@@ -11,10 +11,10 @@ import org.freedesktop.dbus.interfaces.DBusInterface;
 @DBusInterfaceName("org.kde.kstars.INDI")
 public interface INDI extends DBusInterface {
 
-    public boolean start(String port, List<String> drivers);
+    public boolean start(int port, List<String> drivers);
     public boolean stop(String port);
-    public boolean connect(String host, String port);
-    public boolean disconnect(String host, String port);
+    public boolean connect(String host, int port);
+    public boolean disconnect(String host, int port);
     public List<String> getDevices();
     public List<String> getProperties(String device);
     public String getPropertyState(String device, String property);
@@ -26,8 +26,8 @@ public interface INDI extends DBusInterface {
     public String getText(String device, String property, String textName);
     public boolean setNumber(String device, String property, String numberName, double value);
     public double getNumber(String device, String property, String numberName);
-    public List<Byte> getBLOBData(String device, String property, String blobName);
-    public String getBLOBFile(String device, String property, String blobName);
+    public getBLOBDataTuple getBLOBData(String device, String property, String blobName);
+    public getBLOBFileTuple getBLOBFile(String device, String property, String blobName);
 
     public static enum IpsState {
         IPS_IDLE, /*!< State is idle */

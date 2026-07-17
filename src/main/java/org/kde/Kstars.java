@@ -52,5 +52,4 @@ public interface Kstars extends DBusInterface {
     public String getObservingWishListObjectNames();
     public String getObservingSessionPlanObjectNames();
     public void printImage(boolean usePrintDialog, boolean useChartColors);
-    public void openFITS(String imageURL);
 }

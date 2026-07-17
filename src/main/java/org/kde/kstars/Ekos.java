@@ -31,7 +31,7 @@ public interface Ekos extends DBusInterface {
     public List<String> getProfiles();
     public boolean setProfile(String profileName);
     public void setEkosLiveConnected(boolean enabled);
-    public void setEkosLiveConfig(boolean onlineService, boolean rememberCredentials, boolean autoConnect);
+    public void setEkosLiveConfig(boolean rememberCredentials, boolean autoConnect);
     public void setEkosLiveUser(String username, String password);
     public void setEkosLoggingEnabled(String name, boolean enabled);
 

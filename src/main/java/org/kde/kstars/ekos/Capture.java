@@ -22,7 +22,7 @@ import de.pmneo.kstars.KStarsCluster;
 @DBusProperty(name = "logText", type = String[].class, access = Access.READ)
 @DBusProperty(name = "status", type = Capture.CaptureStatus.class, access = Access.READ)
 public interface Capture extends DBusInterface {
-    public void start(String train);
+    public String start(String train);
     public void abort(String train);
     public void suspend();
     public void stop();
@@ -30,10 +30,8 @@ public interface Capture extends DBusInterface {
     public void toggleSequence();
     public void restartCamera(String name);
     public void toggleVideo(boolean enabled);
-
-    public boolean loadSequenceQueue (String fileURL, String train, boolean isMaster, String targetName);
+    public boolean loadSequenceQueue(String fileURL, String train, boolean isMaster, String targetName);
     public int findCameraPosition (String train, boolean addIfNecessary);
-    
     public boolean saveSequenceQueue(String path);
     public void clearSequenceQueue();
     public String getSequenceQueueStatus();
@@ -50,9 +48,9 @@ public interface Capture extends DBusInterface {
     public int getActiveJobID();
     public int getActiveJobRemainingTime();
     public int getOverallRemainingTime();
-    public void clearAutoFocusHFR();
+    public void clearAutoFocusHFR(String trainname);
     public void ignoreSequenceHistory();
-    public void setCapturedFramesMap(String signature, int count);
+    public void setCapturedFramesMap(String signature, int count, String train);
 
 
     public static class newLog extends DBusSignal {
@@ -65,21 +63,6 @@ public interface Capture extends DBusInterface {
 
         public String getText() {
             return text;
-        }
-    }
-
-    public static class newSequenceImage extends DBusSignal {
-
-        private final String filename;
-
-        public newSequenceImage(String _path, String _filename) throws DBusException {
-            super(_path);
-            this.filename = _filename;
-        }
-
-
-        public String getFilename() {
-            return filename;
         }
     }
 

@@ -8,5 +8,5 @@ import org.freedesktop.dbus.interfaces.DBusInterface;
  */
 @DBusInterfaceName("org.kde.KMainWindow")
 public interface KMainWindow extends DBusInterface {
-    public void activateAction( String action );
+    public boolean activateAction( String action );
 }

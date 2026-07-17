@@ -28,7 +28,7 @@ public interface Focus extends DBusInterface {
     public String camera(String trainName);
     public boolean canAutoFocus(String trainName);
     public boolean capture(String trainName, double settleTime);
-    public boolean checkFocus(double requiredHFR, String trainName);
+    public void checkFocus(double requiredHFR, String trainName);
     public String filter(String trainName);
     public String filterWheel(String trainName);
     public boolean focusIn(String trainName, int ms);
@@ -38,9 +38,9 @@ public interface Focus extends DBusInterface {
     public boolean setAutoFocusParameters(String trainName, int boxSize, int stepSize, int maxTravel, double tolerance);
     public boolean setAutoStarEnabled(boolean enable, String trainName);
     public boolean setAutoSubFrameEnabled(boolean enable, String trainName);
-    public void setBinning(int binX, int binY, String trainName);
+    public boolean setBinning(int binX, int binY, String trainName);
 
-    public void start(String trainName);
+    public boolean start(String trainName);
     public Object[] status(String trainName);
 
     public boolean useFullField(String value);

@@ -22,7 +22,6 @@ import org.kde.kstars.ekos.Capture;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus.FocusState;
 import org.kde.kstars.ekos.Guide.GuideStatus;
-import org.kde.kstars.ekos.Mount.MeridianFlipStatus;
 import org.kde.kstars.ekos.Mount.MountStatus;
 import org.kde.kstars.ekos.Mount.ParkStatus;
 import org.kde.kstars.ekos.Scheduler.SchedulerState;
@@ -378,19 +377,7 @@ public class KStarsClusterServer extends KStarsCluster {
         return state;
     }
 
-    
-    @Override
-    public MeridianFlipStatus handleMeridianFlipStatus(MeridianFlipStatus state) {
-        state = super.handleMeridianFlipStatus(state);
-        
-        final Map<String,Object> payload = new HashMap<>();
-        payload.put( "action", "handleMeridianFlipStatus" );
-        payload.put( "status", state);
 
-        writeToAllClients( payload );
-
-        return state;
-    }
     @Override
     public ParkStatus handleMountParkStatus(ParkStatus state) {
         state = super.handleMountParkStatus(state);
