@@ -1,2 +1,5 @@
 KStarsLog_*.log
 KStarsClusterScripts/stopUsb.bsh
+target/
+.idea/
+*.iml
