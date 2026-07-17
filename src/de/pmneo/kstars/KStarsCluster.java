@@ -16,14 +16,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.configuration2.INIConfiguration;
@@ -407,6 +408,23 @@ public abstract class KStarsCluster extends KStarsState {
 
 	private Thread kStarsMonitor = null;
 
+	// Completed by ekosStatusChanged signal (Idle/Error) or crash fallback — replaces D-Bus polling
+	private volatile CompletableFuture<Void> ekosStopFuture;
+
+	public Ekos.CommunicationStatus handleEkosStatus( Ekos.CommunicationStatus state ) {
+		state = super.handleEkosStatus( state );
+
+		if( state == Ekos.CommunicationStatus.Idle || state == Ekos.CommunicationStatus.Error ) {
+			CompletableFuture<Void> f = ekosStopFuture;
+			if( f != null ) {
+				logMessage( "Ekos stopped (status=" + state + "), signaling monitor loop" );
+				f.complete( null );
+			}
+		}
+
+		return state;
+	}
+
 	private AtomicBoolean opticalTrain;
 	public void connectToKStars() {
 		if( kStarsMonitor != null ) {
@@ -555,113 +573,132 @@ public abstract class KStarsCluster extends KStarsState {
     }
 
 	private void waitUntilEkosHasStopped() {
+		ekosStopFuture = new CompletableFuture<>();
 		Long weatherBadSince = null;
-		while( checkEkosReady( false ) ) {
-			long start = System.currentTimeMillis();
 
-			if( checkWeatherStatus() ) {
-				if( weatherBadSince != null ) {
-					logMessage( "Weather changed to SAFE" );
-					weatherBadSince = null;
+		try {
+			while( !ekosStopFuture.isDone() ) {
+				long start = System.currentTimeMillis();
+
+				// Crash fallback: ps process check — no D-Bus call needed
+				if( getKStarsRuntime() == 0 ) {
+					logMessage( "KStars process gone, exiting monitor loop" );
+					break;
 				}
-			}
-			else {
-				if( weatherBadSince == null ) {
-					weatherBadSince = System.currentTimeMillis();
-					logMessage( "Weather changed to UNSAFE" );
+
+				if( checkWeatherStatus() ) {
+					if( weatherBadSince != null ) {
+						logMessage( "Weather changed to SAFE" );
+						weatherBadSince = null;
+					}
 				}
 				else {
-					long now = System.currentTimeMillis();
-					long badWeatherDuration = (now - weatherBadSince);
-					long badWeatherTimeout = TimeUnit.HOURS.toMillis(1);
-
-					if( badWeatherDuration >= badWeatherTimeout ) {
-						StringBuilder waitToStopReasons = new StringBuilder();
-						waitToStopReasons.append( "Weather is UNSAFE since 1 hour, check if we can shutdown ekos" );
-
-						boolean canStop = true;
-
-						if( this.mountStatus.get() != MountStatus.MOUNT_PARKED ) {
-							waitToStopReasons.append( "\n\tMount is not yet parked, wait for parking" );
-							canStop = false;
-						}
-						if( this.captureRunning.values().contains( Boolean.TRUE ) )  {
-							waitToStopReasons.append( "\n\tA capture is in progress" );
-							canStop = false;
-						}
-						
-
-						if( this.activeCaptureJobStarted.values().stream()
-							.anyMatch( ts -> ts > System.currentTimeMillis() - TimeUnit.MINUTES.toMillis( 15 ) ) ) {
-							waitToStopReasons.append( "\n\tLast capture was less than 15 Minutes ago" );
-							canStop = false;
-						}
-
-
-						if( canStop == false ) {
-							logMessageOnce( waitToStopReasons.toString() );
-						}
-						else {
-							logMessage( "Shutting down Ekos / KStars after " + (badWeatherDuration / 1000 / 60 ) + " Minutes" );
-
-							try {
-
-								WaitUntil maxWait = new WaitUntil( 20, "changeFilter" );
-
-								for( IndiFilterWheel filterWheel : filterDevices.values() ) {
-									logMessage( "Setting Filter slot to L of " + filterWheel.deviceName );
-									filterWheel.setFilterSlot( 1 );
-								}
-
-								while( filterDevices.values().stream().anyMatch( fw -> fw.getFilterSlotStatus() != IpsState.IPS_OK ) && maxWait.check() ) {
-									try { Thread.sleep( 10 ); } catch( Throwable t ) {};
-								}
-
-								for( String train : this.focusState.keySet() ) {
-									logMessage( "Caputure one focus image on train " + train);
-									this.focus.methods.capture( train, 0 );
-								}
-
-								sleep( 1000L );
-								
-								maxWait.reset();
-
-								while( this.focusState.values().stream().anyMatch( s -> s != FocusState.FOCUS_IDLE ) && maxWait.check() ) {
-									try { Thread.sleep( 10 ); } catch( Throwable t ) {};
-								}
-
-								logMessage( "Caputure one focus image done");
-
-								sleep( 5000L );								
-							}
-							catch( Throwable t ) {
-								logError( "Failed to go back to L before shutdown", t );
-							}
-
-							ensureMountIsParked(); //ensure mount is parked
-
-							if( stopEkos() == false ) {
-								stopKStars();
-							}
-							stopUsbDevices();
-							break;
-						}
+					if( weatherBadSince == null ) {
+						weatherBadSince = System.currentTimeMillis();
+						logMessage( "Weather changed to UNSAFE" );
 					}
-					else if( badWeatherDuration >= TimeUnit.MINUTES.toMillis( 1 ) ) {
-						ensureMountIsParked();
+					else {
+						long now = System.currentTimeMillis();
+						long badWeatherDuration = (now - weatherBadSince);
+						long badWeatherTimeout = TimeUnit.HOURS.toMillis(1);
+
+						if( badWeatherDuration >= badWeatherTimeout ) {
+							StringBuilder waitToStopReasons = new StringBuilder();
+							waitToStopReasons.append( "Weather is UNSAFE since 1 hour, check if we can shutdown ekos" );
+
+							boolean canStop = true;
+
+							if( this.mountStatus.get() != MountStatus.MOUNT_PARKED ) {
+								waitToStopReasons.append( "\n\tMount is not yet parked, wait for parking" );
+								canStop = false;
+							}
+							if( this.captureRunning.values().contains( Boolean.TRUE ) )  {
+								waitToStopReasons.append( "\n\tA capture is in progress" );
+								canStop = false;
+							}
+
+							if( this.activeCaptureJobStarted.values().stream()
+								.anyMatch( ts -> ts > System.currentTimeMillis() - TimeUnit.MINUTES.toMillis( 15 ) ) ) {
+								waitToStopReasons.append( "\n\tLast capture was less than 15 Minutes ago" );
+								canStop = false;
+							}
+
+							if( canStop == false ) {
+								logMessageOnce( waitToStopReasons.toString() );
+							}
+							else {
+								logMessage( "Shutting down Ekos / KStars after " + (badWeatherDuration / 1000 / 60 ) + " Minutes" );
+
+								try {
+									WaitUntil maxWait = new WaitUntil( 20, "changeFilter" );
+
+									for( IndiFilterWheel filterWheel : filterDevices.values() ) {
+										logMessage( "Setting Filter slot to L of " + filterWheel.deviceName );
+										filterWheel.setFilterSlot( 1 );
+									}
+
+									while( filterDevices.values().stream().anyMatch( fw -> fw.getFilterSlotStatus() != IpsState.IPS_OK ) && maxWait.check() ) {
+										try { Thread.sleep( 10 ); } catch( Throwable t ) {};
+									}
+
+									for( String train : this.focusState.keySet() ) {
+										logMessage( "Caputure one focus image on train " + train);
+										this.focus.methods.capture( train, 0 );
+									}
+
+									sleep( 1000L );
+
+									maxWait.reset();
+
+									while( this.focusState.values().stream().anyMatch( s -> s != FocusState.FOCUS_IDLE ) && maxWait.check() ) {
+										try { Thread.sleep( 10 ); } catch( Throwable t ) {};
+									}
+
+									logMessage( "Caputure one focus image done");
+
+									sleep( 5000L );
+								}
+								catch( Throwable t ) {
+									logError( "Failed to go back to L before shutdown", t );
+								}
+
+								ensureMountIsParked();
+
+								if( stopEkos() == false ) {
+									stopKStars();
+								}
+								stopUsbDevices();
+								break;
+							}
+						}
+						else if( badWeatherDuration >= TimeUnit.MINUTES.toMillis( 1 ) ) {
+							ensureMountIsParked();
+						}
 					}
 				}
-			}
 
-			try {
-				ekosRunningLoop();
-			}
-			catch( Throwable t ) {
-				logError( "error in ekos running loop", t);
-			}
+				try {
+					ekosRunningLoop();
+				}
+				catch( Throwable t ) {
+					logError( "error in ekos running loop", t);
+				}
 
-			long checkTime = System.currentTimeMillis() - start;
-			sleep( Math.max( 500, ekosLoopDelay - checkTime ) ); //min 500 ms delay
+				long checkTime = System.currentTimeMillis() - start;
+				long remaining = Math.max( 500, ekosLoopDelay - checkTime );
+				try {
+					ekosStopFuture.get( remaining, TimeUnit.MILLISECONDS );
+				}
+				catch( TimeoutException e ) {
+					// Normal loop timeout, continue
+				}
+				catch( Exception e ) {
+					break;
+				}
+			}
+		}
+		finally {
+			ekosStopFuture = null;
 		}
 	}
 
