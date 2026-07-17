@@ -9,13 +9,6 @@
     <version>1.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <repositories>
-        <repository>
-            <id>jitpack.io</id>
-            <url>https://jitpack.io</url>
-        </repository>
-    </repositories>
-
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
@@ -150,18 +143,18 @@
             <version>2.0b6</version>
         </dependency>
 
-        <!-- CLI argument parser (via JitPack — tag name is the version string) -->
+        <!-- CLI argument parser -->
         <dependency>
-            <groupId>com.github.spullara</groupId>
+            <groupId>com.github.spullara.cli-parser</groupId>
             <artifactId>cli-parser</artifactId>
-            <version>cli-parser-1.1.5</version>
+            <version>1.1.5</version>
         </dependency>
 
-        <!-- JavaPlot (gnuplot wrapper, via JitPack) -->
+        <!-- JavaPlot (gnuplot wrapper) -->
         <dependency>
-            <groupId>com.github.panayotis</groupId>
-            <artifactId>JavaPlot</artifactId>
-            <version>master-SNAPSHOT</version>
+            <groupId>com.panayotis</groupId>
+            <artifactId>javaplot</artifactId>
+            <version>0.5.0</version>
         </dependency>
     </dependencies>
 

@@ -3,3 +3,4 @@ KStarsClusterScripts/stopUsb.bsh
 target/
 .idea/
 *.iml
+dependency-reduced-pom.xml
