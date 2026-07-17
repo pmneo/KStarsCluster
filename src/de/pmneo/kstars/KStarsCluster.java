@@ -70,6 +70,8 @@ import jakarta.servlet.http.HttpServletResponse;
 public abstract class KStarsCluster extends KStarsState {
 
 	public static final String PRIMARY_TRAIN = "Primary";
+	public static final String SECONDARY_TRAIN = "Secondary";
+
 
 	protected DBusConnection con;
 

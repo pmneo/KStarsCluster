@@ -30,7 +30,10 @@ public interface Capture extends DBusInterface {
     public void toggleSequence();
     public void restartCamera(String name);
     public void toggleVideo(boolean enabled);
-    public boolean loadSequenceQueue(String fileURL, String targetName);
+
+    public boolean loadSequenceQueue (String fileURL, String train, boolean isMaster, String targetName);
+    public int findCameraPosition (String train, boolean addIfNecessary);
+    
     public boolean saveSequenceQueue(String path);
     public void clearSequenceQueue();
     public String getSequenceQueueStatus();

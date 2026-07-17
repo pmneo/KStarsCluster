@@ -38,15 +38,15 @@ public class WaitUntil {
 
 
     public static interface WaitCondition {
-        public boolean isInvalid();
+        public boolean isValid();
     }
-    public static boolean waitUntil( String timeoutMessage, int maxWait, WaitCondition condition ) {
-        final WaitUntil waitUntil = new WaitUntil( 5, timeoutMessage );
+    public static boolean waitUntil( String timeoutMessage, long maxWait, WaitCondition condition ) {
+        final WaitUntil waitUntil = new WaitUntil( maxWait, timeoutMessage );
         while( true ) {
             if( waitUntil.check() == false ) {
                 return false;
             } 
-            if( condition.isInvalid() == false ) {
+            if( condition.isValid() ) {
                 return true;
             }
 

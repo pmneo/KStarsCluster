@@ -4,6 +4,7 @@ import java.io.File;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,7 +16,9 @@ import java.util.stream.Collectors;
 
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.kde.kstars.ekos.SchedulerJob;
+import org.kde.kstars.INDI.IpsState;
 import org.kde.kstars.ekos.Align.AlignState;
+import org.kde.kstars.ekos.Capture;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus.FocusState;
 import org.kde.kstars.ekos.Guide.GuideStatus;
@@ -602,5 +605,79 @@ public class KStarsClusterServer extends KStarsCluster {
             }
             return roofStatus.get().indiStatus;
 		} );
+
+        
+        actions.put( "flats", ( parts, req, resp ) -> {
+
+            if( parts.length < 2 ) {
+                return "no rotations given";
+            }
+
+            var angles = Arrays.stream(parts[1].split(",")).map( p -> Double.valueOf( p.trim() ) ).toArray(Double[]::new);
+
+            int p = capture.methods.findCameraPosition( PRIMARY_TRAIN, true );
+            int s = capture.methods.findCameraPosition( SECONDARY_TRAIN, true );
+
+            capture.methods.abort( PRIMARY_TRAIN );
+            capture.methods.abort( SECONDARY_TRAIN );
+
+            var finished = new HashMap<String,Boolean>();
+
+            var unsub = this.capture.addNewStatusHandler( Capture.newStatus.class, status -> {
+                System.out.println( status.train + ": " + status.getStatus() );
+
+                if( status.getStatus() == CaptureStatus.CAPTURE_COMPLETE ) {
+                    finished.put( status.train, true );
+                }
+                else {
+                    finished.put( status.train, false );
+                }
+            } );
+
+            try {
+
+
+                for( var pos : angles ) {
+
+                    logMessage( "Moving rotator to postion " + pos );
+                    WaitUntil.waitUntil(
+                        "Rotators Idle", 
+                        120, 
+                        () -> rotatorDevices.values().stream().allMatch( r -> r.getRotatorPositionStatus() == IpsState.IPS_OK )
+                    );
+
+                    for( var r : rotatorDevices.values() ) {
+                        r.setRotatorPosition( pos );
+                    }
+                        
+                    WaitUntil.waitUntil(
+                        "Rotators Idle", 
+                        120, 
+                        () -> rotatorDevices.values().stream().allMatch( r -> r.getRotatorPositionStatus() == IpsState.IPS_OK )
+                    );
+
+                    logMessage( "Moved rotator to postion " + pos );
+
+                    capture.methods.loadSequenceQueue( "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_B_nocal.esq", PRIMARY_TRAIN, true, "" );
+                    capture.methods.loadSequenceQueue( "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_A_nocal.esq", SECONDARY_TRAIN, false, "" );
+
+                    capture.methods.start( PRIMARY_TRAIN );
+                    capture.methods.start( SECONDARY_TRAIN );
+
+                    WaitUntil.waitUntil(
+                        "Capture Finished", 
+                        TimeUnit.MINUTES.toSeconds(30), 
+                        () -> ( finished.size() == 2 && finished.values().stream().allMatch( b -> b.booleanValue() ) ) 
+                    );
+
+                    logMessage( "all captures finished" );
+                }
+            }
+            finally {
+                unsub.run();
+            }
+
+            return p + " / " + s;
+        } );
     }
 }
