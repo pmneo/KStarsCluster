@@ -1,16 +1,16 @@
 package de.pmneo.kstars;
 
-
-import de.pmneo.kstars.utils.CachedValue;
 import org.kde.kstars.INDI;
 import org.kde.kstars.INDI.IpsState;
 
-import java.util.concurrent.TimeUnit;
-
 public class IndiCamera extends IndiDevice {
-    
+
     public IndiCamera(String deviceName, Device<INDI> indi) {
         super(deviceName, indi);
+        //eager: needed by checkCameraCooling(), called from the Mount/Scheduler status
+        //signal handlers. Everything else (CCD_TEMPERATURE, CCD_CONTROLS, ...) is only
+        //read by the HTTP status endpoint and is watched lazily on first use.
+        watch( "CCD_COOLER" );
     }
 
     private double preCoolTemp = -15;
@@ -21,7 +21,6 @@ public class IndiCamera extends IndiDevice {
     public double getPreCoolTemp() {
         return preCoolTemp;
     }
-
 
     public void warm() {
         if( isCooling() ) {
@@ -38,21 +37,18 @@ public class IndiCamera extends IndiDevice {
     }
 
     public double getCcdTemparatur() {
-        return getNumber( "CCD_TEMPERATURE", "CCD_TEMPERATURE_VALUE" );
+        return getProperty( "CCD_TEMPERATURE" ).getNumber( "CCD_TEMPERATURE_VALUE" );
     }
     public IpsState getCcdTemparaturState() {
-        return getPropertyState( "CCD_TEMPERATURE" );
+        return getProperty( "CCD_TEMPERATURE" ).state;
     }
 
     public void setCcdTemparatur( double value ) {
         this.setNumber( "CCD_TEMPERATURE", "CCD_TEMPERATURE_VALUE", value );
     }
 
-    private final CachedValue<Boolean> isCooling = new CachedValue<Boolean>(
-            () -> "on".equalsIgnoreCase( indi.methods.getSwitch( deviceName, "CCD_COOLER", "COOLER_ON" ) ),
-            TimeUnit.MINUTES.toMillis( 1 ) );
     public boolean isCooling() {
-        return isCooling.get();
+        return getProperty( "CCD_COOLER" ).isOn( "COOLER_ON" );
     }
     public void setCooling( boolean value ) {
         try {
@@ -61,8 +57,8 @@ public class IndiCamera extends IndiDevice {
                 indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_OFF", "Off" );
             }
             else {
-                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_ON", "Off" ); 
-                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_OFF", "On" );   
+                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_ON", "Off" );
+                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_OFF", "On" );
             }
             this.indi.methods.sendProperty( deviceName, "CCD_COOLER" );
         }
@@ -72,21 +68,21 @@ public class IndiCamera extends IndiDevice {
     }
 
     public boolean isAntiDewHeaterOn() {
-        return getNumber( "CCD_CONTROLS","AntiDewHeater" ) > 0;
+        return getProperty( "CCD_CONTROLS" ).getNumber( "AntiDewHeater" ) > 0;
     }
     public void setAntiDewHeaterOn( boolean value ) {
         setNumber( "CCD_CONTROLS", "AntiDewHeater", value ? 1 : 0 );
     }
 
     public double getRampingSlope() {
-        return getNumber( "CCD_TEMP_RAMP","RAMP_SLOPE" );
+        return getProperty( "CCD_TEMP_RAMP" ).getNumber( "RAMP_SLOPE" );
     }
     public void setRampingSlope( double value ) {
         setNumber( "CCD_TEMP_RAMP", "RAMP_SLOPE", value );
     }
 
     public int getBinning() {
-        return (int) getNumber( "CCD_BINNING","HOR_BIN" );
+        return (int) getProperty( "CCD_BINNING" ).getNumber( "HOR_BIN" );
     }
     public void setBinning( int value ) {
         setNumber( "CCD_BINNING", "HOR_BIN", value );
@@ -101,122 +97,6 @@ public class IndiCamera extends IndiDevice {
         setNumber( "CCD_CONTROLS", "Gain", gain );
     }
     public int getGain() {
-        return (int) getNumber( "CCD_CONTROLS", "Gain" );
+        return (int) getProperty( "CCD_CONTROLS" ).getNumber( "Gain" );
     }
-
-    /*
-"ZWO CCD ASI2600MM Pro", "CONNECTION", "CONNECT",
- "ZWO CCD ASI2600MM Pro", "CONNECTION", "DISCONNECT",
- "ZWO CCD ASI2600MM Pro", "DRIVER_INFO", "DRIVER_NAME",
- "ZWO CCD ASI2600MM Pro", "DRIVER_INFO", "DRIVER_EXEC",
- "ZWO CCD ASI2600MM Pro", "DRIVER_INFO", "DRIVER_VERSION",
- "ZWO CCD ASI2600MM Pro", "DRIVER_INFO", "DRIVER_INTERFACE",
- "ZWO CCD ASI2600MM Pro", "POLLING_PERIOD", "PERIOD_MS",
- "ZWO CCD ASI2600MM Pro", "DEBUG", "ENABLE",
- "ZWO CCD ASI2600MM Pro", "DEBUG", "DISABLE",
- "ZWO CCD ASI2600MM Pro", "SIMULATION", "ENABLE",
- "ZWO CCD ASI2600MM Pro", "SIMULATION", "DISABLE",
- "ZWO CCD ASI2600MM Pro", "CONFIG_PROCESS", "CONFIG_LOAD",
- "ZWO CCD ASI2600MM Pro", "CONFIG_PROCESS", "CONFIG_SAVE",
- "ZWO CCD ASI2600MM Pro", "CONFIG_PROCESS", "CONFIG_DEFAULT",
- "ZWO CCD ASI2600MM Pro", "CONFIG_PROCESS", "CONFIG_PURGE",
- "ZWO CCD ASI2600MM Pro", "ACTIVE_DEVICES", "ACTIVE_TELESCOPE",
- "ZWO CCD ASI2600MM Pro", "ACTIVE_DEVICES", "ACTIVE_ROTATOR",
- "ZWO CCD ASI2600MM Pro", "ACTIVE_DEVICES", "ACTIVE_FOCUSER",
- "ZWO CCD ASI2600MM Pro", "ACTIVE_DEVICES", "ACTIVE_FILTER",
- "ZWO CCD ASI2600MM Pro", "ACTIVE_DEVICES", "ACTIVE_SKYQUALITY",
- "ZWO CCD ASI2600MM Pro", "CCD_EXPOSURE", "CCD_EXPOSURE_VALUE",
- "ZWO CCD ASI2600MM Pro", "CCD_ABORT_EXPOSURE", "ABORT",
- "ZWO CCD ASI2600MM Pro", "CCD_FRAME", "X",
- "ZWO CCD ASI2600MM Pro", "CCD_FRAME", "Y",
- "ZWO CCD ASI2600MM Pro", "CCD_FRAME", "WIDTH",
- "ZWO CCD ASI2600MM Pro", "CCD_FRAME", "HEIGHT",
- "ZWO CCD ASI2600MM Pro", "CCD_FRAME_RESET", "RESET",
- "ZWO CCD ASI2600MM Pro", "CCD_BINNING", "HOR_BIN",
- "ZWO CCD ASI2600MM Pro", "CCD_BINNING", "VER_BIN",
- "ZWO CCD ASI2600MM Pro", "FITS_HEADER", "FITS_OBSERVER",
- "ZWO CCD ASI2600MM Pro", "FITS_HEADER", "FITS_OBJECT",
- "ZWO CCD ASI2600MM Pro", "CCD_TEMPERATURE", "CCD_TEMPERATURE_VALUE",
- "ZWO CCD ASI2600MM Pro", "CCD_TEMP_RAMP", "RAMP_SLOPE",
- "ZWO CCD ASI2600MM Pro", "CCD_TEMP_RAMP", "RAMP_THRESHOLD",
- "ZWO CCD ASI2600MM Pro", "CCD_TRANSFER_FORMAT", "FORMAT_FITS",
- "ZWO CCD ASI2600MM Pro", "CCD_TRANSFER_FORMAT", "FORMAT_NATIVE",
- "ZWO CCD ASI2600MM Pro", "CCD_INFO", "CCD_MAX_X",
- "ZWO CCD ASI2600MM Pro", "CCD_INFO", "CCD_MAX_Y",
- "ZWO CCD ASI2600MM Pro", "CCD_INFO", "CCD_PIXEL_SIZE",
- "ZWO CCD ASI2600MM Pro", "CCD_INFO", "CCD_PIXEL_SIZE_X",
- "ZWO CCD ASI2600MM Pro", "CCD_INFO", "CCD_PIXEL_SIZE_Y",
- "ZWO CCD ASI2600MM Pro", "CCD_INFO", "CCD_BITSPERPIXEL",
- "ZWO CCD ASI2600MM Pro", "CCD_COMPRESSION", "INDI_ENABLED",
- "ZWO CCD ASI2600MM Pro", "CCD_COMPRESSION", "INDI_DISABLED",
- "ZWO CCD ASI2600MM Pro", "CCD1", "CCD1",
- "ZWO CCD ASI2600MM Pro", "CCD_FRAME_TYPE", "FRAME_LIGHT",
- "ZWO CCD ASI2600MM Pro", "CCD_FRAME_TYPE", "FRAME_BIAS",
- "ZWO CCD ASI2600MM Pro", "CCD_FRAME_TYPE", "FRAME_DARK",
- "ZWO CCD ASI2600MM Pro", "CCD_FRAME_TYPE", "FRAME_FLAT",
- "ZWO CCD ASI2600MM Pro", "SCOPE_INFO", "FOCAL_LENGTH",
- "ZWO CCD ASI2600MM Pro", "SCOPE_INFO", "APERTURE",
- "ZWO CCD ASI2600MM Pro", "WCS_CONTROL", "WCS_ENABLE",
- "ZWO CCD ASI2600MM Pro", "WCS_CONTROL", "WCS_DISABLE",
- "ZWO CCD ASI2600MM Pro", "UPLOAD_MODE", "UPLOAD_CLIENT",
- "ZWO CCD ASI2600MM Pro", "UPLOAD_MODE", "UPLOAD_LOCAL",
- "ZWO CCD ASI2600MM Pro", "UPLOAD_MODE", "UPLOAD_BOTH",
- "ZWO CCD ASI2600MM Pro", "UPLOAD_SETTINGS", "UPLOAD_DIR",
- "ZWO CCD ASI2600MM Pro", "UPLOAD_SETTINGS", "UPLOAD_PREFIX",
- "ZWO CCD ASI2600MM Pro", "CCD_FAST_TOGGLE", "INDI_ENABLED",
- "ZWO CCD ASI2600MM Pro", "CCD_FAST_TOGGLE", "INDI_DISABLED",
- "ZWO CCD ASI2600MM Pro", "CCD_FAST_COUNT", "FRAMES",
- "ZWO CCD ASI2600MM Pro", "CCD_VIDEO_STREAM", "STREAM_ON",
- "ZWO CCD ASI2600MM Pro", "CCD_VIDEO_STREAM", "STREAM_OFF",
- "ZWO CCD ASI2600MM Pro", "STREAM_DELAY", "STREAM_DELAY_TIME",
- "ZWO CCD ASI2600MM Pro", "STREAMING_EXPOSURE", "STREAMING_EXPOSURE_VALUE",
- "ZWO CCD ASI2600MM Pro", "STREAMING_EXPOSURE", "STREAMING_DIVISOR_VALUE",
- "ZWO CCD ASI2600MM Pro", "FPS", "EST_FPS",
- "ZWO CCD ASI2600MM Pro", "FPS", "AVG_FPS",
- "ZWO CCD ASI2600MM Pro", "RECORD_STREAM", "RECORD_ON",
- "ZWO CCD ASI2600MM Pro", "RECORD_STREAM", "RECORD_DURATION_ON",
- "ZWO CCD ASI2600MM Pro", "RECORD_STREAM", "RECORD_FRAME_ON",
- "ZWO CCD ASI2600MM Pro", "RECORD_STREAM", "RECORD_OFF",
- "ZWO CCD ASI2600MM Pro", "RECORD_FILE", "RECORD_FILE_DIR",
- "ZWO CCD ASI2600MM Pro", "RECORD_FILE", "RECORD_FILE_NAME",
- "ZWO CCD ASI2600MM Pro", "RECORD_OPTIONS", "RECORD_DURATION",
- "ZWO CCD ASI2600MM Pro", "RECORD_OPTIONS", "RECORD_FRAME_TOTAL",
- "ZWO CCD ASI2600MM Pro", "CCD_STREAM_FRAME", "X",
- "ZWO CCD ASI2600MM Pro", "CCD_STREAM_FRAME", "Y",
- "ZWO CCD ASI2600MM Pro", "CCD_STREAM_FRAME", "WIDTH",
- "ZWO CCD ASI2600MM Pro", "CCD_STREAM_FRAME", "HEIGHT",
- "ZWO CCD ASI2600MM Pro", "CCD_STREAM_ENCODER", "RAW",
- "ZWO CCD ASI2600MM Pro", "CCD_STREAM_ENCODER", "MJPEG",
- "ZWO CCD ASI2600MM Pro", "CCD_STREAM_RECORDER", "SER",
- "ZWO CCD ASI2600MM Pro", "CCD_STREAM_RECORDER", "OGV",
- "ZWO CCD ASI2600MM Pro", "LIMITS", "LIMITS_BUFFER_MAX",
- "ZWO CCD ASI2600MM Pro", "LIMITS", "LIMITS_PREVIEW_FPS",
- "ZWO CCD ASI2600MM Pro", "CCD_COOLER_POWER", "CCD_COOLER_VALUE",
- "ZWO CCD ASI2600MM Pro", "CCD_COOLER", "COOLER_ON",
- "ZWO CCD ASI2600MM Pro", "CCD_COOLER", "COOLER_OFF",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS", "Gain",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS", "Offset",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS", "BandWidth",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS", "AutoExpMaxGain",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS", "AutoExpMaxExpMS",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS", "AutoExpTargetBrightness",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS", "HardwareBin",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS", "HighSpeedMode",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS", "AntiDewHeater",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS_MODE", "AUTO_Gain",
- "ZWO CCD ASI2600MM Pro", "CCD_CONTROLS_MODE", "AUTO_BandWidth",
- "ZWO CCD ASI2600MM Pro", "FLIP", "FLIP_HORIZONTAL",
- "ZWO CCD ASI2600MM Pro", "FLIP", "FLIP_VERTICAL",
- "ZWO CCD ASI2600MM Pro", "CCD_VIDEO_FORMAT", "ASI_IMG_RAW8",
- "ZWO CCD ASI2600MM Pro", "CCD_VIDEO_FORMAT", "ASI_IMG_RAW16",
- "ZWO CCD ASI2600MM Pro", "BLINK", "BLINK_COUNT",
- "ZWO CCD ASI2600MM Pro", "BLINK", "BLINK_DURATION",
- "ZWO CCD ASI2600MM Pro", "ADC_DEPTH", "BITS",
- "ZWO CCD ASI2600MM Pro", "SDK", "VERSION",
- "ZWO CCD ASI2600MM Pro", "Serial Number", "SN#",
- "ZWO CCD ASI2600MM Pro", "NICKNAME", "nickname",
- "ZWO CCD ASI2600MM Pro", "CCD_CAPTURE_FORMAT", "ASI_IMG_RAW8",
- "ZWO CCD ASI2600MM Pro", "CCD_CAPTURE_FORMAT", "ASI_IMG_RAW16",
- "ZWO CCD ASI2600MM Pro", "CCD_ROTATION", "CCD_ROTATION_VALUE"
-     */
 }

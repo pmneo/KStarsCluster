@@ -7,22 +7,18 @@ public class IndiRotator extends IndiDevice {
 
     public IndiRotator(String deviceName, Device<INDI> indi) {
         super(deviceName, indi);
+        //eager: getRotatorPositionStatus() is polled by executePaAlignment(), called
+        //from checkClientState()'s 5s loop while stage == ALIGN
+        watch( "ABS_ROTATOR_ANGLE" );
     }
 
-
-    /*
-	'ABS_ROTATOR_ANGLE.ANGLE',
-	'SYNC_ROTATOR_ANGLE.ANGLE',
- 	*/
-
-	public double getRotatorPosition() {
-		return getNumber( "ABS_ROTATOR_ANGLE", "ANGLE" );
-	}
-	public IpsState getRotatorPositionStatus() {
-		return getPropertyState("ABS_ROTATOR_ANGLE" );
-	}
-	protected void setRotatorPosition( double pos ) {
+    public double getRotatorPosition() {
+        return getProperty( "ABS_ROTATOR_ANGLE" ).getNumber( "ANGLE" );
+    }
+    public IpsState getRotatorPositionStatus() {
+        return getProperty( "ABS_ROTATOR_ANGLE" ).state;
+    }
+    protected void setRotatorPosition( double pos ) {
         setNumber( "ABS_ROTATOR_ANGLE", "ANGLE", pos );
-	}
-    
+    }
 }

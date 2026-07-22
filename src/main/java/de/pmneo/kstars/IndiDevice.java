@@ -4,18 +4,17 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiFunction;
-import java.util.stream.Collector;
 import java.util.stream.Collectors;
 
 import org.kde.kstars.INDI;
 import org.kde.kstars.INDI.DriverInterface;
-import org.kde.kstars.INDI.IpsState;
 
 public class IndiDevice {
     public final String deviceName;
     public final Device< INDI > indi;
-    
+
 
 	public static String findFirstDevice( Device< INDI > indi, DriverInterface ofInterface) {
 		Map<DriverInterface, List<String> > devices = getDevices(indi);
@@ -63,28 +62,75 @@ public class IndiDevice {
 	public void logMessage( Object message ) {
 		SimpleLogger.getLogger().logMessage( message );
 	}
-	
+
 	public void logError( Object message, Throwable t ) {
         SimpleLogger.getLogger().logError( message, t );
 	}
-	
-    public double getNumber( String property, String numberName ) {
-        return indi.methods.getNumber(deviceName, property, numberName );
-    }
+
+	// -------------------------------------------------------------------------
+	// Property watch cache
+	// -------------------------------------------------------------------------
+
+	private final ConcurrentHashMap<String, IndiProperty> properties = new ConcurrentHashMap<>();
+
+	/**
+	 * Subscribes to a property via INDI.watchProperty and caches its current value —
+	 * call this directly from the subclass constructor for every property it reads.
+	 * watchProperty returns the value synchronously as compact JSON, so the cache is
+	 * primed before the constructor returns; no separate registration pass needed.
+	 */
+	protected void watch( String property ) {
+		try {
+			IndiProperty p = IndiProperty.parse( indi.methods.watchProperty( deviceName, property ) );
+			if( p != null ) {
+				properties.put( property, p );
+			}
+			else {
+				logError( "watchProperty returned no data for " + deviceName + "/" + property + " — property may not exist on this device", null );
+			}
+		}
+		catch( Throwable t ) {
+			logError( "Failed to watch property " + deviceName + "/" + property, t );
+		}
+	}
+
+	/** Called by KStarsCluster's INDI.propertyValueChanged handler when a watched property of this device changes. */
+	public void onPropertyChanged( String propertyName, String json ) {
+		IndiProperty p = IndiProperty.parse( json );
+		if( p != null ) {
+			properties.put( propertyName, p );
+		}
+	}
+
+	/**
+	 * Returns the cached value of a property, watching it on first use if it isn't
+	 * cached yet. Constructors only eager-watch properties needed by signal handlers
+	 * or the 5s monitor loop; everything else (HTTP status endpoint, scripts, ...) is
+	 * watched lazily here on its first actual call.
+	 */
+	public IndiProperty getProperty( String name ) {
+		IndiProperty p = properties.get( name );
+		if( p == null ) {
+			watch( name );
+			p = properties.get( name );
+		}
+		if( p == null ) {
+			throw new IllegalStateException( "Property " + name + " of " + deviceName + " is not available (watchProperty returned no data — wrong name?)" );
+		}
+		return p;
+	}
+
+	// -------------------------------------------------------------------------
+	// Direct D-Bus accessors (unchanged)
+	// -------------------------------------------------------------------------
+
     public void setNumber( String property, String numberName, double value ) {
         this.indi.methods.setNumber( deviceName, property, numberName, value );
 		this.indi.methods.sendProperty( deviceName, property );
     }
-    public IpsState getPropertyState( String property ) {
-		return IpsState.get( this.indi.methods.getPropertyState( deviceName, property ) );
-	}
 
 	public void setSwitch( String property, String switchName, String state ) {
         this.indi.methods.setSwitch( deviceName, property, switchName, state );
 		this.indi.methods.sendProperty( deviceName, property );
     }
-	public String getSwitch( String property, String switchName ) {
-		return this.indi.methods.getSwitch( deviceName, property, switchName );
-	}
 }
-

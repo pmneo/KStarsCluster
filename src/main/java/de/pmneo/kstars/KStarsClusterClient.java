@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
 import org.freedesktop.dbus.exceptions.DBusException;
+import org.kde.kstars.ekos.Mount;
 import org.kde.kstars.ekos.SchedulerJob;
 import org.kde.kstars.ekos.Align.AlignState;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
@@ -324,7 +325,7 @@ public class KStarsClusterClient extends KStarsCluster {
 
 
     protected void checkClientState() {
-        this.updateSchedulerState();
+        this.updateSchedulerActiveJob();
 
         if( server.mountIsTracking.get() ) {
 
@@ -360,7 +361,7 @@ public class KStarsClusterClient extends KStarsCluster {
 
                     serverSolutionChanged.set( true );
 
-                    this.updateSchedulerState();
+                    this.updateSchedulerActiveJob();
                 }
             }
 
@@ -540,6 +541,51 @@ public class KStarsClusterClient extends KStarsCluster {
             
             this.stopAll();
         }
+    }
+
+
+    public boolean executePaAlignment( double targetPa, double targetRA, double targetDEC ) {
+        Mount.ParkStatus currenParkStatus = (Mount.ParkStatus) this.mount.read( "parkStatus" );
+
+        WaitUntil maxWait = new WaitUntil( 60, "Unparking Mount" );
+        while( currenParkStatus != Mount.ParkStatus.PARK_UNPARKED && maxWait.check() ) {
+            if( currenParkStatus != Mount.ParkStatus.PARK_UNPARKING ) {
+                this.mount.methods.unpark();
+            }
+            currenParkStatus = (Mount.ParkStatus) this.mount.read( "parkStatus" );
+        }
+
+        logMessage( "Slewing to " + (targetRA / 15.0 ) + " / " + targetDEC );
+        this.mount.methods.slew( targetRA / 15.0, targetDEC );
+        waitForMountTracking( 60 );
+
+        double pa = normalizePa( targetPa );
+
+        logMessage( "Starting Align process to " + pa );
+        this.align.methods.setTargetPositionAngle( pa );
+        this.align.methods.setSolverAction( 2 ); //NOTHING
+
+        captureAndSolveAndWait( false );
+
+        List<Double> coords = this.align.methods.getSolutionResult();
+        logMessage( "Resolved coordinates: " + coords );
+
+        this.align.methods.setTargetPositionAngle( pa );
+        this.mount.methods.slew( coords.get(1) / 15.0, coords.get(2) );
+        waitForMountTracking( 60 );
+        logMessage( "Mount slewed to new coordinates: " + coords );
+
+        this.align.methods.setSolverAction( 1 ); //SYNC
+        if( captureAndSolveAndWait( true ) == false ) {
+            logMessage( "Alignment failed, retry later" );
+            return false;
+        }
+        else {
+            coords = this.align.methods.getSolutionResult();
+            logMessage( "PA align done: " + coords );
+        }
+
+        return true;
     }
 
 

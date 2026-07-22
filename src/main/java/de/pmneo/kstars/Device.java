@@ -272,16 +272,7 @@ public class Device<T extends DBusInterface> {
 		
 		parsedProperties.put( key, v );
 	}
-	
-	public Map<String,Object> readAll() {
-		final Map<String,Variant<?>> all = this.properties.GetAll( interfaceName );
-		all.forEach( this::parseProperty );
-		if( all.size() == 0 ) {
-			throw new IllegalStateException( "No properties readed" );
-		}
-		return parsedProperties;
-	}
-	
+
 	public Object read( String name ) {
 		Object value = this.properties.Get( interfaceName, name );
 		
@@ -295,11 +286,6 @@ public class Device<T extends DBusInterface> {
 		}
 
 		return this.parsedProperties.get( name );
-	}
-	
-	public Object write( String name, Object value ) {
-		this.properties.Set( interfaceName, name, value );
-		return this.read( name );
 	}
 
 	@Override

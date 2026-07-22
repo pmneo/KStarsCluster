@@ -100,4 +100,11 @@ public interface Ekos extends DBusInterface {
             return name;
         }
     }
+
+    /** Fired every 5 s by the KStars Qt main event loop — absence means the loop is frozen. */
+    public static class heartbeat extends DBusSignal {
+        public heartbeat(String _path) throws DBusException {
+            super(_path);
+        }
+    }
 }

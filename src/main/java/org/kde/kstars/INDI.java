@@ -29,6 +29,28 @@ public interface INDI extends DBusInterface {
     public getBLOBDataTuple getBLOBData(String device, String property, String blobName);
     public getBLOBFileTuple getBLOBFile(String device, String property, String blobName);
 
+    /** Subscribe to value-change events for a property; returns the current value as compact JSON. */
+    public String watchProperty(String device, String property);
+    /** Unsubscribe from value-change events previously registered with watchProperty. */
+    public void unwatchProperty(String device, String property);
+
+    /** Fired when a watched property changes; json contains the full property state. */
+    public static class propertyValueChanged extends org.freedesktop.dbus.messages.DBusSignal {
+        private final String device;
+        private final String property;
+        private final String json;
+        public propertyValueChanged(String _path, String _device, String _property, String _json)
+                throws org.freedesktop.dbus.exceptions.DBusException {
+            super(_path, _device, _property, _json);
+            this.device = _device;
+            this.property = _property;
+            this.json = _json;
+        }
+        public String getDevice() { return device; }
+        public String getProperty() { return property; }
+        public String getJson() { return json; }
+    }
+
     public static enum IpsState {
         IPS_IDLE, /*!< State is idle */
         IPS_OK,       /*!< State is ok */

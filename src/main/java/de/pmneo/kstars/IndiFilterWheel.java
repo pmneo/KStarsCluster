@@ -10,71 +10,33 @@ public class IndiFilterWheel extends IndiDevice {
 
     public IndiFilterWheel(String deviceName, Device<INDI> indi) {
         super(deviceName, indi);
+        //eager: getFilterSlotStatus() is polled in the bad-weather shutdown block of
+        //waitUntilEkosHasStopped()'s 5s loop. FILTER_NAME (getFilters()) is only used
+        //by the HTTP status endpoint and is watched lazily on first use.
+        watch( "FILTER_SLOT" );
     }
-    
-    /*
- "CONNECTION", "CONNECT",
- "CONNECTION", "DISCONNECT",
- "DRIVER_INFO", "DRIVER_NAME",
- "DRIVER_INFO", "DRIVER_EXEC",
- "DRIVER_INFO", "DRIVER_VERSION",
- "DRIVER_INFO", "DRIVER_INTERFACE",
- "DEBUG", "ENABLE",
- "DEBUG", "DISABLE",
- "SIMULATION", "ENABLE",
- "SIMULATION", "DISABLE",
- "CONFIG_PROCESS", "CONFIG_LOAD",
- "CONFIG_PROCESS", "CONFIG_SAVE",
- "CONFIG_PROCESS", "CONFIG_DEFAULT",
- "CONFIG_PROCESS", "CONFIG_PURGE",
- "POLLING_PERIOD", "PERIOD_MS",
- "FILTER_SLOT", "FILTER_SLOT_VALUE",
- "FILTER_NAME", "FILTER_SLOT_NAME_1",
- "FILTER_NAME", "FILTER_SLOT_NAME_2",
- "FILTER_NAME", "FILTER_SLOT_NAME_3",
- "FILTER_NAME", "FILTER_SLOT_NAME_4",
- "FILTER_NAME", "FILTER_SLOT_NAME_5",
- "FILTER_NAME", "FILTER_SLOT_NAME_6",
- "FILTER_NAME", "FILTER_SLOT_NAME_7",
- "USEJOYSTICK", "ENABLE",
- "USEJOYSTICK", "DISABLE",
- "SNOOP_JOYSTICK", "SNOOP_JOYSTICK_DEVICE",
- "FILTER_UNIDIRECTIONAL_MOTION", "INDI_ENABLED",
- "FILTER_UNIDIRECTIONAL_MOTION", "INDI_DISABLED",
- "FILTER_CALIBRATION", "CALIBRATE"
-*/
 
     public int getFilterSlot() {
-		return (int) getNumber( "FILTER_SLOT", "FILTER_SLOT_VALUE" );
-	}
-	public IpsState getFilterSlotStatus() {
-		return getPropertyState( "FILTER_SLOT" );
-	}
-	public void setFilterSlot( int pos ) {
-		setNumber( "FILTER_SLOT", "FILTER_SLOT_VALUE", pos );
-	}
+        return (int) getProperty( "FILTER_SLOT" ).getNumber( "FILTER_SLOT_VALUE" );
+    }
+    public IpsState getFilterSlotStatus() {
+        return getProperty( "FILTER_SLOT" ).state;
+    }
+    public void setFilterSlot( int pos ) {
+        setNumber( "FILTER_SLOT", "FILTER_SLOT_VALUE", pos );
+    }
 
-	private List<String> filters = null;
-	public List<String> getFilters() {
-		if( this.filters == null ) {
-			List<String> filters = new ArrayList<>();
-
-			int i=1;
-			while( true ) {
-				String filter = this.indi.methods.getText(this.deviceName, "FILTER_NAME", "FILTER_SLOT_NAME_" + i );
-
-				if( filter == null || filter.toLowerCase().equals( "invalid" ) ) {
-					break;
-				}
-
-				filters.add( filter );
-
-				i++;
-			}
-
-			this.filters = filters;
-		}
-		
-		return this.filters;
-	}
+    /** Filter names, served entirely from the cache primed by watchProperty. */
+    public List<String> getFilters() {
+        List<String> filters = new ArrayList<>();
+        IndiProperty names = getProperty( "FILTER_NAME" );
+        for( int i = 1; ; i++ ) {
+            String filter = names.getText( "FILTER_SLOT_NAME_" + i );
+            if( filter == null || filter.isEmpty() || filter.equalsIgnoreCase( "invalid" ) ) {
+                break;
+            }
+            filters.add( filter );
+        }
+        return filters;
+    }
 }

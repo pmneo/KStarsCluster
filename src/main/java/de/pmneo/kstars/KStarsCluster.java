@@ -220,9 +220,7 @@ public abstract class KStarsCluster extends KStarsState {
 		this.devices.add( this.mount );
 		this.mandatoryDevices.add( this.mount );
 
-		this.align = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Align", Align.class, d -> {
-			return (Align.AlignState) d.read( "status" );
-		});
+		this.align = new Device<>( con, "org.kde.kstars", "/KStars/Ekos/Align", Align.class );
 		this.devices.add( this.align );
 
 		final AtomicReference<String> opticalTrain = new AtomicReference<>();
@@ -291,12 +289,23 @@ public abstract class KStarsCluster extends KStarsState {
 		subscriptions.add( this.scheduler.addSigHandler( Scheduler.newLog.class, log -> {
 			logMessage( "Scheduler: " + log.getText() );
 
-			//the scheduler emits a log line exactly when it ACTS (job started, sleeping,
-			//paused, aborted, ...) — use that as an EVENT TRIGGER for the authoritative
-			//job/status refresh instead of parsing the localized text. This also gives
-			//sub-second latency for scheduler state changes, compensating the newStatus
-			//D-Bus signal that KStars 3.8.2 never emits (proven via dbus-monitor).
-			updateSchedulerStateDebounced();
+			//belt-and-suspenders: catch scheduler actions that don't produce jobStarted/jobEnded
+			//(sleeping, weather-abort, pausing, ...). Primary triggers are below.
+			updateSchedulerActiveJobDebounced();
+		} ) );
+		subscriptions.add( this.scheduler.addSigHandler( Scheduler.jobStarted.class, sig -> {
+			logMessage( "Scheduler: job started: " + sig.getJobName() );
+			updateSchedulerActiveJob();
+		} ) );
+		subscriptions.add( this.scheduler.addSigHandler( Scheduler.jobEnded.class, sig -> {
+			logMessage( "Scheduler: job ended: " + sig.getJobName() + " (" + sig.getEndReason() + ")" );
+			updateSchedulerActiveJob();
+		} ) );
+		subscriptions.add( this.ekos.addSigHandler( Ekos.heartbeat.class, sig -> {
+			lastHeartbeat.set( System.currentTimeMillis() );
+		} ) );
+		subscriptions.add( this.indi.addSigHandler( INDI.propertyValueChanged.class, sig -> {
+			dispatchIndiPropertyChanged( sig.getDevice(), sig.getProperty(), sig.getJson() );
 		} ) );
 
 		//INDI device enumeration is done SEPARATELY (refreshIndiDevices): INDI.getDevices
@@ -340,12 +349,33 @@ public abstract class KStarsCluster extends KStarsState {
 			indiDevicesDirty.set( false );
 			logMessage( "INDI devices refreshed: " + cameraDevices.size() + " cameras, " + filterDevices.size() + " filter wheels, "
 				+ rotatorDevices.size() + " rotators, " + capDevices.size() + " caps, " + lightBoxDevices.size() + " light boxes" );
+
 			return true;
 		}
 		catch( Throwable t ) {
 			indiDevicesDirty.set( true );
 			logError( "Failed to refresh INDI devices — will retry on next loop pass", t );
 			return false;
+		}
+	}
+
+	private Iterable<IndiDevice> allIndiDevices() {
+		java.util.List<IndiDevice> all = new java.util.ArrayList<>();
+		all.addAll( cameraDevices.values() );
+		all.addAll( filterDevices.values() );
+		all.addAll( rotatorDevices.values() );
+		all.addAll( capDevices.values() );
+		all.addAll( lightBoxDevices.values() );
+		return all;
+	}
+
+	/** Routes a propertyValueChanged signal to the matching IndiDevice cache. */
+	protected void dispatchIndiPropertyChanged( String device, String property, String json ) {
+		for( IndiDevice d : allIndiDevices() ) {
+			if( d.deviceName.equals( device ) ) {
+				d.onPropertyChanged( property, json );
+				return;
+			}
 		}
 	}
 
@@ -530,6 +560,7 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 
 			con = buildDBusConnection();
+			lastHeartbeat.set(0); // stale timestamp must not fire the watchdog during reconnect
 			logMessage( "DBUS RECYCLE: reconnected to session bus as " + con.getUniqueName() );
 
 			this.createDevices();
@@ -608,6 +639,15 @@ public abstract class KStarsCluster extends KStarsState {
 
 	/** Guards against parallel probes when several calls fail at once. */
 	private final AtomicBoolean dbusProbeInProgress = new AtomicBoolean( false );
+
+	/**
+	 * Timestamp of the last {@link Ekos.heartbeat} signal received from KStars.
+	 * Zero means no heartbeat seen yet (e.g. right after a reconnect). The KStars
+	 * Qt event loop fires this every 5 s — absence for {@link #HEARTBEAT_TIMEOUT_MS}
+	 * means the loop is frozen even if no synchronous D-Bus call produced a NoReply.
+	 */
+	private final AtomicLong lastHeartbeat = new AtomicLong(0);
+	private static final long HEARTBEAT_TIMEOUT_MS = 15_000;
 
 	protected void triggerDBusFreezeRecovery( final Throwable cause ) {
 		final long now = System.currentTimeMillis();
@@ -1016,6 +1056,27 @@ public abstract class KStarsCluster extends KStarsState {
 					logMessageOnce( "DBUS SIEGE active — monitor loop idle" );
 					sleep( 5000L );
 					continue;
+				}
+
+				// Heartbeat watchdog: KStars fires Ekos.heartbeat every 5 s from its Qt main
+				// event loop. If the loop is frozen (even without producing a NoReply) we will
+				// not see a heartbeat for >15 s. Probe first — a delayed signal delivery is
+				// possible under load, so we only escalate when KStars actually fails the probe.
+				{
+					final long hb = lastHeartbeat.get();
+					if( hb != 0 && !dbusRecoveryInProgress.get() ) {
+						final long hbAge = System.currentTimeMillis() - hb;
+						if( hbAge > HEARTBEAT_TIMEOUT_MS ) {
+							logMessage( "HEARTBEAT WATCHDOG: last heartbeat was " + hbAge + "ms ago — probing KStars" );
+							if( probeKStarsAlive() ) {
+								logMessage( "HEARTBEAT WATCHDOG: KStars responds — signal delivery lag, resetting timestamp" );
+								lastHeartbeat.set( System.currentTimeMillis() );
+							}
+							else {
+								triggerDBusFreezeRecovery( new RuntimeException( "heartbeat timeout after " + hbAge + "ms" ) );
+							}
+						}
+					}
 				}
 
 				// Crash fallback: ps process check — no D-Bus call needed
@@ -1758,20 +1819,14 @@ public abstract class KStarsCluster extends KStarsState {
 		}
     }
 	
-	protected void updateSchedulerState() {
-		updateSchedulerActiveJob();
-
-		this.scheduler.determineAndDispatchCurrentState( this.schedulerState.get() );
-    }
-
 	/**
-	 * Signal-triggered variant of {@link #updateSchedulerState()}: rate-limited so a
-	 * newLog burst (scheduler startup logs several lines within milliseconds) causes
-	 * only one refresh — the regular 5s poll covers the tail of a burst anyway.
+	 * Rate-limited variant of {@link #updateSchedulerActiveJob()} for the newLog signal:
+	 * a newLog burst (scheduler startup logs several lines within milliseconds) causes
+	 * only one refresh this way.
 	 */
 	private volatile long lastSignalTriggeredRefreshAt = 0;
 
-	protected void updateSchedulerStateDebounced() {
+	protected void updateSchedulerActiveJobDebounced() {
 		final long now = System.currentTimeMillis();
 		if( now - lastSignalTriggeredRefreshAt < 1000L ) {
 			return;
@@ -1779,10 +1834,10 @@ public abstract class KStarsCluster extends KStarsState {
 		lastSignalTriggeredRefreshAt = now;
 
 		try {
-			updateSchedulerState();
+			updateSchedulerActiveJob();
 		}
 		catch( Throwable t ) {
-			logError( "Failed to refresh scheduler state from newLog signal", t );
+			logError( "Failed to refresh scheduler job from newLog signal", t );
 		}
 	}
 
@@ -1856,7 +1911,7 @@ public abstract class KStarsCluster extends KStarsState {
 	protected void loadSchedule( File f ) {
 
 		if( f.exists() ) {
-			SchedulerState status = (SchedulerState) scheduler.read( "status" );
+			SchedulerState status = schedulerState.get();
 			if( status == SchedulerState.SCHEDULER_IDLE ) {
 				try {
 					f = f.getCanonicalFile();
@@ -1921,50 +1976,6 @@ public abstract class KStarsCluster extends KStarsState {
             logMessage( "The delta between target " + serverPa + " and current " + clientPa + " is more than "+range+" deg: " + delta );
             return false;
         }
-    }
-
-	public boolean executePaAlignment( double targetPa, double targetRA, double targetDEC ) {
-		Mount.ParkStatus currenParkStatus = (Mount.ParkStatus) this.mount.read( "parkStatus" );
-
-        WaitUntil maxWait = new WaitUntil( 60, "Unparking Mount" );
-        while( currenParkStatus != Mount.ParkStatus.PARK_UNPARKED && maxWait.check() ) {
-            if( currenParkStatus != Mount.ParkStatus.PARK_UNPARKING ) {
-                this.mount.methods.unpark();
-            }
-            currenParkStatus = (Mount.ParkStatus) this.mount.read( "parkStatus" );
-        }
-      
-        logMessage( "Slewing to " + (targetRA / 15.0 ) + " / " + targetDEC );
-        this.mount.methods.slew( targetRA / 15.0, targetDEC );
-        waitForMountTracking( 60 );
-
-        double pa = normalizePa( targetPa );
-
-        logMessage( "Starting Align process to " + pa );
-        this.align.methods.setTargetPositionAngle( pa );
-        this.align.methods.setSolverAction( 2 ); //NOTHING
-        
-        captureAndSolveAndWait( false );
-
-        List<Double> coords = this.align.methods.getSolutionResult();
-        logMessage( "Resolved coordinates: " + coords );
-
-        this.align.methods.setTargetPositionAngle( pa );
-        this.mount.methods.slew( coords.get(1) / 15.0, coords.get(2) );
-        waitForMountTracking( 60 );
-        logMessage( "Mount slewed to new coordinates: " + coords );
-
-        this.align.methods.setSolverAction( 1 ); //SYNC
-        if( captureAndSolveAndWait( true ) == false ) {
-            logMessage( "Alignment failed, retry later" );
-            return false;
-        }
-        else {
-            coords = this.align.methods.getSolutionResult();
-            logMessage( "PA align done: " + coords );
-        }
-
-        return true;
     }
 
 	public int getKStarsRuntime() {
