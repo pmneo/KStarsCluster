@@ -1,4 +1,5 @@
 KStarsLog_*.log
+KStarsThreadDump*.txt
 KStarsClusterScripts/stopUsb.bsh
 target/
 .idea/

@@ -17,6 +17,7 @@ import java.util.Scanner;
 import javax.swing.JFrame;
 import javax.swing.JTabbedPane;
 
+import de.pmneo.kstars.SimpleLogger;
 import org.apache.commons.math3.fitting.PolynomialCurveFitter;
 import org.apache.commons.math3.fitting.WeightedObservedPoints;
 import org.apache.commons.math3.stat.descriptive.DescriptiveStatistics;
@@ -244,7 +245,6 @@ date, time, position, temperature, filter, HFR, altitude
         public static Comparator<FocusLog> hfrComp = (l,r) -> Double.compare( l.hfr, r.hfr );
         public static Comparator<FocusLog> posComp = (l,r) -> Integer.compare( l.position, r.position );
         public static Comparator<FocusLog> filterComp = (l,r) -> l.filter.compareTo( r.filter );
-       
     }
 
     public static class FocusAnalysis {
@@ -343,7 +343,7 @@ date, time, position, temperature, filter, HFR, altitude
                             }
                         }
                         catch( Throwable t ) {
-                            t.printStackTrace();
+                            SimpleLogger.getLogger().logError( "Failed to parse focus log entry", t );
                         }
                     }
 
@@ -359,15 +359,12 @@ date, time, position, temperature, filter, HFR, altitude
                 }
             }
         }
-        
 
         for( Iterator<FocusAnalysis> a = analysis.values().iterator(); a.hasNext(); ) {
             if( a.next().analyse() == false ) {
                 a.remove();
             }
         }
-
-        
     }
 
 
@@ -420,7 +417,6 @@ date, time, position, temperature, filter, HFR, altitude
 
         // Ausgabe der Polynom-Koeffizienten
         public String getTerm() {
-
             String term = "";
             for (int i = 0; i < coefficients.length; i++) {
                 if( i == 0 ) {
@@ -432,7 +428,5 @@ date, time, position, temperature, filter, HFR, altitude
             }
             return term;
         }
-
     }
-
 }

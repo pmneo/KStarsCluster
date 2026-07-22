@@ -85,10 +85,12 @@ public class KStarsClusterServer extends KStarsCluster {
 
     protected void checkServerState() {
         try {
-            this.updateSchedulerState( );
+            //this.updateSchedulerState( );
 
             if( automationSuspended.get() ) {
-                logMessage( "Weather is "+this.weatherState.get()+", but automation is suspended" );
+                if( this.weatherState.get() != WeatherState.WEATHER_ALERT ) {
+                    logMessage("Weather is " + this.weatherState.get() + ", but automation is suspended");
+                }
             }
             else if( this.weatherState.get() != WeatherState.WEATHER_ALERT ) {
                 switch ( this.schedulerState.get() ) {
@@ -129,12 +131,13 @@ public class KStarsClusterServer extends KStarsCluster {
                         }
                         startedDelta = System.currentTimeMillis() - schedulerStartetAt;
 
-                        SchedulerJob job = schedulerActiveJob.get();
-                        if( job != null ) {
+                        //unpark only while a job is actually EXECUTING (JOB_BUSY) —
+                        //while the scheduler merely waits for a job's startup time the roof stays parked
+                        if( isSchedulerJobExecuting() ) {
                             if( this.mountStatus.get() == MountStatus.MOUNT_PARKED ) {
                                 this.mount.methods.unpark();
                             }
-                            unparkRoof();    
+                            unparkRoof();
                         }
                         else {
                             parkRoof();
@@ -397,8 +400,11 @@ public class KStarsClusterServer extends KStarsCluster {
         String action = (String) payload.get( "action" );
         actionCache.put( action, payload );
 
-        String train = (String) payload.get( "train" );
+        if(clients.isEmpty()) {
+            return;
+        }
 
+        String train = (String) payload.get( "train" );
         payload.remove( "logText" ); 
         logMessage( "Sending " + action + ": " + payload.get( "status" ) + (train != null ? " of " + train : "") + " to " + clients.size() + " clients" );
         for( SocketHandler handler : clients.keySet() ) {
@@ -576,7 +582,6 @@ public class KStarsClusterServer extends KStarsCluster {
     }
 
 
-
     public void addActions( Map<String, Action> actions ) {
         super.addActions(actions);
 
@@ -593,78 +598,81 @@ public class KStarsClusterServer extends KStarsCluster {
             return roofStatus.get().indiStatus;
 		} );
 
-        
         actions.put( "flats", ( parts, req, resp ) -> {
-
             if( parts.length < 2 ) {
                 return "no rotations given";
             }
-
-            var angles = Arrays.stream(parts[1].split(",")).map( p -> Double.valueOf( p.trim() ) ).toArray(Double[]::new);
-
-            int p = capture.methods.findCameraPosition( PRIMARY_TRAIN, true );
-            int s = capture.methods.findCameraPosition( SECONDARY_TRAIN, true );
-
-            capture.methods.abort( PRIMARY_TRAIN );
-            capture.methods.abort( SECONDARY_TRAIN );
-
-            var finished = new HashMap<String,Boolean>();
-
-            var unsub = this.capture.addNewStatusHandler( Capture.newStatus.class, status -> {
-                System.out.println( status.train + ": " + status.getStatus() );
-
-                if( status.getStatus() == CaptureStatus.CAPTURE_COMPLETE ) {
-                    finished.put( status.train, true );
-                }
-                else {
-                    finished.put( status.train, false );
-                }
-            } );
-
+            if( !automationSuspended.compareAndSet( false, true ) ) {
+                return "suspended";
+            }
             try {
+                var angles = Arrays.stream(parts[1].split(",")).map(p -> Double.valueOf(p.trim())).toArray(Double[]::new);
 
+                int p = capture.methods.findCameraPosition(PRIMARY_TRAIN, true);
+                int s = capture.methods.findCameraPosition(SECONDARY_TRAIN, true);
 
-                for( var pos : angles ) {
+                capture.methods.abort(PRIMARY_TRAIN);
+                capture.methods.abort(SECONDARY_TRAIN);
 
-                    logMessage( "Moving rotator to postion " + pos );
-                    WaitUntil.waitUntil(
-                        "Rotators Idle", 
-                        120, 
-                        () -> rotatorDevices.values().stream().allMatch( r -> r.getRotatorPositionStatus() == IpsState.IPS_OK )
-                    );
+                var finished = new HashMap<String, Boolean>();
 
-                    for( var r : rotatorDevices.values() ) {
-                        r.setRotatorPosition( pos );
+                var unsub = this.capture.addNewStatusHandler(Capture.newStatus.class, status -> {
+                    //System.out.println(status.train + ": " + status.getStatus());
+                    if (status.getStatus() == CaptureStatus.CAPTURE_COMPLETE) {
+                        finished.put(status.train, true);
+                    } else {
+                        finished.put(status.train, false);
                     }
-                        
-                    WaitUntil.waitUntil(
-                        "Rotators Idle", 
-                        120, 
-                        () -> rotatorDevices.values().stream().allMatch( r -> r.getRotatorPositionStatus() == IpsState.IPS_OK )
-                    );
+                });
 
-                    logMessage( "Moved rotator to postion " + pos );
+                try {
+                    for (var pos : angles) {
+                        logMessage("Moving rotator to postion " + pos);
+                        WaitUntil.waitUntil(
+                            "Rotators Idle",
+                            120,
+                            () -> rotatorDevices.values().stream().allMatch(r -> List.of(IpsState.IPS_IDLE, IpsState.IPS_OK).contains(r.getRotatorPositionStatus()) )
+                        );
 
-                    capture.methods.loadSequenceQueue( "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_B_nocal.esq", PRIMARY_TRAIN, true, "" );
-                    capture.methods.loadSequenceQueue( "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_A_nocal.esq", SECONDARY_TRAIN, false, "" );
+                        for (var r : rotatorDevices.values()) {
+                            r.setRotatorPosition(pos);
+                        }
 
-                    capture.methods.start( PRIMARY_TRAIN );
-                    capture.methods.start( SECONDARY_TRAIN );
+                        WaitUntil.waitUntil(
+                            "Rotators Idle",
+                            120,
+                            () -> rotatorDevices.values().stream().allMatch(r -> r.getRotatorPositionStatus() == IpsState.IPS_OK)
+                        );
 
-                    WaitUntil.waitUntil(
-                        "Capture Finished", 
-                        TimeUnit.MINUTES.toSeconds(30), 
-                        () -> ( finished.size() == 2 && finished.values().stream().allMatch( b -> b.booleanValue() ) ) 
-                    );
+                        logMessage("Moved rotator to postion " + pos);
 
-                    logMessage( "all captures finished" );
+                        capture.methods.loadSequenceQueue("/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_B_nocal.esq", PRIMARY_TRAIN, true, "");
+                        capture.methods.loadSequenceQueue("/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_A_nocal.esq", SECONDARY_TRAIN, false, "");
+
+                        capture.methods.start(PRIMARY_TRAIN);
+                        capture.methods.start(SECONDARY_TRAIN);
+
+                        WaitUntil.waitUntil(
+                                "Capture Finished",
+                                TimeUnit.MINUTES.toSeconds(30),
+                                () -> (finished.size() == 2 && finished.values().stream().allMatch(b -> b.booleanValue()))
+                        );
+
+                        logMessage("all captures finished");
+                    }
+
+                    for( var light : this.lightBoxDevices.values() ) {
+                        light.lightOff();
+                    }
+                } finally {
+                    unsub.run();
                 }
+
+                return p + " / " + s;
             }
             finally {
-                unsub.run();
+                automationSuspended.set( false );
             }
-
-            return p + " / " + s;
         } );
     }
 }

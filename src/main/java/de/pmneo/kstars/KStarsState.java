@@ -279,6 +279,12 @@ public class KStarsState {
 
 
     public final AtomicReference<SchedulerJob> schedulerActiveJob = new AtomicReference<SchedulerJob>( null );
+
+    /** True only while the scheduler actually EXECUTES a job — false while it merely waits for a job's startup time. */
+    public boolean isSchedulerJobExecuting() {
+        final SchedulerJob job = schedulerActiveJob.get();
+        return job != null && job.isExecuting();
+    }
     
     public final AtomicReference<SchedulerState> schedulerState = new AtomicReference<SchedulerState>( SchedulerState.SCHEDULER_IDLE );
     public SchedulerState handleSchedulerStatus( SchedulerState state ) {

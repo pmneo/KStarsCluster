@@ -1,8 +1,11 @@
 package de.pmneo.kstars;
 
 
+import de.pmneo.kstars.utils.CachedValue;
 import org.kde.kstars.INDI;
 import org.kde.kstars.INDI.IpsState;
+
+import java.util.concurrent.TimeUnit;
 
 public class IndiCamera extends IndiDevice {
     
@@ -45,14 +48,11 @@ public class IndiCamera extends IndiDevice {
         this.setNumber( "CCD_TEMPERATURE", "CCD_TEMPERATURE_VALUE", value );
     }
 
+    private final CachedValue<Boolean> isCooling = new CachedValue<Boolean>(
+            () -> "on".equalsIgnoreCase( indi.methods.getSwitch( deviceName, "CCD_COOLER", "COOLER_ON" ) ),
+            TimeUnit.MINUTES.toMillis( 1 ) );
     public boolean isCooling() {
-        String coolerOn = indi.methods.getSwitch( deviceName, "CCD_COOLER", "COOLER_ON" );
-        if( "On".equals( coolerOn ) ) {
-            return true;
-        }
-        else {
-            return false;
-        }
+        return isCooling.get();
     }
     public void setCooling( boolean value ) {
         try {

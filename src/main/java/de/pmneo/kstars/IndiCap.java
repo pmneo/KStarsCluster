@@ -2,6 +2,7 @@ package de.pmneo.kstars;
 
 import java.util.concurrent.TimeUnit;
 
+import de.pmneo.kstars.utils.CachedValue;
 import org.kde.kstars.INDI;
 import org.kde.kstars.INDI.IpsState;
 
@@ -17,7 +18,7 @@ public class IndiCap extends IndiDevice {
 		indi.methods.setSwitch( this.deviceName, "CAP_PARK", "UNPARK", "On" );   
 		this.indi.methods.sendProperty( deviceName, "CAP_PARK" );
 
-		lastUpdate = 0;
+		isParked.forceUpdate();
     }
 
 	public void park() {
@@ -25,18 +26,14 @@ public class IndiCap extends IndiDevice {
 		indi.methods.setSwitch( this.deviceName, "CAP_PARK", "UNPARK", "Off" );   
 		this.indi.methods.sendProperty( deviceName, "CAP_PARK" );
 
-		lastUpdate = 0;
+		isParked.forceUpdate();
     }
 
 
-	private long lastUpdate = 0;
-	private boolean isParked = false;
+	private final CachedValue<Boolean> isParked = new CachedValue<Boolean>(
+			() -> "on".equalsIgnoreCase( indi.methods.getSwitch( this.deviceName, "CAP_PARK", "PARK" ) ),
+			TimeUnit.MINUTES.toMillis( 5 ) );
 	public boolean isParked() {
-		if( lastUpdate + TimeUnit.MINUTES.toMillis( 5 ) < System.currentTimeMillis() ) {
-			lastUpdate = System.currentTimeMillis();
-			isParked = "on".equalsIgnoreCase( indi.methods.getSwitch( this.deviceName, "CAP_PARK", "PARK" ) );
-		}
-
-		return isParked;
+		return isParked.get();
 	}
 }

@@ -43,8 +43,10 @@ public interface Scheduler extends DBusInterface {
 
         private final String text;
 
-        public newLog(String _path, String _interfaceName, String _text) throws DBusException {
-            super(_path, _interfaceName);
+        //constructor MUST be (objectPath, signalArgs...) — the signal carries one string,
+        //so exactly two parameters; a third one makes dbus-java drop the signal silently
+        public newLog(String _path, String _text) throws DBusException {
+            super(_path, _text);
             this.text = _text;
         }
 

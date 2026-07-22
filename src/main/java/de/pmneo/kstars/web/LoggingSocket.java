@@ -43,6 +43,8 @@ public class LoggingSocket implements LogListener {
         if (this.session != null) {
             this.session.getAsyncRemote().sendText(message, res -> {
                 if( res.getException() != null ) {
+                    //deliberately NOT routed through SimpleLogger: this IS a log listener,
+                    //logging the send failure would re-trigger a send and recurse endlessly
                     res.getException().printStackTrace();
                 }
             } );

@@ -1,15 +1,12 @@
 package de.pmneo.kstars;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -26,15 +23,58 @@ import org.kde.kstars.ekos.AbstractStateSignal;
 
 public class Device<T extends DBusInterface> {
 
-	// Shared executor for signal handlers — keeps D-Bus dispatch thread free so KStars can't deadlock
-	private static final ExecutorService signalExecutor = Executors.newCachedThreadPool( new ThreadFactory() {
-		private final AtomicInteger counter = new AtomicInteger();
-		public Thread newThread( Runnable r ) {
-			Thread t = new Thread( r, "DBus-Signal-" + counter.incrementAndGet() );
-			t.setDaemon( true );
-			return t;
+	/**
+	 * Health hook for the D-Bus freeze watchdog: every synchronous remote call made
+	 * through {@link #methods} or the properties proxy reports its outcome here.
+	 */
+	public static interface DBusHealthListener {
+		public void onSuccess();
+		public void onFailure( Throwable t );
+	}
+
+	private static volatile DBusHealthListener healthListener = null;
+	public static void setHealthListener( DBusHealthListener l ) {
+		healthListener = l;
+	}
+
+	/**
+	 * In-flight call registry: which synchronous D-Bus call is running on which
+	 * thread right now, plus the last completed call per interface. Dumped by the
+	 * freeze watchdog to answer "which call was in flight when KStars froze".
+	 */
+	private static final class CallInfo {
+		final String desc;
+		final long at;
+		CallInfo( String desc, long at ) {
+			this.desc = desc;
+			this.at = at;
 		}
-	} );
+	}
+	private static final Map<String, CallInfo> inFlightCalls = new ConcurrentHashMap<>();
+	private static final Map<String, CallInfo> lastCompletedCalls = new ConcurrentHashMap<>();
+
+	public static String dumpCallRegistry() {
+		final long now = System.currentTimeMillis();
+		final StringBuilder sb = new StringBuilder();
+
+		sb.append( "in-flight:" );
+		if( inFlightCalls.isEmpty() ) {
+			sb.append( " none" );
+		}
+		for( Map.Entry<String, CallInfo> e : inFlightCalls.entrySet() ) {
+			sb.append( "\n\t" ).append( e.getValue().desc )
+			  .append( " on thread " ).append( e.getKey() )
+			  .append( ", running since " ).append( now - e.getValue().at ).append( "ms" );
+		}
+
+		sb.append( "\n\tlast completed:" );
+		for( Map.Entry<String, CallInfo> e : lastCompletedCalls.entrySet() ) {
+			sb.append( "\n\t" ).append( e.getValue().desc )
+			  .append( ", " ).append( now - e.getValue().at ).append( "ms ago" );
+		}
+
+		return sb.toString();
+	}
 
 	public final Class<T> impl;
 	public final String interfaceName;
@@ -47,6 +87,8 @@ public class Device<T extends DBusInterface> {
 	private final Map<String, Object> parsedProperties;
 	
 	public T methods;
+	/** Unwrapped dbus-java proxy — required for addSigHandler/removeSigHandler, which resolve the object path by proxy identity. */
+	private T rawMethods;
 	private Properties properties;
 	
 	public Device( DBusConnection con, String busName, String objectPath, Class<T> impl ) throws DBusException {
@@ -81,10 +123,54 @@ public class Device<T extends DBusInterface> {
 	}
 
 	public Device<T> connect() throws DBusException {
-		this.methods = con.getRemoteObject( busName, objectPath, impl );
-		this.properties = con.getRemoteObject( busName, objectPath, Properties.class );
+		this.rawMethods = con.getRemoteObject( busName, objectPath, impl );
+		this.methods = monitored( this.rawMethods, impl );
+		this.properties = monitored( con.getRemoteObject( busName, objectPath, Properties.class ), Properties.class );
 
 		return this;
+	}
+
+	/**
+	 * Wraps a remote proxy so every synchronous D-Bus call reports success or
+	 * failure to the {@link DBusHealthListener} (freeze watchdog in KStarsCluster).
+	 */
+	@SuppressWarnings("unchecked")
+	private <I> I monitored( final I target, final Class<I> iface ) {
+		return (I) Proxy.newProxyInstance( iface.getClassLoader(), new Class<?>[] { iface }, ( proxy, method, args ) -> {
+			if( method.getDeclaringClass() == Object.class ) {
+				return method.invoke( target, args );
+			}
+
+			final String desc = interfaceName + "." + method.getName();
+			final String threadName = Thread.currentThread().getName();
+			inFlightCalls.put( threadName, new CallInfo( desc, System.currentTimeMillis() ) );
+
+			try {
+				Object result = method.invoke( target, args );
+
+				lastCompletedCalls.put( interfaceName, new CallInfo( desc, System.currentTimeMillis() ) );
+
+				DBusHealthListener l = healthListener;
+				if( l != null ) {
+					l.onSuccess();
+				}
+
+				return result;
+			}
+			catch( InvocationTargetException e ) {
+				Throwable cause = e.getCause() != null ? e.getCause() : e;
+
+				DBusHealthListener l = healthListener;
+				if( l != null ) {
+					l.onFailure( cause );
+				}
+
+				throw cause;
+			}
+			finally {
+				inFlightCalls.remove( threadName );
+			}
+		} );
 	}
 	
 	private Class<? extends AbstractStateSignal<?> > newStateSignal;
@@ -99,31 +185,33 @@ public class Device<T extends DBusInterface> {
 	}
 	
 	public <S extends DBusSignal> Runnable addSigHandler(Class<S> _type, DBusSigHandler<S> _handler) throws DBusException {
-		// Dispatch to signalExecutor so the D-Bus thread is never blocked by re-entrant KStars calls
+		// Handlers run directly on dbus-java's signal receiver thread (configured to a
+		// SINGLE thread in KStarsCluster). dbus-java 5.x processes method returns on a
+		// separate pool, so synchronous KStars calls from a handler are deadlock-free —
+		// and one signal thread serializes handlers, capping in-flight synchronous
+		// calls from signals at one. An unbounded pool here previously let a signal
+		// storm (capture status during autofocus) fire dozens of blocking calls at a
+		// busy KStars in parallel and freeze its GUI.
 		final DBusSigHandler<S> handler = status -> {
-			signalExecutor.submit( () -> {
-				try {
-					_handler.handle( status );
-				}
-				catch( Throwable t ) {
-					t.printStackTrace();
-				}
-			} );
+			try {
+				_handler.handle( status );
+			}
+			catch( Throwable t ) {
+				SimpleLogger.getLogger().logError( "Unhandled error in signal handler for " + _type.getSimpleName() + " of " + interfaceName, t );
+			}
 		};
 
-		con.<S>addSigHandler( _type, this.methods, handler );
+		con.<S>addSigHandler( _type, this.rawMethods, handler );
 
 		return () -> {
 			try {
-				con.removeSigHandler( _type, this.methods, handler  );
+				con.removeSigHandler( _type, this.rawMethods, handler  );
 			}
 			catch( Throwable t ) {
-				t.printStackTrace();
+				SimpleLogger.getLogger().logError( "Failed to remove signal handler for " + _type.getSimpleName() + " of " + interfaceName, t );
 			}
 		};
 	}
-	
-	
 
 	public void determineAndDispatchCurrentState() {
 		determineAndDispatchCurrentState( null );
@@ -131,27 +219,20 @@ public class Device<T extends DBusInterface> {
 
 	@SuppressWarnings({ "rawtypes", "unchecked" })
 	public void determineAndDispatchCurrentState( Enum prevState ) {
-		
 		if( this.newStateSignal != null ) {
 			try {
-
 				Enum status = readStatus.apply(this);
-
 				if( prevState == status ) {
 					return;
 				}
 
 				Constructor c = this.newStateSignal.getConstructor( String.class, Object[].class );
-					
-				if( c != null ) {
-					AbstractStateSignal s = (AbstractStateSignal) c.newInstance( this.objectPath, new Object[] { Integer.valueOf( status.ordinal() ) } );
-					this.newStateHandler.handle( s );
-				}
+				AbstractStateSignal s = (AbstractStateSignal) c.newInstance( this.objectPath, new Object[] { Integer.valueOf( status.ordinal() ) } );
+				this.newStateHandler.handle( s );
 			}
 			catch( Throwable t ) {
-				t.printStackTrace();
+				SimpleLogger.getLogger().logError( "Failed to determine and dispatch current state of " + interfaceName, t );
 			}
-			
 		}
 	}
 	
@@ -163,13 +244,11 @@ public class Device<T extends DBusInterface> {
 			v = ((Variant<?>) v).getValue();
 		}
 
-
 		if( v != null && v.getClass().isArray() ) {
 			v = ArrayUtils.arrayToList( v );
 		}
 		
 		if( p != null && p.isEnum() ) {
-			
 			int s;
 			
 			if( v instanceof List ) {
@@ -181,8 +260,7 @@ public class Device<T extends DBusInterface> {
 			else {
 				s = -1;
 			}
-			
-			
+
 			final Object[] values = p.getEnumConstants();
 	    	if( s < 0 || s >= values.length ) {
 	    		v = null;
@@ -193,7 +271,6 @@ public class Device<T extends DBusInterface> {
 		}
 		
 		parsedProperties.put( key, v );
-		
 	}
 	
 	public Map<String,Object> readAll() {
@@ -224,8 +301,7 @@ public class Device<T extends DBusInterface> {
 		this.properties.Set( interfaceName, name, value );
 		return this.read( name );
 	}
-	
-	
+
 	@Override
 	public String toString() {
 		return interfaceName;

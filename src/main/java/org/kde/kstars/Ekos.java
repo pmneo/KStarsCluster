@@ -65,10 +65,13 @@ public interface Ekos extends DBusInterface {
 		}
 	}
 
+    //signal constructors MUST be (objectPath, signalArgs...) — an extra parameter
+    //makes dbus-java drop the incoming signal silently (no matching constructor)
+
     public static class ekosLiveStatusChanged extends DBusSignal {
         private final boolean status;
-        public ekosLiveStatusChanged(String _path, String _interfaceName, boolean _status) throws DBusException {
-            super(_path, _interfaceName);
+        public ekosLiveStatusChanged(String _path, boolean _status) throws DBusException {
+            super(_path, _status);
             this.status = _status;
         }
         public boolean getStatus() {
@@ -78,8 +81,8 @@ public interface Ekos extends DBusInterface {
 
     public static class newLog extends DBusSignal {
         private final String text;
-        public newLog(String _path, String _interfaceName, String _text) throws DBusException {
-            super(_path, _interfaceName);
+        public newLog(String _path, String _text) throws DBusException {
+            super(_path, _text);
             this.text = _text;
         }
         public String getText() {
@@ -89,8 +92,8 @@ public interface Ekos extends DBusInterface {
 
     public static class newModule extends DBusSignal {
         private final String name;
-        public newModule(String _path, String _interfaceName, String _name) throws DBusException {
-            super(_path, _interfaceName);
+        public newModule(String _path, String _name) throws DBusException {
+            super(_path, _name);
             this.name = _name;
         }
         public String getName() {

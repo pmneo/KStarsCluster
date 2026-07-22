@@ -57,6 +57,28 @@ public class SchedulerJob implements Serializable {
         }
     }
 
+    /** Mirrors Ekos SchedulerJob::JOBStatus — the "state" field of currentJobJson/jsonJobs. */
+    public static enum JobState {
+        JOB_IDLE,       /*< Job has not been processed yet */
+        JOB_EVALUATION, /*< Job is being evaluated */
+        JOB_SCHEDULED,  /*< Job was evaluated and is waiting for its startup time */
+        JOB_BUSY,       /*< Job is being EXECUTED right now */
+        JOB_ERROR,      /*< Job encountered a fatal issue */
+        JOB_ABORTED,    /*< Job encountered a transitory issue */
+        JOB_INVALID,    /*< Job doesn't fit the constraints */
+        JOB_COMPLETE    /*< Job finished all required captures */
+    }
+
+    public JobState getState() {
+        final JobState[] values = JobState.values();
+        return state >= 0 && state < values.length ? values[ state ] : JobState.JOB_IDLE;
+    }
+
+    /** True only while the scheduler actually EXECUTES this job — not while waiting for its startup time. */
+    public boolean isExecuting() {
+        return getState() == JobState.JOB_BUSY;
+    }
+
     public double altitude;
     public int completedCount;
     public String completionTime;

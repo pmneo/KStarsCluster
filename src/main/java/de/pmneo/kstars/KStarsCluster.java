@@ -3,9 +3,18 @@ package de.pmneo.kstars;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.management.LockInfo;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MonitorInfo;
+import java.lang.management.ThreadInfo;
+import java.lang.management.ThreadMXBean;
+import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Date;
 import java.net.URI;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
@@ -14,17 +23,14 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.configuration2.INIConfiguration;
@@ -33,6 +39,7 @@ import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.Request;
 import org.freedesktop.dbus.connections.impl.DBusConnection;
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder;
+import org.freedesktop.dbus.errors.NoReply;
 import org.freedesktop.dbus.errors.ServiceUnknown;
 import org.freedesktop.dbus.errors.UnknownObject;
 import org.freedesktop.dbus.exceptions.DBusException;
@@ -93,13 +100,13 @@ public abstract class KStarsCluster extends KStarsState {
 	protected Map<String, IndiFilterWheel> filterDevices = new HashMap<>();
 	protected Map<String, IndiRotator> rotatorDevices = new HashMap<>();
 	protected Map<String, IndiCap> capDevices = new HashMap<>();
+	protected Map<String, IndiLightBox> lightBoxDevices = new HashMap<>();
 
 	protected final List< Device<?> > mandatoryDevices = new ArrayList<Device<?>>();
 	protected final List< Device<?> > devices = new ArrayList<Device<?>>();
 	
     private double preCoolTemp = -15;
     public void setPreCoolTemp(double preCoolTemp) {
-
 		for( IndiCamera camera : cameraDevices.values() ) {
 			camera.setPreCoolTemp(preCoolTemp);
 		}
@@ -116,36 +123,72 @@ public abstract class KStarsCluster extends KStarsState {
 	public KStarsCluster( String logPrefix ) throws DBusException {
 		super( logPrefix );
 
+		//make sure no error can escape the log file
+		Thread.setDefaultUncaughtExceptionHandler( ( thread, error ) -> {
+			logError( "Uncaught exception in thread " + thread.getName(), error );
+		} );
+
 		MethodCall.setDefaultTimeout( 5000 );
 
-		/* Get a connection to the session bus so we can get data */
-		con = DBusConnectionBuilder.forSessionBus()
-			.receivingThreadConfig()
-				.withSignalThreadCount( 50 )
-			.connectionConfig()
-			.build();
+		/* Get a connection to the session bus so we can get data. */
+		con = buildDBusConnection();
+
+		//every synchronous D-Bus call reports here — first NoReply triggers the freeze watchdog
+		Device.setHealthListener( new Device.DBusHealthListener() {
+			@Override
+			public void onSuccess() {
+				//nothing to do — watchdog triggers on first NoReply
+			}
+			@Override
+			public void onFailure( Throwable t ) {
+				if( t instanceof NoReply == false ) {
+					return;
+				}
+				if( siegeMode.get() || dbusRecoveryInProgress.get() ) {
+					//recovery is already dealing with it — stay quiet
+					return;
+				}
+				if( dbusProbeInProgress.compareAndSet( false, true ) == false ) {
+					//another thread is probing right now
+					return;
+				}
+				try {
+					//verify over a FRESH throwaway connection: distinguishes a frozen KStars
+					//from a single slow module call AND from a broken own connection
+					if( probeKStarsAlive() ) {
+						logMessage( "DBUS WATCHDOG: NoReply on a single call, but KStars answers the probe — no recovery (slow module call)" );
+					}
+					else {
+						triggerDBusFreezeRecovery( t );
+					}
+				}
+				finally {
+					dbusProbeInProgress.set( false );
+				}
+			}
+		} );
 
 		client = new HttpClient() {
-				@Override
-				public Request newRequest(URI uri) {
-					return super.newRequest(uri)
-						.idleTimeout( 5, TimeUnit.SECONDS )
-						.timeout( 10, TimeUnit.SECONDS )
-					;
-				}
-			};
-			try {
-				client.setConnectTimeout( 2000 );
-				client.setIdleTimeout( 5000 );
-				client.setAddressResolutionTimeout( 5000L );
-				client.setMaxConnectionsPerDestination( 50 );
-				
-				//client.setDestinationIdleTimeout( 5000L );
-				client.start();
+			@Override
+			public Request newRequest(URI uri) {
+				return super.newRequest(uri)
+					.idleTimeout( 5, TimeUnit.SECONDS )
+					.timeout( 10, TimeUnit.SECONDS )
+				;
 			}
-			catch( Throwable t ) {
-				logError( "Failed to start http client", t);
-			}
+		};
+		try {
+			client.setConnectTimeout( 2000 );
+			client.setIdleTimeout( 5000 );
+			client.setAddressResolutionTimeout( 5000L );
+			client.setMaxConnectionsPerDestination( 50 );
+
+			//client.setDestinationIdleTimeout( 5000L );
+			client.start();
+		}
+		catch( Throwable t ) {
+			logError( "Failed to start http client", t);
+		}
 	}
 
 	protected void createEkosDevices() throws DBusException {
@@ -245,12 +288,22 @@ public abstract class KStarsCluster extends KStarsState {
 		subscriptions.add( this.scheduler.addNewStatusHandler( Scheduler.newStatus.class, status -> {
 			this.handleSchedulerStatus( status.getStatus() );
 		} ) );
+		subscriptions.add( this.scheduler.addSigHandler( Scheduler.newLog.class, log -> {
+			logMessage( "Scheduler: " + log.getText() );
 
+			//the scheduler emits a log line exactly when it ACTS (job started, sleeping,
+			//paused, aborted, ...) — use that as an EVENT TRIGGER for the authoritative
+			//job/status refresh instead of parsing the localized text. This also gives
+			//sub-second latency for scheduler state changes, compensating the newStatus
+			//D-Bus signal that KStars 3.8.2 never emits (proven via dbus-monitor).
+			updateSchedulerStateDebounced();
+		} ) );
 
-		cameraDevices = IndiDevice.createDevices( indi, DriverInterface.CCD_INTERFACE, IndiCamera::new );
-		filterDevices = IndiDevice.createDevices( indi, DriverInterface.FILTER_INTERFACE, IndiFilterWheel::new );
-		rotatorDevices = IndiDevice.createDevices( indi, DriverInterface.ROTATOR_INTERFACE, IndiRotator::new );
-		capDevices = IndiDevice.createDevices( indi, DriverInterface.DUSTCAP_INTERFACE, IndiCap::new );
+		//INDI device enumeration is done SEPARATELY (refreshIndiDevices): INDI.getDevices
+		//can block >5s inside KStars (observed 2026-07-20) and a NoReply here previously
+		//aborted subscribe() mid-way, leaving us without stable signal subscriptions
+		indiDevicesDirty.set( true );
+		refreshIndiDevices();
 
 		/*
 		String foundCamera = (String) this.capture.read( "camera" );
@@ -267,7 +320,35 @@ public abstract class KStarsCluster extends KStarsState {
 		filterDevice = new IndiFilterWheel(foundFilterWheel, indi);
 		*/
 	}
-	
+
+	/**
+	 * INDI device enumeration, isolated from the signal subscriptions: INDI.getDevices
+	 * can block >5s inside KStars while it talks to the INDI server. A failure here
+	 * must never invalidate the D-Bus signal subscriptions — it just marks the device
+	 * maps dirty and the monitor loop retries on its next pass.
+	 */
+	protected final AtomicBoolean indiDevicesDirty = new AtomicBoolean( true );
+
+	protected boolean refreshIndiDevices() {
+		try {
+			cameraDevices = IndiDevice.createDevices( indi, DriverInterface.CCD_INTERFACE, IndiCamera::new );
+			filterDevices = IndiDevice.createDevices( indi, DriverInterface.FILTER_INTERFACE, IndiFilterWheel::new );
+			rotatorDevices = IndiDevice.createDevices( indi, DriverInterface.ROTATOR_INTERFACE, IndiRotator::new );
+			capDevices = IndiDevice.createDevices( indi, DriverInterface.DUSTCAP_INTERFACE, IndiCap::new );
+			lightBoxDevices = IndiDevice.createDevices( indi, DriverInterface.LIGHTBOX_INTERFACE, IndiLightBox::new );
+
+			indiDevicesDirty.set( false );
+			logMessage( "INDI devices refreshed: " + cameraDevices.size() + " cameras, " + filterDevices.size() + " filter wheels, "
+				+ rotatorDevices.size() + " rotators, " + capDevices.size() + " caps, " + lightBoxDevices.size() + " light boxes" );
+			return true;
+		}
+		catch( Throwable t ) {
+			indiDevicesDirty.set( true );
+			logError( "Failed to refresh INDI devices — will retry on next loop pass", t );
+			return false;
+		}
+	}
+
 	protected void ekosDisconnected() {
 		try {
 			unsubscribe();
@@ -288,14 +369,12 @@ public abstract class KStarsCluster extends KStarsState {
 
 			Calendar now = Calendar.getInstance();
 			Calendar[] range = SunriseSunset.getCivilTwilight( now, latitude, longitude );
-
 			if( range == null ) {
 				return new Calendar[] { null, null, now };
 			}
 			else {
 				return new Calendar[] { range[0], range[1], now };
 			}
-			
 		}
 		catch( Throwable t ) {
 			logError( "Failed to calc twighlight", t);
@@ -331,16 +410,12 @@ public abstract class KStarsCluster extends KStarsState {
 	private long lastWeatherCheck = -1;
 
 	public boolean checkWeatherStatus() {
-		
 		long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - this.lastWeatherCheck );
-
 
 		long updateDelta = 15;
 
 		if( delta >= updateDelta ) {
-
 			boolean weatherSafty = false;
-
 			try {
 				//logMessage( "Check weather status, last check was " + delta + " seconds ago");
 				var res = client.newRequest( "http://192.168.0.106:8087/getPlainValue/0_userdata.0.Roof.isSafeCondition" ).send();
@@ -406,14 +481,357 @@ public abstract class KStarsCluster extends KStarsState {
 			stopUsbDevices();
 			ekosStoppedAt = Long.MAX_VALUE;
 		}
-
 		return ekosStoppedAt;
 	}
 
 	private Thread kStarsMonitor = null;
 
+	/**
+	 * Signal handlers run directly on this single signal thread (see Device
+	 * .addSigHandler): serialized on purpose, so at most ONE synchronous call
+	 * from signal handlers is in flight against KStars at any time.
+	 */
+	private DBusConnection buildDBusConnection() throws DBusException {
+		return DBusConnectionBuilder.forSessionBus()
+			.receivingThreadConfig()
+				.withSignalThreadCount( 1 )
+			.connectionConfig()
+			.build();
+	}
+
+	/*
+	 * D-Bus connection recycling.
+	 *
+	 * KStars freezes have proven hard to DETECT from our side: the 2026-07-19
+	 * freeze produced not a single NoReply, so the reactive watchdog below never
+	 * fired. What reliably CURES a frozen KStars is dropping our bus connection.
+	 * Therefore every (re)connect to KStars/Ekos happens on a FRESH connection:
+	 * whenever the monitor loop is about to subscribe after Ekos became ready,
+	 * the old connection is closed and replaced — a stale or wedged connection
+	 * never survives a reconnect cycle. The watchdog additionally recycles
+	 * immediately on the first NoReply.
+	 */
+	protected synchronized void recycleDBusConnection( String reason ) {
+		try {
+			logMessage( "DBUS RECYCLE (" + reason + "): closing and reopening the D-Bus connection" );
+
+			try {
+				unsubscribe();
+			}
+			catch( Throwable t ) {
+				logError( "DBUS RECYCLE: unsubscribe failed", t );
+			}
+
+			try {
+				con.disconnect();
+			}
+			catch( Throwable t ) {
+				logError( "DBUS RECYCLE: disconnect failed", t );
+			}
+
+			con = buildDBusConnection();
+			logMessage( "DBUS RECYCLE: reconnected to session bus as " + con.getUniqueName() );
+
+			this.createDevices();
+
+			if( ekosReady.get() ) {
+				subscribe();
+
+				//re-dispatch current states so nothing missed during the reconnect gap is lost
+				for( Device<?> d : devices ) {
+					try {
+						d.determineAndDispatchCurrentState();
+					}
+					catch( Throwable t ) {
+						logError( "DBUS RECYCLE: failed to refresh state of " + d.interfaceName, t );
+					}
+				}
+
+				//job may have changed while the connection was down — fetch it once
+				updateSchedulerActiveJob();
+			}
+
+			logMessage( "DBUS RECYCLE: done" );
+		}
+		catch( Throwable t ) {
+			logError( "DBUS RECYCLE failed — will retry after next interval", t );
+		}
+	}
+
 	// Completed by ekosStatusChanged signal (Idle/Error) or crash fallback — replaces D-Bus polling
 	private volatile CompletableFuture<Void> ekosStopFuture;
+
+	/*
+	 * D-Bus freeze watchdog.
+	 *
+	 * KStars (observed with 3.8.2, repeatedly during autofocus) can wedge its GUI
+	 * while a synchronous D-Bus call from us is pending. On the FIRST NoReply the
+	 * watchdog saves a full thread dump as evidence and recycles the connection
+	 * immediately — complementing the periodic recycle above, which covers the
+	 * freezes that produce no NoReply at all.
+	 */
+	private final AtomicBoolean dbusRecoveryInProgress = new AtomicBoolean( false );
+	private volatile long lastDbusRecoveryAt = 0;
+
+	/**
+	 * Liveness probe over a FRESH, private, throwaway connection. This answers "is
+	 * KStars alive" INDEPENDENTLY of the health of our main connection — the night of
+	 * 2026-07-21 proved that probing through our own connection cannot distinguish a
+	 * frozen KStars from a broken own connection and misdiagnosed for hours.
+	 */
+	protected boolean probeKStarsAlive() {
+		DBusConnection probeCon = null;
+		try {
+			probeCon = DBusConnectionBuilder.forSessionBus().withShared( false ).build();
+
+			final org.freedesktop.dbus.interfaces.Properties props =
+				probeCon.getRemoteObject( "org.kde.kstars", "/KStars/Ekos", org.freedesktop.dbus.interfaces.Properties.class );
+			props.Get( "org.kde.kstars.Ekos", "ekosStatus" );
+
+			return true;
+		}
+		catch( Throwable t ) {
+			logMessage( "DBUS WATCHDOG: KStars probe failed: " + t.getClass().getSimpleName() + ": " + t.getMessage() );
+			return false;
+		}
+		finally {
+			if( probeCon != null ) {
+				try {
+					probeCon.disconnect();
+				}
+				catch( Throwable t ) {
+					//ignore
+				}
+			}
+		}
+	}
+
+	/** Guards against parallel probes when several calls fail at once. */
+	private final AtomicBoolean dbusProbeInProgress = new AtomicBoolean( false );
+
+	protected void triggerDBusFreezeRecovery( final Throwable cause ) {
+		final long now = System.currentTimeMillis();
+		if( now - lastDbusRecoveryAt < TimeUnit.MINUTES.toMillis( 1 ) ) {
+			//rate limit: at most one recovery per minute
+			return;
+		}
+		if( dbusRecoveryInProgress.compareAndSet( false, true ) == false ) {
+			//recovery already running
+			return;
+		}
+		lastDbusRecoveryAt = now;
+
+		final Thread recovery = new Thread( () -> {
+			try {
+				runFreezeRecovery( cause );
+			}
+			catch( Throwable t ) {
+				logError( "DBUS WATCHDOG: recovery failed", t );
+			}
+			finally {
+				dbusRecoveryInProgress.set( false );
+			}
+		}, "DBus-Watchdog-Recovery" );
+		recovery.setDaemon( true );
+		recovery.start();
+	}
+
+	/**
+	 * SIEGE mode: while true, the monitor loop stays completely idle and no D-Bus
+	 * traffic is generated at all — the programmatic equivalent of killing the java
+	 * process, which is the one cure that has reliably unfrozen KStars (2026-07-17).
+	 * The night of 2026-07-21 showed the opposite failure mode: recovering every
+	 * minute besieged the frozen KStars with thousands of queued calls all night.
+	 */
+	protected final AtomicBoolean siegeMode = new AtomicBoolean( false );
+
+	private void runFreezeRecovery( final Throwable cause ) {
+		logError( "DBUS WATCHDOG: NoReply and fresh-connection probe failed — KStars is unresponsive, starting recovery", cause );
+		logMessage( "DBUS WATCHDOG: calls at time of failure — " + Device.dumpCallRegistry() );
+		logMessage( "DBUS WATCHDOG: thread dump saved to " + saveThreadDump() );
+		logMessage( "DBUS WATCHDOG: open file descriptors: " + countOpenSockets() );
+
+		//attempt 1: one full connection recycle — cures the case where OUR connection was the problem
+		recycleDBusConnection( "watchdog: first recovery attempt" );
+		sleep( 5000L );
+
+		if( probeKStarsAlive() ) {
+			logMessage( "DBUS WATCHDOG: KStars responds after recycle — recovery complete" );
+			return;
+		}
+
+		//SIEGE: mimic killing the java process — close our connection, do NOT
+		//reconnect, stay completely silent and give KStars room to breathe
+		final long siegeStart = System.currentTimeMillis();
+		siegeMode.set( true );
+		try {
+			logMessage( "DBUS SIEGE: KStars still unresponsive — closing connection and going completely silent" );
+			try {
+				unsubscribe();
+			}
+			catch( Throwable t ) {
+				//already logged inside
+			}
+			try {
+				con.disconnect();
+			}
+			catch( Throwable t ) {
+				logError( "DBUS SIEGE: disconnect failed", t );
+			}
+
+			//2 minutes of silence, probing once per minute — if that doesn't cure it, kill & restart
+			boolean alive = false;
+			for( long backoffMinutes : new long[] { 1, 1 } ) {
+				logMessage( "DBUS SIEGE: silent for the next " + backoffMinutes + " min, then probing again" );
+				sleep( TimeUnit.MINUTES.toMillis( backoffMinutes ) );
+
+				if( probeKStarsAlive() ) {
+					alive = true;
+					break;
+				}
+			}
+
+			final long outageMinutes = TimeUnit.MILLISECONDS.toMinutes( System.currentTimeMillis() - siegeStart );
+			if( alive ) {
+				logMessage( "DBUS SIEGE: KStars responds again after ~" + outageMinutes + " min of silence — rebuilding" );
+			}
+			else {
+				//escalation: silence did not cure it — do what the operator does manually
+				logMessage( "DBUS SIEGE: KStars still unresponsive after ~" + outageMinutes + " min of silence — killing and restarting KStars" );
+				try {
+					stopKStars();
+				}
+				catch( Throwable t ) {
+					logError( "DBUS SIEGE: stopKStars failed", t );
+				}
+				sleep( 5000L );
+			}
+		}
+		finally {
+			siegeMode.set( false );
+		}
+
+		recycleDBusConnection( "siege ended — rebuilding" );
+
+		//wake the monitor loop so it re-evaluates (and restarts KStars/Ekos if we killed it)
+		final CompletableFuture<Void> f = ekosStopFuture;
+		if( f != null ) {
+			f.complete( null );
+		}
+	}
+
+	/** Diagnostic for connection leaks: counts open sockets among our file descriptors. */
+	protected String countOpenSockets() {
+		try {
+			final File fdDir = new File( "/proc/self/fd" );
+			final File[] fds = fdDir.listFiles();
+			if( fds == null ) {
+				return "(unavailable)";
+			}
+
+			int sockets = 0;
+			for( File fd : fds ) {
+				try {
+					if( java.nio.file.Files.readSymbolicLink( fd.toPath() ).toString().startsWith( "socket:" ) ) {
+						sockets++;
+					}
+				}
+				catch( Throwable t ) {
+					//ignore raced fds
+				}
+			}
+			return sockets + " sockets of " + fds.length + " fds";
+		}
+		catch( Throwable t ) {
+			return "(unavailable: " + t + ")";
+		}
+	}
+
+	protected String saveThreadDump() {
+		try {
+			final ThreadMXBean mx = ManagementFactory.getThreadMXBean();
+			final ThreadInfo[] infos = mx.dumpAllThreads( mx.isObjectMonitorUsageSupported(), mx.isSynchronizerUsageSupported() );
+
+			final StringBuilder dump = new StringBuilder();
+			dump.append( "Full thread dump taken " ).append( new Date() ).append( " by DBUS WATCHDOG\n\n" );
+
+			try {
+				final long[] deadlocked = mx.findDeadlockedThreads();
+				if( deadlocked != null && deadlocked.length > 0 ) {
+					dump.append( "!!! DEADLOCK detected, involved thread ids: " ).append( Arrays.toString( deadlocked ) ).append( "\n\n" );
+				}
+			}
+			catch( Throwable t ) {
+				dump.append( "(deadlock detection failed: " ).append( t ).append( ")\n\n" );
+			}
+
+			for( ThreadInfo info : infos ) {
+				if( info == null ) {
+					continue;
+				}
+
+				dump.append( '"' ).append( info.getThreadName() ).append( "\" #" ).append( info.getThreadId() )
+					.append( info.isDaemon() ? " daemon" : "" )
+					.append( " prio=" ).append( info.getPriority() )
+					.append( " state=" ).append( info.getThreadState() );
+
+				if( info.getLockName() != null ) {
+					dump.append( " on " ).append( info.getLockName() );
+					if( info.getLockOwnerName() != null ) {
+						dump.append( " owned by \"" ).append( info.getLockOwnerName() ).append( "\" #" ).append( info.getLockOwnerId() );
+					}
+				}
+				dump.append( '\n' );
+
+				final StackTraceElement[] stack = info.getStackTrace();
+				final MonitorInfo[] monitors = info.getLockedMonitors();
+
+				for( int depth = 0; depth < stack.length; depth++ ) {
+					dump.append( "\tat " ).append( stack[ depth ] ).append( '\n' );
+
+					if( depth == 0 && info.getLockInfo() != null ) {
+						switch( info.getThreadState() ) {
+							case BLOCKED:
+								dump.append( "\t-  blocked on " ).append( info.getLockInfo() ).append( '\n' );
+								break;
+							case WAITING:
+							case TIMED_WAITING:
+								dump.append( "\t-  waiting on " ).append( info.getLockInfo() ).append( '\n' );
+								break;
+							default:
+								break;
+						}
+					}
+
+					for( MonitorInfo mi : monitors ) {
+						if( mi.getLockedStackDepth() == depth ) {
+							dump.append( "\t-  locked " ).append( mi ).append( '\n' );
+						}
+					}
+				}
+
+				final LockInfo[] synchronizers = info.getLockedSynchronizers();
+				if( synchronizers.length > 0 ) {
+					dump.append( "\n\tLocked ownable synchronizers:\n" );
+					for( LockInfo li : synchronizers ) {
+						dump.append( "\t-  " ).append( li ).append( '\n' );
+					}
+				}
+
+				dump.append( '\n' );
+			}
+
+			final String fileName = "./KStarsThreadDump_" + new SimpleDateFormat( "yyyy-MM-dd_HHmmss" ).format( new Date() ) + ".txt";
+			try( FileOutputStream out = new FileOutputStream( fileName ) ) {
+				out.write( dump.toString().getBytes( Charset.forName( "UTF-8" ) ) );
+			}
+			return fileName;
+		}
+		catch( Throwable t ) {
+			logError( "Failed to save thread dump", t );
+			return "(failed to save)";
+		}
+	}
 
 	public Ekos.CommunicationStatus handleEkosStatus( Ekos.CommunicationStatus state ) {
 		state = super.handleEkosStatus( state );
@@ -443,6 +861,12 @@ public abstract class KStarsCluster extends KStarsState {
 			long ekosStoppedAt = 0;
 
 			while( true ) { try {
+				if( siegeMode.get() ) {
+					logMessageOnce( "DBUS SIEGE active — monitor loop idle" );
+					sleep( 5000L );
+					continue;
+				}
+
 				if( tryStartKStars() == false ) {
 					ekosStoppedAt = checkShutdownUsb( ekosStoppedAt );
 					//retry in 5 seconds
@@ -500,6 +924,10 @@ public abstract class KStarsCluster extends KStarsState {
 					else {
 						ekosStoppedAt = 0;
 
+						//every (re)connect to Ekos happens on a fresh D-Bus connection —
+						//a wedged connection never survives a reconnect cycle
+						recycleDBusConnection( "reconnecting to Ekos" );
+
 						subscribe();
 						ekosReady();
 
@@ -545,7 +973,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 				Calendar[] range = getCivilTwilight();
 				if( isNight(range) ) {
-					if( runtime == 0 ) {
+					if( runtime < 0 ) {
 						try {
 							logMessage( "Starting kstars" );
 							Process kstarsProcess = Runtime.getRuntime().exec( new String[]{ "setsid", "nohup", "kstars" } );
@@ -584,10 +1012,20 @@ public abstract class KStarsCluster extends KStarsState {
 			while( !ekosStopFuture.isDone() ) {
 				long start = System.currentTimeMillis();
 
+				if( siegeMode.get() ) {
+					logMessageOnce( "DBUS SIEGE active — monitor loop idle" );
+					sleep( 5000L );
+					continue;
+				}
+
 				// Crash fallback: ps process check — no D-Bus call needed
-				if( getKStarsRuntime() == 0 ) {
+				if( getKStarsRuntime() < 0 ) {
 					logMessage( "KStars process gone, exiting monitor loop" );
 					break;
+				}
+
+				if( indiDevicesDirty.get() ) {
+					refreshIndiDevices();
 				}
 
 				if( checkWeatherStatus() ) {
@@ -621,9 +1059,18 @@ public abstract class KStarsCluster extends KStarsState {
 								canStop = false;
 							}
 
-							if( this.activeCaptureJobStarted.values().stream()
-								.anyMatch( ts -> ts > System.currentTimeMillis() - TimeUnit.MINUTES.toMillis( 15 ) ) ) {
-								waitToStopReasons.append( "\n\tLast capture was less than 15 Minutes ago" );
+							var lastCapture = System.currentTimeMillis() - lastCapturedImage.get();
+
+							if( lastCapture < TimeUnit.MINUTES.toMillis( 10 ) ) {
+								waitToStopReasons.append( "\n\tLast capture was less than 10 Minutes ago" );
+								canStop = false;
+							}
+							else if( lastCapture < TimeUnit.MINUTES.toMillis( 30 ) ) {
+								for( IndiCamera camera : cameraDevices.values() ) {
+									camera.warm();
+								}
+
+								waitToStopReasons.append( "\n\tLast capture was less than 30 Minutes ago" );
 								canStop = false;
 							}
 
@@ -816,6 +1263,10 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 		}
 
+		//initial job determination: when we connect while a job is ALREADY executing,
+		//no scheduler newLog will fire until the next scheduler action — fetch it once
+		updateSchedulerActiveJob();
+
 		/*
 		try {
 			logMessage( "Ekos started, checking focuser temp and move to estimated position" ) ;
@@ -889,12 +1340,18 @@ public abstract class KStarsCluster extends KStarsState {
 	protected final ConcurrentHashMap<String, Long> activeCaptureJobStarted = new ConcurrentHashMap<>();
 	protected final ConcurrentHashMap<String, Long> captureStateChangedAt = new ConcurrentHashMap<>();
 
+	protected final AtomicLong lastCapturedImage = new  AtomicLong(System.currentTimeMillis());
+
 	public CaptureStatus handleCaptureStatus( CaptureStatus state, String train ) {
 		boolean captureWasRunning = captureRunning.computeIfAbsent( train, t -> false );
 
 		state = super.handleCaptureStatus(state, train);
 
 		captureStateChangedAt.put( train, System.currentTimeMillis() );
+
+		if( state == CaptureStatus.CAPTURE_CAPTURING ) {
+			lastCapturedImage.set( System.currentTimeMillis() );
+		}
 
 		if( ( captureWasRunning == false || state == CaptureStatus.CAPTURE_PROGRESS ) && captureRunning.computeIfAbsent( train, t -> false ) ) {
 			activeCaptureJobStarted.put( train, System.currentTimeMillis() );
@@ -1302,46 +1759,89 @@ public abstract class KStarsCluster extends KStarsState {
     }
 	
 	protected void updateSchedulerState() {
-        String currentJobName = (String) this.scheduler.read( "currentJobName" );
-		if( currentJobName == null ) {
-			currentJobName = "";
+		updateSchedulerActiveJob();
+
+		this.scheduler.determineAndDispatchCurrentState( this.schedulerState.get() );
+    }
+
+	/**
+	 * Signal-triggered variant of {@link #updateSchedulerState()}: rate-limited so a
+	 * newLog burst (scheduler startup logs several lines within milliseconds) causes
+	 * only one refresh — the regular 5s poll covers the tail of a burst anyway.
+	 */
+	private volatile long lastSignalTriggeredRefreshAt = 0;
+
+	protected void updateSchedulerStateDebounced() {
+		final long now = System.currentTimeMillis();
+		if( now - lastSignalTriggeredRefreshAt < 1000L ) {
+			return;
 		}
+		lastSignalTriggeredRefreshAt = now;
 
-		SchedulerJob job = this.schedulerActiveJob.get();
+		try {
+			updateSchedulerState();
+		}
+		catch( Throwable t ) {
+			logError( "Failed to refresh scheduler state from newLog signal", t );
+		}
+	}
 
-		boolean jobChanged = false;
+	/**
+	 * Tracks the scheduler's active job via the currentJobJson property (one read per
+	 * poll — it carries name, state, stage and target RA/DEC in one go). Unlike the
+	 * old name-based tracking this also sees state changes WITHIN the same job, i.e.
+	 * JOB_SCHEDULED (waiting for startup time) -> JOB_BUSY (actually executing).
+	 */
+	protected void updateSchedulerActiveJob() {
+		try {
+			logDebug( "Updating scheduler active job" );
+			final String currentJobJson = (String) this.scheduler.read( "currentJobJson" );
 
-		if( currentJobName.isEmpty() ) {
-			if( job != null ) {
-				logMessage( "Scheduler job has changed from " + job.name + " to null" );
-
-				this.schedulerActiveJob.set( job = null );
-				jobChanged = true;
+			SchedulerJob job = null;
+			if( currentJobJson != null && currentJobJson.isBlank() == false ) {
+				job = new GsonBuilder().create().fromJson( currentJobJson, SchedulerJob.class );
 			}
-		}
-		else if( job == null || job.name.equals( currentJobName ) == false ) {
-			logMessage( "Scheduler job has changed from " + (job == null ? "null" : job.name ) + " to " + currentJobName );
+			if( job != null && ( job.name == null || job.name.isEmpty() ) ) {
+				job = null;
+			}
 
-			String currentJobJson = (String) this.scheduler.read( "currentJobJson" );
+			final SchedulerJob prev = this.schedulerActiveJob.get();
 
-			job = new GsonBuilder().create().fromJson( currentJobJson, SchedulerJob.class );
-			if( job != null ) {
+			if( job == null ) {
+				if( prev != null ) {
+					logMessage( "Scheduler job has changed from " + prev.name + " to null" );
+					this.schedulerActiveJob.set( null );
+				}
+			}
+			else if( prev == null || prev.name.equals( job.name ) == false ) {
+				logMessage( "Scheduler job has changed from " + ( prev == null ? "null" : prev.name ) + " to " + job.name + " (" + job.getState() + ")" );
+
 				job.fRatio = calculateFRatio();
-
 				try {
 					job.loadSequenceContent();
 				}
 				catch( IOException e ) {
 					logError( "Failed to read sequence content", e );
 				}
+
+				this.schedulerActiveJob.set( job );
 			}
-			this.schedulerActiveJob.set( job );
-			jobChanged = true;
-		}            
-		
-		//force update
-		this.scheduler.determineAndDispatchCurrentState( jobChanged ? null : this.schedulerState.get() );
-    }
+			else {
+				//same job: carry over the expensive parts, but keep state/stage/progress fresh
+				job.fRatio = prev.fRatio;
+				job.sequenceContent = prev.sequenceContent;
+
+				if( prev.state != job.state ) {
+					logMessage( "Scheduler job '" + job.name + "' state changed from " + prev.getState() + " to " + job.getState() );
+				}
+
+				this.schedulerActiveJob.set( job );
+			}
+		}
+		catch( Throwable t ) {
+			logError( "Failed to update scheduler active job", t );
+		}
+	}
 	public double calculateFRatio() {
 		try {
 			List<Double> info = this.align.methods.telescopeInfo();
@@ -1485,11 +1985,16 @@ public abstract class KStarsCluster extends KStarsState {
 			in.close();
 			out.close();
 
-			int rts = Integer.parseInt( out.toString().trim() );
-
-			return rts;
+			var sout = out.toString().trim().split("\n")[0].trim();
+			if( sout.isBlank() ) {
+				return -1;
+			}
+			else {
+				return Integer.parseInt(sout);
+			}
 		}
 		catch( Throwable t ) {
+			logError( "Failed to get KStars pid", t );
 			return 0;
 		}
 	}
