@@ -6,7 +6,6 @@ public class IndiLightBox extends IndiDevice {
 
     public IndiLightBox(String deviceName, Device<INDI> indi) {
         super(deviceName, indi);
-        //no signal handler or 5s loop reads this — watched lazily on first use
     }
 
     public void lightOff() {

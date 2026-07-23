@@ -7,10 +7,6 @@ public class IndiCamera extends IndiDevice {
 
     public IndiCamera(String deviceName, Device<INDI> indi) {
         super(deviceName, indi);
-        //eager: needed by checkCameraCooling(), called from the Mount/Scheduler status
-        //signal handlers. Everything else (CCD_TEMPERATURE, CCD_CONTROLS, ...) is only
-        //read by the HTTP status endpoint and is watched lazily on first use.
-        watch( "CCD_COOLER" );
     }
 
     private double preCoolTemp = -15;
@@ -33,6 +29,7 @@ public class IndiCamera extends IndiDevice {
         if( !isCooling() ) {
             logMessage( "Precooling Camera to " + preCoolTemp );
             this.setCcdTemparatur( preCoolTemp );
+            this.setCooling( true );
         }
     }
 
@@ -44,7 +41,8 @@ public class IndiCamera extends IndiDevice {
     }
 
     public void setCcdTemparatur( double value ) {
-        this.setNumber( "CCD_TEMPERATURE", "CCD_TEMPERATURE_VALUE", value );
+        this.setProperty( getProperty( "CCD_TEMPERATURE" )
+                .setNumber( "CCD_TEMPERATURE_VALUE", value ) );
     }
 
     public boolean isCooling() {
@@ -52,15 +50,16 @@ public class IndiCamera extends IndiDevice {
     }
     public void setCooling( boolean value ) {
         try {
+            var prop = getProperty( "CCD_TEMPERATURE" );
             if( value ) {
-                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_ON", "On" );
-                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_OFF", "Off" );
+                prop.setSwitch( "COOLER_ON", true );
+                prop.setSwitch( "COOLER_OFF", false );
             }
             else {
-                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_ON", "Off" );
-                indi.methods.setSwitch( this.deviceName, "CCD_COOLER", "COOLER_OFF", "On" );
+                prop.setSwitch( "COOLER_ON", false );
+                prop.setSwitch( "COOLER_OFF", true );
             }
-            this.indi.methods.sendProperty( deviceName, "CCD_COOLER" );
+            this.setProperty( prop );
         }
         catch( Throwable t ) {
             logMessage( "The camera " + deviceName + " does not support cooling" );
@@ -85,12 +84,15 @@ public class IndiCamera extends IndiDevice {
         return (int) getProperty( "CCD_BINNING" ).getNumber( "HOR_BIN" );
     }
     public void setBinning( int value ) {
-        setNumber( "CCD_BINNING", "HOR_BIN", value );
-        setNumber( "CCD_BINNING", "VER_BIN", value );
+        setProperty(
+                getProperty( "CCD_BINNING" )
+                        .setNumber("HOR_BIN", value )
+                        .setNumber("VER_BIN", value )
+        );
     }
 
     public void resetFrameSettings() {
-        setSwitch( "CCD_FRAME_RESET", "RESET", "On" );
+        setSwitch( "CCD_FRAME_RESET", "RESET", true );
     }
 
     public void setGain( int gain ) {

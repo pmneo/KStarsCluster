@@ -87,6 +87,7 @@ public class IndiDevice {
 			}
 			else {
 				logError( "watchProperty returned no data for " + deviceName + "/" + property + " — property may not exist on this device", null );
+				properties.put( property, new IndiProperty( this.deviceName, property ) );
 			}
 		}
 		catch( Throwable t ) {
@@ -114,23 +115,26 @@ public class IndiDevice {
 			watch( name );
 			p = properties.get( name );
 		}
-		if( p == null ) {
-			throw new IllegalStateException( "Property " + name + " of " + deviceName + " is not available (watchProperty returned no data — wrong name?)" );
-		}
+//		if( p == null ) {
+//			throw new IllegalStateException( "Property " + name + " of " + deviceName + " is not available (watchProperty returned no data — wrong name?)" );
+//		}
 		return p;
 	}
+
+	public boolean setProperty(IndiProperty prop) {
+		return this.indi.methods.setPropertyJSON( this.deviceName, prop.name, prop.toElementsJson() );
+	}
+
 
 	// -------------------------------------------------------------------------
 	// Direct D-Bus accessors (unchanged)
 	// -------------------------------------------------------------------------
 
     public void setNumber( String property, String numberName, double value ) {
-        this.indi.methods.setNumber( deviceName, property, numberName, value );
-		this.indi.methods.sendProperty( deviceName, property );
+		setProperty( getProperty( property ).setNumber( numberName, value ) );
     }
 
-	public void setSwitch( String property, String switchName, String state ) {
-        this.indi.methods.setSwitch( deviceName, property, switchName, state );
-		this.indi.methods.sendProperty( deviceName, property );
-    }
+	public void setSwitch( String property, String switchName, boolean state ) {
+		setProperty( getProperty( property ).setSwitch( switchName, state ) );
+	}
 }

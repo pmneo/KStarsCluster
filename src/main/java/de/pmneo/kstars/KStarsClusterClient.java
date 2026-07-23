@@ -192,10 +192,6 @@ public class KStarsClusterClient extends KStarsCluster {
                     final MountStatus status = (MountStatus) payload.get( "status" );
                    
                     server.handleMountStatus(status);
-
-                    if( serverInitDone.get() && ekosReady.get() ) {
-                        this.checkCameraCooling( server );
-                    }
                 }
                 else if( "handleGuideStatus".equals( action ) ) {
                     final GuideStatus status = (GuideStatus) payload.get( "status" );
@@ -221,9 +217,6 @@ public class KStarsClusterClient extends KStarsCluster {
 
                     server.handleSchedulerStatus( status );                   
 
-                    if( serverInitDone.get() && ekosReady.get()  ) {
-                        this.checkCameraCooling( server );
-                    }
                 }
                 else if( "handleSchedulerWeatherStatus".equals( action ) ) {
                     final WeatherState status = (WeatherState) payload.get( "status" );
@@ -325,8 +318,6 @@ public class KStarsClusterClient extends KStarsCluster {
 
 
     protected void checkClientState() {
-        this.updateSchedulerActiveJob();
-
         if( server.mountIsTracking.get() ) {
 
             SchedulerJob serverJob = server.schedulerActiveJob.get();
@@ -361,7 +352,7 @@ public class KStarsClusterClient extends KStarsCluster {
 
                     serverSolutionChanged.set( true );
 
-                    this.updateSchedulerActiveJob();
+                    this.updateSchedulerActiveJob( null );
                 }
             }
 

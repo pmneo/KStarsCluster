@@ -26,6 +26,15 @@ public interface INDI extends DBusInterface {
     public String getText(String device, String property, String textName);
     public boolean setNumber(String device, String property, String numberName, double value);
     public double getNumber(String device, String property, String numberName);
+
+    /** Returns the full property state as JSON (same shape as watchProperty/propertyValueChanged); compact=false adds metadata like label/min/max. */
+    public String getPropertyJSON(String device, String propName, boolean compact);
+    /**
+     * Sets one or more elements of a property from a bare JSON array, e.g. {@code [{"name":"X","value":1.0}]}
+     * (see IndiProperty#toElementsJson). Unlike setNumber/setSwitch/setText, this sends the new value to the
+     * driver immediately — no separate sendProperty call needed.
+     */
+    public boolean setPropertyJSON(String device, String propName, String elementsJson);
     public getBLOBDataTuple getBLOBData(String device, String property, String blobName);
     public getBLOBFileTuple getBLOBFile(String device, String property, String blobName);
 

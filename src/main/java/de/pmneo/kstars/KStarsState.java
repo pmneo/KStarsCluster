@@ -18,7 +18,7 @@ import org.kde.kstars.ekos.Weather.WeatherState;
 
 import de.pmneo.kstars.utils.DirtyBoolean;
 
-public class KStarsState {
+public class KStarsState extends WithLogging {
 		
     public final ConcurrentHashMap<String,Boolean> captureRunning = new ConcurrentHashMap<String,Boolean>();
     public final ConcurrentHashMap<String,Boolean> focusRunning = new ConcurrentHashMap<String,Boolean> ();
@@ -28,33 +28,9 @@ public class KStarsState {
     public final DirtyBoolean mountIsTracking = new DirtyBoolean( false );
     public final DirtyBoolean ditheringActive = new DirtyBoolean( false );
 
-    private final String logPrefix;
-
     public KStarsState( String logPrefix ) {
-        this.logPrefix = "[" + logPrefix + "] ";
+        super( logPrefix );
     }
-
-    
-    private AtomicReference<String> lastMessage = new AtomicReference<String>("");
-    public void logMessageOnce( String message ) {
-        if( message.equals( lastMessage.getAndSet( message ) ) ) {
-            return;
-        }
-		SimpleLogger.getLogger().logMessage( logPrefix + message );
-	}
-
-	public void logMessage( Object message ) {
-		SimpleLogger.getLogger().logMessage( logPrefix + message );
-	}
-
-    public void logDebug( Object message ) {
-		SimpleLogger.getLogger().logMessage( logPrefix + message );
-	}
-	
-	public void logError( Object message, Throwable t ) {
-        SimpleLogger.getLogger().logError( logPrefix + message, t );
-	}	
-
 
     public void resetValues() {
         captureRunning.clear();
@@ -64,7 +40,7 @@ public class KStarsState {
         ditheringActive.set(false);
     } 
 
-    public final AtomicReference<CommunicationStatus> ekosStatus = new AtomicReference<CommunicationStatus>( CommunicationStatus.Idle );
+    public final AtomicReference<CommunicationStatus> ekosStatus = new AtomicReference<>( CommunicationStatus.Idle );
     public CommunicationStatus handleEkosStatus( CommunicationStatus state ) {
         if( state != null ) {
             ekosStatus.set( state );
@@ -73,7 +49,16 @@ public class KStarsState {
         return ekosStatus.get( );
     }
 
-    public final AtomicReference<GuideStatus> guideStatus = new AtomicReference<GuideStatus>( GuideStatus.GUIDE_IDLE );
+    public final AtomicReference<CommunicationStatus> ekosIndiStatus = new AtomicReference<>( CommunicationStatus.Idle );
+    public CommunicationStatus handleEkosIndiStatus( CommunicationStatus state ) {
+        if( state != null ) {
+            ekosIndiStatus.set( state );
+        }
+        logMessage( "handleEkosIndiStatus(" + state + ")" );
+        return ekosIndiStatus.get( );
+    }
+
+    public final AtomicReference<GuideStatus> guideStatus = new AtomicReference<>( GuideStatus.GUIDE_IDLE );
     public GuideStatus handleGuideStatus( GuideStatus state ) {
         if( state != null ) {
             guideStatus.set( state );
@@ -114,8 +99,7 @@ public class KStarsState {
         return state;
     }
     
-    
-    public final AtomicReference<MountStatus> mountStatus = new AtomicReference<MountStatus>( MountStatus.MOUNT_IDLE );
+    public final AtomicReference<MountStatus> mountStatus = new AtomicReference<>( MountStatus.MOUNT_IDLE );
     public MountStatus handleMountStatus( MountStatus state ) {
         if( state != null ) {
             mountStatus.set( state );
@@ -143,7 +127,7 @@ public class KStarsState {
         return state;
     }
 
-    public final AtomicReference<ParkStatus> mountParkStatus = new AtomicReference<ParkStatus>( ParkStatus.PARK_UNKNOWN );
+    public final AtomicReference<ParkStatus> mountParkStatus = new AtomicReference<>( ParkStatus.PARK_UNKNOWN );
     public ParkStatus handleMountParkStatus( ParkStatus state ) {
         if( state != null ) {
             mountParkStatus.set( state );
@@ -153,7 +137,7 @@ public class KStarsState {
         return mountParkStatus.get();
     }
 
-    public final AtomicReference<AlignState> alignStatus = new AtomicReference<AlignState>( AlignState.ALIGN_IDLE );
+    public final AtomicReference<AlignState> alignStatus = new AtomicReference<>( AlignState.ALIGN_IDLE );
     public AlignState handleAlignStatus( AlignState state ) {
         if( state != null ) {
             alignStatus.set( state );
@@ -165,7 +149,7 @@ public class KStarsState {
     }
 
     
-    public final ConcurrentHashMap<String,FocusState> focusState = new ConcurrentHashMap<String,FocusState>();
+    public final ConcurrentHashMap<String,FocusState> focusState = new ConcurrentHashMap<>();
     protected FocusState handleFocusStatus( FocusState state, String train ) {
         if( state != null ) {
             focusState.put( train, state );
@@ -203,7 +187,6 @@ public class KStarsState {
     }
 
     public final ConcurrentHashMap<String,CaptureStatus> captureStatus = new ConcurrentHashMap<>();
-
     public CaptureStatus handleCaptureStatus( CaptureStatus state, String train ) {
 
         if( state != null ) {
@@ -321,7 +304,6 @@ public class KStarsState {
         if( state != null ) {
             weatherState.set( state );
         }
-
         logMessage( "handleSchedulerWeatherStatus(" + state + ")" );
         return weatherState.get();
     }
@@ -331,19 +313,16 @@ public class KStarsState {
         if( state != null ) {
             domeStatus.set( state );
         }
-
         logMessage( "handleDomeStatus(" + state + ")" );
         return domeStatus.get();
     }
     
 
     public Map<String, Object> fillStatus(Map<String, Object> res) {
-		
 		res.put( "captureRunning", this.captureRunning );
 		res.put( "focusRunning", this.focusRunning );
         res.put( "gudingRunning", this.gudingRunning.get() );
         res.put( "ditheringActive", this.ditheringActive.get() );
-        
 
 		res.put( "alignStatus", this.alignStatus.get() );
 		res.put( "weatherState", this.weatherState.get() );
@@ -354,8 +333,6 @@ public class KStarsState {
         res.put( "guideStatus", this.guideStatus.get() );
 
         res.put( "activeJob", this.schedulerActiveJob.get() );
-        
-        //new GsonBuilder().create().
 
         return res;
 	}

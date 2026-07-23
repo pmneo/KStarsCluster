@@ -7,9 +7,6 @@ public class IndiRotator extends IndiDevice {
 
     public IndiRotator(String deviceName, Device<INDI> indi) {
         super(deviceName, indi);
-        //eager: getRotatorPositionStatus() is polled by executePaAlignment(), called
-        //from checkClientState()'s 5s loop while stage == ALIGN
-        watch( "ABS_ROTATOR_ANGLE" );
     }
 
     public double getRotatorPosition() {

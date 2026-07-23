@@ -10,10 +10,6 @@ public class IndiFilterWheel extends IndiDevice {
 
     public IndiFilterWheel(String deviceName, Device<INDI> indi) {
         super(deviceName, indi);
-        //eager: getFilterSlotStatus() is polled in the bad-weather shutdown block of
-        //waitUntilEkosHasStopped()'s 5s loop. FILTER_NAME (getFilters()) is only used
-        //by the HTTP status endpoint and is watched lazily on first use.
-        watch( "FILTER_SLOT" );
     }
 
     public int getFilterSlot() {

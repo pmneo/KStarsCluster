@@ -227,37 +227,38 @@ public class KStarsClusterServer extends KStarsCluster {
         if( job != null && targetCoords != null && targetCoords.size() >= 2 ) {
             double targetRA = targetCoords.get(0);
             double targetDEC = targetCoords.get(1);
-
-            //ra is in ha, convert to deg by 15° per hour
-            double raDelta = (job.targetRA * 15 - targetRA * 15) * 3600;
-            double decDelta = (job.targetDEC - targetDEC) * 3600;
-
-            double delta = Math.sqrt( Math.pow(raDelta,2) + Math.pow(decDelta,2) );
-
-            logMessage( "Job coordinates = " + job.targetRA + "/" + job.targetDEC + ", alignTargetCoords = " + targetRA + "/" + targetDEC);
-            logMessage( "Job target align delta = " + raDelta + "/" + decDelta + ", all = " + delta );
-
-            if( delta > 5 ) { //the target delta is larger then 5 arc seconds
-                logMessage( "Adjusting alignment target coordinates from the job: " + job.targetRA + "/" + job.targetDEC );
-                this.align.methods.setTargetCoords( job.targetRA, job.targetDEC );
-            }
-
-            if( state == AlignState.ALIGN_COMPLETE ) {
-                targetRA = solutionResult.get(1) / 15.0;
-                targetDEC = solutionResult.get(2);
-
+            if( !( targetRA > 23.9 && targetDEC == 180.0 ) ) { //alignTargetCoords = 23.933333333333334/180.0
                 //ra is in ha, convert to deg by 15° per hour
-                raDelta = (job.targetRA * 15 - targetRA * 15) * 3600;
-                decDelta = (job.targetDEC - targetDEC) * 3600;
+                double raDelta = (job.targetRA * 15 - targetRA * 15) * 3600;
+                double decDelta = (job.targetDEC - targetDEC) * 3600;
 
-                delta = Math.sqrt( Math.pow(raDelta,2) + Math.pow(decDelta,2) );
+                double delta = Math.sqrt(Math.pow(raDelta, 2) + Math.pow(decDelta, 2));
 
-                logMessage( "Solution coordinates = " + targetRA + "/" + targetDEC + ", alignTargetCoords = " + job.targetRA + "/" + job.targetDEC);
-                logMessage( "Solution align delta = " + raDelta + "/" + decDelta + ", all = " + delta );
+                logMessage("Job coordinates = " + job.targetRA + "/" + job.targetDEC + ", alignTargetCoords = " + targetRA + "/" + targetDEC);
+                logMessage("Job target align delta = " + raDelta + "/" + decDelta + ", all = " + delta);
 
-                if( delta > 30 ) { //the target delta is larger then 30 arc seconds
-                    logMessage( "Stopping Scheduler, because of to big alignment delta" );
-                    this.stopAll();
+                if (delta > 5) { //the target delta is larger then 5 arc seconds
+                    logMessage("Adjusting alignment target coordinates from the job: " + job.targetRA + "/" + job.targetDEC);
+                    this.align.methods.setTargetCoords(job.targetRA, job.targetDEC);
+                }
+
+                if (state == AlignState.ALIGN_COMPLETE) {
+                    targetRA = solutionResult.get(1) / 15.0;
+                    targetDEC = solutionResult.get(2);
+
+                    //ra is in ha, convert to deg by 15° per hour
+                    raDelta = (job.targetRA * 15 - targetRA * 15) * 3600;
+                    decDelta = (job.targetDEC - targetDEC) * 3600;
+
+                    delta = Math.sqrt(Math.pow(raDelta, 2) + Math.pow(decDelta, 2));
+
+                    logMessage("Solution coordinates = " + targetRA + "/" + targetDEC + ", alignTargetCoords = " + job.targetRA + "/" + job.targetDEC);
+                    logMessage("Solution align delta = " + raDelta + "/" + decDelta + ", all = " + delta);
+
+                    if (delta > 30) { //the target delta is larger then 30 arc seconds
+                        logMessage("Stopping Scheduler, because of to big alignment delta");
+                        this.stopAll();
+                    }
                 }
             }
         }
@@ -317,11 +318,6 @@ public class KStarsClusterServer extends KStarsCluster {
     public SchedulerState handleSchedulerStatus(SchedulerState state) {
         state = super.handleSchedulerStatus(state);
 
-        if( ekosReady.get() ) {
-            checkCameraCooling( this );
-        }
-
-        
         final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleSchedulerStatus" );
         payload.put( "status", state );
@@ -366,10 +362,6 @@ public class KStarsClusterServer extends KStarsCluster {
     @Override
     public MountStatus handleMountStatus(MountStatus state) {
         state = super.handleMountStatus(state);
-        
-        if( ekosReady.get() ) {
-            checkCameraCooling( this );
-        }
 
         final Map<String,Object> payload = new HashMap<>();
         payload.put( "action", "handleMountStatus" );
@@ -608,11 +600,16 @@ public class KStarsClusterServer extends KStarsCluster {
             try {
                 var angles = Arrays.stream(parts[1].split(",")).map(p -> Double.valueOf(p.trim())).toArray(Double[]::new);
 
-                int p = capture.methods.findCameraPosition(PRIMARY_TRAIN, true);
-                int s = capture.methods.findCameraPosition(SECONDARY_TRAIN, true);
+                Map<String,String> trains = Map.of(
+                    PRIMARY_TRAIN, "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_B_nocal.esq"
+                    //SECONDARY_TRAIN, "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_A_nocal.esq"
+                );
 
-                capture.methods.abort(PRIMARY_TRAIN);
-                capture.methods.abort(SECONDARY_TRAIN);
+                List<Integer> trainIds = trains.values().stream().map( train -> capture.methods.findCameraPosition( train, true ) ).toList();
+
+                for( var train : trains.keySet() ) {
+                    capture.methods.abort(train);
+                }
 
                 var finished = new HashMap<String, Boolean>();
 
@@ -624,6 +621,10 @@ public class KStarsClusterServer extends KStarsCluster {
                         finished.put(status.train, false);
                     }
                 });
+
+                for( var light : this.lightBoxDevices.values() ) {
+                    light.lightOn();
+                }
 
                 try {
                     for (var pos : angles) {
@@ -646,16 +647,20 @@ public class KStarsClusterServer extends KStarsCluster {
 
                         logMessage("Moved rotator to postion " + pos);
 
-                        capture.methods.loadSequenceQueue("/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_B_nocal.esq", PRIMARY_TRAIN, true, "");
-                        capture.methods.loadSequenceQueue("/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_A_nocal.esq", SECONDARY_TRAIN, false, "");
+                        for( var train : trains.entrySet() ) {
+                            capture.methods.loadSequenceQueue(train.getValue(), train.getKey(), true, "");
+                        }
 
-                        capture.methods.start(PRIMARY_TRAIN);
-                        capture.methods.start(SECONDARY_TRAIN);
+                        finished.clear();
+
+                        for( var train : trains.keySet() ) {
+                            capture.methods.start(train);
+                        }
 
                         WaitUntil.waitUntil(
                                 "Capture Finished",
                                 TimeUnit.MINUTES.toSeconds(30),
-                                () -> (finished.size() == 2 && finished.values().stream().allMatch(b -> b.booleanValue()))
+                                () -> (finished.size() == trains.size() && finished.values().stream().allMatch(b -> b.booleanValue()))
                         );
 
                         logMessage("all captures finished");
@@ -668,7 +673,7 @@ public class KStarsClusterServer extends KStarsCluster {
                     unsub.run();
                 }
 
-                return p + " / " + s;
+                return trainIds.toString();
             }
             finally {
                 automationSuspended.set( false );

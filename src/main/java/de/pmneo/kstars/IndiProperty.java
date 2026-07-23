@@ -2,7 +2,9 @@ package de.pmneo.kstars;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -17,7 +19,7 @@ public class IndiProperty {
 
     public final String device;
     public final String name;
-    public final IpsState state;
+    public IpsState state;
 
     private final Map<String, Double> numbers = new LinkedHashMap<>();
     private final Map<String, String> switches = new LinkedHashMap<>();
@@ -31,6 +33,11 @@ public class IndiProperty {
         return new IndiProperty( JsonParser.parseString( json ).getAsJsonObject() );
     }
 
+    public IndiProperty( String device, String name ) {
+        this.device = device;
+        this.name = name;
+        this.state = IpsState.IPS_IDLE;
+    }
     private IndiProperty( JsonObject obj ) {
         this.device = obj.has( "device" ) ? obj.get( "device" ).getAsString() : null;
         this.name = obj.has( "name" ) ? obj.get( "name" ).getAsString() : null;
@@ -61,26 +68,118 @@ public class IndiProperty {
 
     public double getNumber( String element ) {
         Double v = numbers.get( element );
-        if( v == null ) {
-            throw new IllegalStateException( "No number element '" + element + "' in property " + name );
-        }
-        return v;
+        return Objects.requireNonNullElse(v, Double.NaN );
     }
 
     public String getSwitch( String element ) {
-        String v = switches.get( element );
-        if( v == null ) {
-            throw new IllegalStateException( "No switch element '" + element + "' in property " + name );
-        }
-        return v;
+        return Objects.requireNonNullElse( switches.get( element ), "Unknown" );
+    }
+
+    public boolean getSwitchStatus( String element ) {
+        return "On".equalsIgnoreCase( getSwitch( element ) );
     }
 
     public boolean isOn( String element ) {
-        return "On".equalsIgnoreCase( getSwitch( element ) );
+        return getSwitchStatus( element );
     }
 
     /** Nullable — used to enumerate a variable-length set of text elements (e.g. filter slot names). */
     public String getText( String element ) {
         return texts.get( element );
+    }
+
+    public IndiProperty setNumber( String element, double value ) {
+        numbers.put( element, value );
+        this.state = IpsState.IPS_BUSY;
+        return this;
+    }
+
+    /** state must be "On" or "Off", matching INDI's own element state strings. */
+    public IndiProperty setSwitch( String element, String state ) {
+        switches.put( element, state );
+        this.state = IpsState.IPS_BUSY;
+        return this;
+    }
+
+    /** state must be "On" or "Off", matching INDI's own element state strings. */
+    public IndiProperty setSwitch( String element, boolean state ) {
+        switches.put( element, state ? "On" : "Off" );
+        this.state = IpsState.IPS_BUSY;
+        return this;
+    }
+
+    public IndiProperty setText( String element, String value ) {
+        texts.put( element, value );
+        this.state = IpsState.IPS_BUSY;
+        return this;
+    }
+
+    /**
+     * The bare JSON array INDI.setPropertyJSON expects as elementsJson, e.g. {@code [{"name":"X","value":1.0}]}.
+     * Only elements actually set on this instance are included — a real INDI property is only ever one of
+     * number/switch/text, so in practice only one of the three maps is populated.
+     */
+    public String toElementsJson() {
+        JsonArray array = new JsonArray();
+        appendNumbers( array );
+        appendSwitches( array );
+        appendTexts( array );
+        return array.toString();
+    }
+
+    /** Serializes back to the same compact JSON shape that parse()/IndiProperty(String) reads. */
+    public String toJson() {
+        JsonObject obj = new JsonObject();
+        if( device != null ) {
+            obj.addProperty( "device", device );
+        }
+        if( name != null ) {
+            obj.addProperty( "name", name );
+        }
+        obj.addProperty( "state", state.ordinal() );
+
+        if( !numbers.isEmpty() ) {
+            JsonArray array = new JsonArray();
+            appendNumbers( array );
+            obj.add( "numbers", array );
+        }
+        if( !switches.isEmpty() ) {
+            JsonArray array = new JsonArray();
+            appendSwitches( array );
+            obj.add( "switches", array );
+        }
+        if( !texts.isEmpty() ) {
+            JsonArray array = new JsonArray();
+            appendTexts( array );
+            obj.add( "texts", array );
+        }
+        return obj.toString();
+    }
+
+    private void appendNumbers( JsonArray array ) {
+        numbers.forEach( ( elementName, value ) -> {
+            JsonObject o = new JsonObject();
+            o.addProperty( "name", elementName );
+            o.addProperty( "value", value );
+            array.add( o );
+        } );
+    }
+
+    private void appendSwitches( JsonArray array ) {
+        switches.forEach( ( elementName, elementState ) -> {
+            JsonObject o = new JsonObject();
+            o.addProperty( "name", elementName );
+            o.addProperty( "state", "On".equalsIgnoreCase( elementState ) ? 1 : 0 );
+            array.add( o );
+        } );
+    }
+
+    private void appendTexts( JsonArray array ) {
+        texts.forEach( ( elementName, text ) -> {
+            JsonObject o = new JsonObject();
+            o.addProperty( "name", elementName );
+            o.addProperty( "text", text );
+            array.add( o );
+        } );
     }
 }

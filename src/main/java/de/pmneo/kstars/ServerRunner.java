@@ -23,7 +23,7 @@ import de.pmneo.kstars.web.LoggingSocket;
 public class ServerRunner {
 		
 	@Argument(alias = "wp", required = false)
-	public static int webPort = 8080;
+	public static int webPort = 9080;
 	
 	@Argument(alias = "p", required = false)
 	public static int port = 8888;
@@ -68,7 +68,7 @@ public class ServerRunner {
 		}
 
 		cluster.setPreCoolTemp(preCoolTemp);
-		cluster.connectToKStars();
+		cluster.start();
 
 		startServer( cluster );
 

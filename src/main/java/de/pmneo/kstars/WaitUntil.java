@@ -30,7 +30,7 @@ public class WaitUntil {
         }
         else {	
             if( timeoutMessage != null ) {
-                System.out.println( "Wait timed out: " + timeoutMessage );
+                SimpleLogger.getLogger().logMessage( "Wait timed out: " + timeoutMessage );
             }
             return false;
         }
