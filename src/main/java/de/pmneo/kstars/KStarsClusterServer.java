@@ -4,7 +4,6 @@ import java.io.File;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,9 +15,7 @@ import java.util.stream.Collectors;
 
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.kde.kstars.ekos.SchedulerJob;
-import org.kde.kstars.INDI.IpsState;
 import org.kde.kstars.ekos.Align.AlignState;
-import org.kde.kstars.ekos.Capture;
 import org.kde.kstars.ekos.Capture.CaptureStatus;
 import org.kde.kstars.ekos.Focus.FocusState;
 import org.kde.kstars.ekos.Guide.GuideStatus;
@@ -589,95 +586,5 @@ public class KStarsClusterServer extends KStarsCluster {
             }
             return roofStatus.get().indiStatus;
 		} );
-
-        actions.put( "flats", ( parts, req, resp ) -> {
-            if( parts.length < 2 ) {
-                return "no rotations given";
-            }
-            if( !automationSuspended.compareAndSet( false, true ) ) {
-                return "suspended";
-            }
-            try {
-                var angles = Arrays.stream(parts[1].split(",")).map(p -> Double.valueOf(p.trim())).toArray(Double[]::new);
-
-                Map<String,String> trains = Map.of(
-                    PRIMARY_TRAIN, "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_B_nocal.esq"
-                    //SECONDARY_TRAIN, "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_A_nocal.esq"
-                );
-
-                List<Integer> trainIds = trains.values().stream().map( train -> capture.methods.findCameraPosition( train, true ) ).toList();
-
-                for( var train : trains.keySet() ) {
-                    capture.methods.abort(train);
-                }
-
-                var finished = new HashMap<String, Boolean>();
-
-                var unsub = this.capture.addNewStatusHandler(Capture.newStatus.class, status -> {
-                    //System.out.println(status.train + ": " + status.getStatus());
-                    if (status.getStatus() == CaptureStatus.CAPTURE_COMPLETE) {
-                        finished.put(status.train, true);
-                    } else {
-                        finished.put(status.train, false);
-                    }
-                });
-
-                for( var light : this.lightBoxDevices.values() ) {
-                    light.lightOn();
-                }
-
-                try {
-                    for (var pos : angles) {
-                        logMessage("Moving rotator to postion " + pos);
-                        WaitUntil.waitUntil(
-                            "Rotators Idle",
-                            120,
-                            () -> rotatorDevices.values().stream().allMatch(r -> List.of(IpsState.IPS_IDLE, IpsState.IPS_OK).contains(r.getRotatorPositionStatus()) )
-                        );
-
-                        for (var r : rotatorDevices.values()) {
-                            r.setRotatorPosition(pos);
-                        }
-
-                        WaitUntil.waitUntil(
-                            "Rotators Idle",
-                            120,
-                            () -> rotatorDevices.values().stream().allMatch(r -> r.getRotatorPositionStatus() == IpsState.IPS_OK)
-                        );
-
-                        logMessage("Moved rotator to postion " + pos);
-
-                        for( var train : trains.entrySet() ) {
-                            capture.methods.loadSequenceQueue(train.getValue(), train.getKey(), true, "");
-                        }
-
-                        finished.clear();
-
-                        for( var train : trains.keySet() ) {
-                            capture.methods.start(train);
-                        }
-
-                        WaitUntil.waitUntil(
-                                "Capture Finished",
-                                TimeUnit.MINUTES.toSeconds(30),
-                                () -> (finished.size() == trains.size() && finished.values().stream().allMatch(b -> b.booleanValue()))
-                        );
-
-                        logMessage("all captures finished");
-                    }
-
-                    for( var light : this.lightBoxDevices.values() ) {
-                        light.lightOff();
-                    }
-                } finally {
-                    unsub.run();
-                }
-
-                return trainIds.toString();
-            }
-            finally {
-                automationSuspended.set( false );
-            }
-        } );
     }
 }

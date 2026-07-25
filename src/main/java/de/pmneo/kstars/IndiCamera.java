@@ -19,6 +19,10 @@ public class IndiCamera extends IndiDevice {
     }
 
     public void warm() {
+        if( !getCcdCooler().isValid() ) {
+            return;
+        }
+
         if( isCooling() ) {
             logMessage( "Warming Camera" );
             this.setCooling( false );
@@ -26,34 +30,51 @@ public class IndiCamera extends IndiDevice {
     }
 
     public void preCool() {
-        if( !isCooling() ) {
+        if( !getCcdCooler().isValid() ) {
+            return;
+        }
+
+        if( !isCooling() || getCcdTemparatur() != preCoolTemp ) {
             logMessage( "Precooling Camera to " + preCoolTemp );
             this.setCcdTemparatur( preCoolTemp );
-            this.setCooling( true );
         }
     }
 
     public double getCcdTemparatur() {
-        return getProperty( "CCD_TEMPERATURE" ).getNumber( "CCD_TEMPERATURE_VALUE" );
+        return getTempProperty().getNumber( "CCD_TEMPERATURE_VALUE" );
     }
+
+    private IndiProperty getTempProperty() {
+        return getProperty("CCD_TEMPERATURE");
+    }
+
     public IpsState getCcdTemparaturState() {
-        return getProperty( "CCD_TEMPERATURE" ).state;
+        return getTempProperty().state;
     }
 
     public void setCcdTemparatur( double value ) {
-        this.setProperty( getProperty( "CCD_TEMPERATURE" )
+        if( !getCcdCooler().isValid() ) {
+            return;
+        }
+
+        this.setProperty( getTempProperty()
                 .setNumber( "CCD_TEMPERATURE_VALUE", value ) );
     }
 
     public boolean isCooling() {
-        return getProperty( "CCD_COOLER" ).isOn( "COOLER_ON" );
+        return getCcdCooler().getSwitch( "COOLER_ON" );
     }
+
+    private IndiProperty getCcdCooler() {
+        return getProperty("CCD_COOLER");
+    }
+
     public boolean isCoolerBusy() {
-        return getProperty( "CCD_COOLER" ).state == IpsState.IPS_BUSY;
+        return getCcdCooler().state == IpsState.IPS_BUSY;
     }
     public void setCooling( boolean value ) {
         try {
-            var prop = getProperty( "CCD_COOLER" );
+            var prop = getCcdCooler();
             if( value ) {
                 prop.setSwitch( "COOLER_ON", true );
                 prop.setSwitch( "COOLER_OFF", false );

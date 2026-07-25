@@ -19,6 +19,14 @@ public class KStarsConfig extends WithLogging {
         }
     }
 
+    public double getLatitude() {
+        return config.getDouble( "Location.Latitude", -999 );
+    }
+
+    public double getLongitude() {
+        return config.getDouble( "Location.Longitude", -999 );
+    }
+
     public Calendar[] getCivilTwilight() {
         try {
             double longitude = config.getDouble("Location.Longitude", -999 );

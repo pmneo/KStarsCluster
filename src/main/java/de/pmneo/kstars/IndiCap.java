@@ -36,7 +36,7 @@ public class IndiCap extends IndiDevice {
     }
 
     public boolean isParked() {
-        return getProperty( "CAP_PARK" ).isOn( "PARK" );
+        return getProperty( "CAP_PARK" ).getSwitch( "PARK" );
     }
 
     public boolean isBusy() {

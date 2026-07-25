@@ -42,6 +42,7 @@ import com.google.gson.GsonBuilder;
 
 import bsh.Interpreter;
 
+import de.pmneo.kstars.utils.Coordinates;
 import de.pmneo.kstars.utils.RaDecUtils;
 import de.pmneo.kstars.web.CommandServlet.Action;
 
@@ -721,6 +722,18 @@ public abstract class KStarsCluster extends KStarsState {
 								logMessage( "Caputure one focus image done" );
 
 								sleep( 5000L );
+
+								// Taking this confirmation focus frame can make Ekos/the driver auto-unpark
+								// the dust cap so the sensor sees light — wait for that unpark to actually
+								// finish, then re-park it before we actually stop Ekos, otherwise the cap
+								// can be left open for the whole stopped period.
+								WaitUntil.waitUntil( "capUnpark", 30, () ->
+										capDevices.values().stream().noneMatch( IndiCap::isBusy ) );
+
+								parkCap();
+
+								WaitUntil.waitUntil( "capPark", 60, () ->
+										capDevices.values().stream().allMatch( cap -> cap.isParked() && !cap.isBusy() ) );
 							}
 							catch( Throwable t ) {
 								logError( "Failed to go back to L before shutdown", t );
@@ -736,7 +749,9 @@ public abstract class KStarsCluster extends KStarsState {
 						}
 					}
 					else if( badWeatherDuration >= TimeUnit.MINUTES.toMillis( 1 ) ) {
-						ensureMountIsParked();
+						if( !automationSuspended.get() ) {
+							ensureMountIsParked();
+						}
 					}
 				}
 			}
@@ -799,6 +814,15 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 
+	/**
+	 * Slews the mount to a fixed horizontal position by converting it to equatorial
+	 * coordinates for the observer's location (from kstarsrc) at the current time,
+	 * since Ekos' Mount.slew() only accepts RA/Dec.
+	 */
+	protected boolean slewAltAz( double altitude, double azimuth ) {
+		double[] raDec = Coordinates.altAzToRaDec( altitude, azimuth, config.getLatitude(), config.getLongitude(), Calendar.getInstance() );
+		return this.mount.methods.slew( raDec[0], raDec[1] );
+	}
 
 	protected final AtomicBoolean ekosReady = new AtomicBoolean(false);
 
@@ -1028,6 +1052,18 @@ public abstract class KStarsCluster extends KStarsState {
 				return "OK";
 		} );
 
+		actions.put( "preCool", (parts, req, resp ) -> {
+			preCool();
+			return "OK";
+		} );
+
+
+		actions.put( "warmCameras", (parts, req, resp ) -> {
+			warmCameras();
+			return "OK";
+		} );
+
+
 		actions.put( "exec", ( parts, req, resp ) -> {
 			
 			int len = req.getContentLength();
@@ -1048,6 +1084,117 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 
 			return "Not yet implemented";
+		} );
+
+
+
+		actions.put( "flats", ( parts, req, resp ) -> {
+			if( mountStatus.get() != MountStatus.MOUNT_PARKED ) {
+				return "mount is not parked";
+			}
+			else if( parts.length < 2 ) {
+				return "no rotations given";
+			}
+			if( !automationSuspended.compareAndSet( false, true ) ) {
+				return "suspended";
+			}
+			try {
+				mount.methods.unpark();
+
+				slewAltAz( 90, 90 );
+
+				WaitUntil.waitUntil( "mount tracking", TimeUnit.MINUTES.toSeconds( 2 ),
+						() -> mountStatus.get() == MountStatus.MOUNT_TRACKING );
+
+				mount.methods.abort();
+
+				WaitUntil.waitUntil( "mount standing still", TimeUnit.MINUTES.toSeconds( 2 ),
+						() -> mountStatus.get() == MountStatus.MOUNT_IDLE );
+
+				var angles = Arrays.stream(parts[1].split(",")).map(p -> Double.valueOf(p.trim())).toArray(Double[]::new);
+
+				Map<String,String> trains = Map.of(
+						PRIMARY_TRAIN, "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_B_nocal.esq"
+						//SECONDARY_TRAIN, "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_A_nocal.esq"
+				);
+
+				List<Integer> trainIds = trains.values().stream().map( train -> capture.methods.findCameraPosition( train, true ) ).toList();
+
+				for( var train : trains.keySet() ) {
+					capture.methods.abort(train);
+				}
+
+				var finished = new HashMap<String, Boolean>();
+
+				var unsub = this.capture.addNewStatusHandler(Capture.newStatus.class, status -> {
+					//System.out.println(status.train + ": " + status.getStatus());
+					if (status.getStatus() == CaptureStatus.CAPTURE_COMPLETE) {
+						finished.put(status.train, true);
+					} else {
+						finished.put(status.train, false);
+					}
+				});
+
+				for( var light : this.lightBoxDevices.values() ) {
+					light.lightOn();
+				}
+
+				try {
+					for (var pos : angles) {
+						logMessage("Moving rotator to postion " + pos);
+						WaitUntil.waitUntil(
+								"Rotators Idle",
+								120,
+								() -> rotatorDevices.values().stream().allMatch(r -> List.of(IpsState.IPS_IDLE, IpsState.IPS_OK).contains(r.getRotatorPositionStatus()) )
+						);
+
+						for (var r : rotatorDevices.values()) {
+							r.setRotatorPosition(pos);
+						}
+
+						WaitUntil.waitUntil(
+								"Rotators Idle",
+								120,
+								() -> rotatorDevices.values().stream().allMatch(r -> r.getRotatorPositionStatus() == IpsState.IPS_OK)
+						);
+
+						logMessage("Moved rotator to postion " + pos);
+
+						for( var train : trains.entrySet() ) {
+							capture.methods.loadSequenceQueue(train.getValue(), train.getKey(), true, "");
+						}
+
+						finished.clear();
+
+						for( var train : trains.keySet() ) {
+							capture.methods.start(train);
+						}
+
+						WaitUntil.waitUntil(
+								"Capture Finished",
+								TimeUnit.MINUTES.toSeconds(30),
+								() -> (finished.size() == trains.size() && finished.values().stream().allMatch(b -> b.booleanValue()))
+						);
+
+						logMessage("all captures finished");
+					}
+
+					for( var light : this.lightBoxDevices.values() ) {
+						light.lightOff();
+					}
+
+					mount.methods.park();
+					WaitUntil.waitUntil( "mount tracking", TimeUnit.MINUTES.toSeconds( 2 ),
+							() -> mountStatus.get() == MountStatus.MOUNT_PARKED );
+				} finally {
+					unsub.run();
+				}
+
+				return trainIds.toString();
+			}
+			finally {
+				automationSuspended.set( false );
+			}
 		} );
 	}
 
@@ -1323,8 +1470,6 @@ public abstract class KStarsCluster extends KStarsState {
 					logMessage( "Scheduler job has changed from " + prev.name + " to null" );
 					this.schedulerActiveJob.set( null );
 				}
-
-				warmCameras();
 			}
 			else if( prev == null || !prev.name.equals( job.name ) ) {
 				logMessage( "Scheduler job has changed from " + ( prev == null ? "null" : prev.name ) + " to " + job.name + " (" + job.getState() + ")" );
@@ -1360,24 +1505,15 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 
-	private ScheduledFuture<?> warmCameras = null;
 	private void preCool() {
-		if( warmCameras != null ) {
-			warmCameras.cancel(true);
-		}
-
 		for( IndiCamera camera : cameraDevices.values() ) {
 			camera.preCool();
 		}
 	}
 
 	private void warmCameras() {
-		if( warmCameras == null || warmCameras.isDone() || warmCameras.isCancelled() ) {
-			warmCameras = schedulerService.schedule( () -> {
-				for( IndiCamera camera : cameraDevices.values() ) {
-					camera.warm();
-				}
-			}, 5, TimeUnit.MINUTES );
+		for( IndiCamera camera : cameraDevices.values() ) {
+			camera.warm();
 		}
 	}
 

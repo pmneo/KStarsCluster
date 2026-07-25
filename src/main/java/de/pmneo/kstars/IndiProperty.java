@@ -22,7 +22,7 @@ public class IndiProperty {
     public IpsState state;
 
     private final Map<String, Double> numbers = new LinkedHashMap<>();
-    private final Map<String, String> switches = new LinkedHashMap<>();
+    private final Map<String, Boolean> switches = new LinkedHashMap<>();
     private final Map<String, String> texts = new LinkedHashMap<>();
 
     /** Returns null if json is null/blank (property didn't exist / KStars returned nothing). */
@@ -55,7 +55,7 @@ public class IndiProperty {
         if( obj.has( "switches" ) ) {
             for( JsonElement el : obj.getAsJsonArray( "switches" ) ) {
                 JsonObject o = el.getAsJsonObject();
-                switches.put( o.get( "name" ).getAsString(), o.get( "state" ).getAsInt() == 1 ? "On" : "Off" );
+                switches.put( o.get( "name" ).getAsString(), o.get( "state" ).getAsInt() == 1 ? true : false );
             }
         }
         if( obj.has( "texts" ) ) {
@@ -66,21 +66,17 @@ public class IndiProperty {
         }
     }
 
+    public boolean isValid() {
+        return !switches.isEmpty() || !numbers.isEmpty() || !texts.isEmpty();
+    }
+
     public double getNumber( String element ) {
         Double v = numbers.get( element );
         return Objects.requireNonNullElse(v, Double.NaN );
     }
 
-    public String getSwitch( String element ) {
-        return Objects.requireNonNullElse( switches.get( element ), "Unknown" );
-    }
-
-    public boolean getSwitchStatus( String element ) {
-        return "On".equalsIgnoreCase( getSwitch( element ) );
-    }
-
-    public boolean isOn( String element ) {
-        return getSwitchStatus( element );
+    public boolean getSwitch( String element ) {
+        return Objects.requireNonNullElse( switches.get( element ), false );
     }
 
     /** Nullable — used to enumerate a variable-length set of text elements (e.g. filter slot names). */
@@ -94,16 +90,8 @@ public class IndiProperty {
         return this;
     }
 
-    /** state must be "On" or "Off", matching INDI's own element state strings. */
-    public IndiProperty setSwitch( String element, String state ) {
-        switches.put( element, state );
-        this.state = IpsState.IPS_BUSY;
-        return this;
-    }
-
-    /** state must be "On" or "Off", matching INDI's own element state strings. */
     public IndiProperty setSwitch( String element, boolean state ) {
-        switches.put( element, state ? "On" : "Off" );
+        switches.put( element, state );
         this.state = IpsState.IPS_BUSY;
         return this;
     }
@@ -169,7 +157,7 @@ public class IndiProperty {
         switches.forEach( ( elementName, elementState ) -> {
             JsonObject o = new JsonObject();
             o.addProperty( "name", elementName );
-            o.addProperty( "state", "On".equalsIgnoreCase( elementState ) ? 1 : 0 );
+            o.addProperty( "state", elementState ? 1 : 0 );
             array.add( o );
         } );
     }

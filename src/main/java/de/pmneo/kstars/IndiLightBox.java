@@ -21,6 +21,6 @@ public class IndiLightBox extends IndiDevice {
     }
 
     public boolean isLightOn() {
-        return getProperty( "FLAT_LIGHT_CONTROL" ).isOn( "FLAT_LIGHT_ON" );
+        return getProperty( "FLAT_LIGHT_CONTROL" ).getSwitch( "FLAT_LIGHT_ON" );
     }
 }
