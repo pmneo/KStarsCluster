@@ -30,7 +30,22 @@ public class ServerRunner {
 
 	@Argument(alias = "pc", required = false)
 	public static int preCoolTemp = -15;
-	
+
+	@Argument(alias = "rc", required = false)
+	public static int requiredCameras = 2;
+
+	@Argument(alias = "rfw", required = false)
+	public static int requiredFilterWheels = 1;
+
+	@Argument(alias = "rr", required = false)
+	public static int requiredRotators = 2;
+
+	@Argument(alias = "rcap", required = false)
+	public static int requiredCaps = 2;
+
+	@Argument(alias = "rlb", required = false)
+	public static int requiredLightBoxes = 2;
+
 	@Argument(alias = "ls", required = false )
 	public static String loadSchedule = "~/current_schedule.esl";
 
@@ -68,6 +83,11 @@ public class ServerRunner {
 		}
 
 		cluster.setPreCoolTemp(preCoolTemp);
+		cluster.setRequiredCameras(requiredCameras);
+		cluster.setRequiredFilterWheels(requiredFilterWheels);
+		cluster.setRequiredRotators(requiredRotators);
+		cluster.setRequiredCaps(requiredCaps);
+		cluster.setRequiredLightBoxes(requiredLightBoxes);
 		cluster.start();
 
 		startServer( cluster );

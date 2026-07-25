@@ -528,7 +528,7 @@ public class KStarsClusterServer extends KStarsCluster {
             logMessage( "Roof status changed from " + oldState + " to " + roofStatus );
         }
 
-        return RoofStatus.PARKED;
+        return roofStatus;
     }
 
     protected void unparkRoof() {

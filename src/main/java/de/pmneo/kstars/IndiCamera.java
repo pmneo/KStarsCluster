@@ -48,9 +48,12 @@ public class IndiCamera extends IndiDevice {
     public boolean isCooling() {
         return getProperty( "CCD_COOLER" ).isOn( "COOLER_ON" );
     }
+    public boolean isCoolerBusy() {
+        return getProperty( "CCD_COOLER" ).state == IpsState.IPS_BUSY;
+    }
     public void setCooling( boolean value ) {
         try {
-            var prop = getProperty( "CCD_TEMPERATURE" );
+            var prop = getProperty( "CCD_COOLER" );
             if( value ) {
                 prop.setSwitch( "COOLER_ON", true );
                 prop.setSwitch( "COOLER_OFF", false );

@@ -16,6 +16,9 @@ public class IndiCap extends IndiDevice {
             capPark.setSwitch( "UNPARK", true );
             this.setProperty( capPark );
         }
+        else if( isParked() ) {
+            logMessageOnce( "Cap unpark for " + deviceName + " requested, but CAP_PARK is still BUSY" );
+        }
     }
 
     public void park() {
@@ -27,9 +30,16 @@ public class IndiCap extends IndiDevice {
             capPark.setSwitch( "UNPARK", false );
             this.setProperty( capPark );
         }
+        else if( !isParked() ) {
+            logMessageOnce( "Cap park for " + deviceName + " requested, but CAP_PARK is still BUSY" );
+        }
     }
 
     public boolean isParked() {
         return getProperty( "CAP_PARK" ).isOn( "PARK" );
+    }
+
+    public boolean isBusy() {
+        return getProperty( "CAP_PARK" ).state == INDI.IpsState.IPS_BUSY;
     }
 }

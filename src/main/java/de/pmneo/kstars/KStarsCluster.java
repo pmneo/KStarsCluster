@@ -82,7 +82,39 @@ public abstract class KStarsCluster extends KStarsState {
 	protected Map<String, IndiLightBox> lightBoxDevices = new HashMap<>();
 
 	protected final List< Device<?> > devices = new ArrayList<Device<?>>();
-	
+
+	// Minimum number of each INDI device kind expected to be present. Used by subscribe()
+	// to tell "not enumerated yet" (driver reports asynchronously, give it a moment) apart
+	// from "genuinely missing" (broken/disconnected hardware) instead of trusting whatever
+	// happens to be enumerated in the first pass.
+	private int requiredCameras = 2;
+	private int requiredFilterWheels = 1;
+	private int requiredRotators = 2;
+	private int requiredCaps = 2;
+	private int requiredLightBoxes = 2;
+
+	public void setRequiredCameras( int requiredCameras ) {
+		this.requiredCameras = requiredCameras;
+	}
+	public void setRequiredFilterWheels( int requiredFilterWheels ) {
+		this.requiredFilterWheels = requiredFilterWheels;
+	}
+	public void setRequiredRotators( int requiredRotators ) {
+		this.requiredRotators = requiredRotators;
+	}
+	public void setRequiredCaps( int requiredCaps ) {
+		this.requiredCaps = requiredCaps;
+	}
+	public void setRequiredLightBoxes( int requiredLightBoxes ) {
+		this.requiredLightBoxes = requiredLightBoxes;
+	}
+
+	// Set to false whenever subscribe() gives up waiting for the expected device counts
+	// before they were all met — the shutdown gate must not trust an incomplete device
+	// enumeration (e.g. a cap that's still missing from capDevices doesn't get checked at
+	// all, which would otherwise look like "nothing left to park").
+	protected final AtomicBoolean devicesComplete = new AtomicBoolean( true );
+
     private double preCoolTemp = -15;
     public void setPreCoolTemp(double preCoolTemp) {
 		for( IndiCamera camera : cameraDevices.values() ) {
@@ -241,11 +273,23 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	protected void subscribe() throws DBusException {
-		cameraDevices = IndiDevice.createDevices( indi, DriverInterface.CCD_INTERFACE, IndiCamera::new );
-		filterDevices = IndiDevice.createDevices( indi, DriverInterface.FILTER_INTERFACE, IndiFilterWheel::new );
-		rotatorDevices = IndiDevice.createDevices( indi, DriverInterface.ROTATOR_INTERFACE, IndiRotator::new );
-		capDevices = IndiDevice.createDevices( indi, DriverInterface.DUSTCAP_INTERFACE, IndiCap::new );
-		lightBoxDevices = IndiDevice.createDevices( indi, DriverInterface.LIGHTBOX_INTERFACE, IndiLightBox::new );
+		// Drivers report themselves to KStars/INDI asynchronously, so right after a (re)connect
+		// the device enumeration can be short for a moment even though every driver is actually
+		// there. Retry for a few seconds instead of trusting the very first enumeration —
+		// otherwise a transient short read (e.g. "0 caps") gets treated as final truth.
+		devicesComplete.set( WaitUntil.waitUntil( "Waiting for expected INDI device count", 10, () -> {
+			cameraDevices = IndiDevice.createDevices( indi, DriverInterface.CCD_INTERFACE, IndiCamera::new );
+			filterDevices = IndiDevice.createDevices( indi, DriverInterface.FILTER_INTERFACE, IndiFilterWheel::new );
+			rotatorDevices = IndiDevice.createDevices( indi, DriverInterface.ROTATOR_INTERFACE, IndiRotator::new );
+			capDevices = IndiDevice.createDevices( indi, DriverInterface.DUSTCAP_INTERFACE, IndiCap::new );
+			lightBoxDevices = IndiDevice.createDevices( indi, DriverInterface.LIGHTBOX_INTERFACE, IndiLightBox::new );
+
+			return cameraDevices.size() >= requiredCameras
+					&& filterDevices.size() >= requiredFilterWheels
+					&& rotatorDevices.size() >= requiredRotators
+					&& capDevices.size() >= requiredCaps
+					&& lightBoxDevices.size() >= requiredLightBoxes;
+		} ) );
 
 		indiDevices.clear();
 		indiDevices.putAll( cameraDevices );
@@ -257,6 +301,11 @@ public abstract class KStarsCluster extends KStarsState {
 		logMessage( "INDI devices refreshed: " + cameraDevices.size() + " cameras, " + filterDevices.size() + " filter wheels, "
 				+ rotatorDevices.size() + " rotators, " + capDevices.size() + " caps, " + lightBoxDevices.size() + " light boxes" );
 
+		if( !devicesComplete.get() ) {
+			logMessage( "INDI devices incomplete: expected at least " + requiredCameras + " cameras, " + requiredFilterWheels
+					+ " filter wheels, " + requiredRotators + " rotators, " + requiredCaps + " caps, " + requiredLightBoxes
+					+ " light boxes — check hardware/drivers" );
+		}
 	}
 
 	protected void disconnect() {
@@ -292,7 +341,12 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	protected void ekosDisconnected() {
-		this.unsubscribe();
+		// Full disconnect (not just unsubscribe): createDevices() only re-registers the
+		// Ekos/INDI signal handlers (ekosStatusChanged, indiStatusChanged, heartbeat,
+		// propertyValueChanged) while con == null. A bare unsubscribe() here would leave
+		// con set, so those handlers would never come back and ekosStatus would freeze
+		// forever on its last value.
+		this.disconnect();
 	}
 
 	public void stopUsbDevices() {
@@ -591,6 +645,10 @@ public abstract class KStarsCluster extends KStarsState {
 
 						boolean canStop = true;
 
+						if( !devicesComplete.get() ) {
+							waitToStopReasons.append( "\n\tINDI device enumeration is incomplete, can not verify cap/camera state" );
+							canStop = false;
+						}
 						if( this.mountStatus.get() != MountStatus.MOUNT_PARKED ) {
 							waitToStopReasons.append( "\n\tMount is not yet parked, wait for parking" );
 							canStop = false;
@@ -606,11 +664,27 @@ public abstract class KStarsCluster extends KStarsState {
 							waitToStopReasons.append( "\n\tLast capture was less than 10 Minutes ago" );
 							canStop = false;
 						}
-						else if( lastCapture < TimeUnit.MINUTES.toMillis( 30 ) ) {
-							warmCameras();
 
-							waitToStopReasons.append( "\n\tLast capture was less than 30 Minutes ago" );
-							canStop = false;
+						for( IndiCap cap : capDevices.values() ) {
+							if( !cap.isParked() || cap.isBusy() ) {
+								waitToStopReasons.append( "\n\tCap " + cap.deviceName + " is not yet parked" );
+								canStop = false;
+							}
+						}
+
+						// Only request the camera warm-up once every other criterion is already
+						// met — never eagerly on every mount-park/scheduler-abort — so the cooler
+						// isn't cycled on/off during a short bad-weather spell. Once we get here we
+						// are already committed to stopping, so it's fine to wait past the usual
+						// 60 Minutes for the cooler to actually finish warming up.
+						if( canStop ) {
+							for( IndiCamera camera : cameraDevices.values() ) {
+								camera.warm();
+								if( camera.isCooling() || camera.isCoolerBusy() ) {
+									waitToStopReasons.append( "\n\tCamera " + camera.deviceName + " is still cooling/warming up" );
+									canStop = false;
+								}
+							}
 						}
 
 						if( !canStop ) {

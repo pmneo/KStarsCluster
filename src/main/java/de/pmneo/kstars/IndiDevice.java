@@ -63,6 +63,14 @@ public class IndiDevice {
 		SimpleLogger.getLogger().logMessage( message );
 	}
 
+	private final java.util.concurrent.atomic.AtomicReference<String> lastMessage = new java.util.concurrent.atomic.AtomicReference<>("");
+	public void logMessageOnce( String message ) {
+		if( message.equals( lastMessage.getAndSet( message ) ) ) {
+			return;
+		}
+		SimpleLogger.getLogger().logMessage( message );
+	}
+
 	public void logError( Object message, Throwable t ) {
         SimpleLogger.getLogger().logError( message, t );
 	}
