@@ -42,6 +42,7 @@ import org.kde.kstars.ekos.Scheduler.SchedulerState;
 import org.kde.kstars.ekos.SchedulerJob;
 import org.qtproject.Qt.QAction;
 
+import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
 import bsh.Interpreter;
@@ -184,6 +185,8 @@ public abstract class KStarsCluster extends KStarsState {
 	private String lastBroadcastStatus = null;
 	private void broadcastStatusIfChanged() {
 		try {
+			refreshSequenceQueueStatus();
+
 			String json = new GsonBuilder().create().toJson( buildStatusSnapshot() );
 			if( !json.equals( lastBroadcastStatus ) ) {
 				lastBroadcastStatus = json;
@@ -192,6 +195,34 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 		catch( Throwable t ) {
 			logError( "Failed to broadcast status", t );
+		}
+	}
+
+	/**
+	 * Capture.getSequenceQueueStatusJSON(train) is a synchronous D-Bus call, so — same rule as
+	 * everywhere else — it only ever runs from this periodic broadcaster thread, never from a
+	 * signal handler. Runs once per second, same cadence as the broadcast itself, so the web
+	 * UI's remaining-time countdown tracks Ekos's own live view.
+	 */
+	private void refreshSequenceQueueStatus() {
+		if( !ekosReady.get() || this.capture == null ) {
+			return;
+		}
+
+		Set<String> trains = new LinkedHashSet<>( captureStatus.keySet() );
+		trains.add( PRIMARY_TRAIN );
+
+		for( String train : trains ) {
+			try {
+				String json = this.capture.methods.getSequenceQueueStatusJSON( train );
+				List<?> parsed = new Gson().fromJson( json, List.class );
+				if( parsed != null && !parsed.isEmpty() ) {
+					sequenceQueueStatus.put( train, parsed.get( 0 ) );
+				}
+			}
+			catch( Throwable t ) {
+				logDebug( "Failed to refresh sequence queue status for " + train + ": " + t );
+			}
 		}
 	}
 
@@ -1506,6 +1537,8 @@ public abstract class KStarsCluster extends KStarsState {
 			images.put( train, listRecentImages( train ) );
 		}
 		res.put( "images", images );
+
+		res.put( "sequenceQueue", sequenceQueueStatus );
 
 		return res;
 	}

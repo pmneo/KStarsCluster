@@ -1,7 +1,8 @@
-import type { HfrSample, CapturedImage } from '../api/types';
+import type { HfrSample, CapturedImage, SequenceQueueStatus } from '../api/types';
 import { actions } from '../api/actions';
 import { HfrChart } from './HfrChart';
 import { ImageStrip } from './ImageStrip';
+import { CaptureQueue } from './CaptureQueue';
 
 interface Props {
   train: string;
@@ -11,9 +12,10 @@ interface Props {
   focusRunning?: boolean;
   hfrHistory: HfrSample[];
   images: CapturedImage[];
+  sequenceQueue?: SequenceQueueStatus;
 }
 
-export function TrainCard({ train, captureStatus, focusState, captureRunning, focusRunning, hfrHistory, images }: Props) {
+export function TrainCard({ train, captureStatus, focusState, captureRunning, focusRunning, hfrHistory, images, sequenceQueue }: Props) {
   const latestHfr = hfrHistory.length > 0 ? hfrHistory[hfrHistory.length - 1] : undefined;
 
   return (
@@ -37,6 +39,7 @@ export function TrainCard({ train, captureStatus, focusState, captureRunning, fo
         <button onClick={() => actions.train.focusAbort(train)} disabled={!focusRunning}>Abort Focus</button>
         <button onClick={() => actions.train.captureAbort(train)} disabled={!captureRunning}>Abort Capture</button>
       </div>
+      <CaptureQueue queue={sequenceQueue} />
       <ImageStrip images={images} />
     </div>
   );

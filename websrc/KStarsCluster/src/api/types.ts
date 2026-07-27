@@ -56,6 +56,52 @@ export function getFrameTypeLabel(type: number): string {
   return FRAME_TYPE_LABELS[type] ?? `Type ${type}`;
 }
 
+/** One planned exposure step from Capture.getSequenceQueueStatusJSON — numeric fields ride as
+ * locale-formatted strings straight from KStars (e.g. "3,000000" under a German locale). */
+export interface SequenceStep {
+  Type: string;
+  Filter: string;
+  Count: string;
+  Exp: string;
+  Bin: string;
+  Format: string;
+  Encoding: string;
+  'ISO/Gain': string;
+  Offset: string;
+  Temperature: number;
+  EnforceTemperature: boolean;
+  DitherPerJobEnabled: boolean;
+  DitherPerJobFrequency: number;
+  Status: string;
+}
+
+/** Capture.getSequenceQueueStatusJSON(train) — the same detail Ekos's own Capture module shows. */
+export interface SequenceQueueStatus {
+  train: string;
+  camera: string;
+  status: string;
+  jobCount: number;
+  pendingJobCount: number;
+  progressPercentage: number;
+  overallRemainingTime: number;
+  activeJobID: number;
+  activeJobState: string;
+  activeJobFilterName: string;
+  activeJobExposureProgress: number;
+  activeJobExposureDuration: number;
+  activeJobImageProgress: number;
+  activeJobImageCount: number;
+  activeJobRemainingTime: number;
+  sequence: SequenceStep[];
+}
+
+/** KStars formats these as locale strings (German: "3,000000") — parse leniently either way. */
+export function parseLocaleNumber(value: string | number | undefined): number {
+  if (typeof value === 'number') return value;
+  if (!value) return NaN;
+  return Number(value.replace(',', '.'));
+}
+
 export interface AlignmentInfo {
   solutionResult: number[] | null;
   pa?: number;
@@ -98,6 +144,7 @@ export interface StatusSnapshot {
   serverInfo?: unknown;
   hfrHistory: Record<string, HfrSample[]>;
   images: Record<string, CapturedImage[]>;
+  sequenceQueue: Record<string, SequenceQueueStatus>;
   [key: string]: unknown;
 }
 
@@ -107,7 +154,7 @@ const KNOWN_STATUS_KEYS = new Set([
   'ditheringActive', 'alignStatus', 'weatherState', 'mountStatus',
   'schedulerState', 'captureStatus', 'focusState', 'guideStatus',
   'activeJob', 'jobs', 'alignment', 'roofStatus', 'serverInfo',
-  'hfrHistory', 'images',
+  'hfrHistory', 'images', 'sequenceQueue',
 ]);
 
 /** Trains aren't a fixed set on the backend — derive them from whichever per-train maps are present. */

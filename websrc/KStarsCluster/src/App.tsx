@@ -51,6 +51,7 @@ export function App() {
                 focusRunning={status.focusRunning[train]}
                 hfrHistory={status.hfrHistory?.[train] ?? []}
                 images={status.images?.[train] ?? []}
+                sequenceQueue={status.sequenceQueue?.[train]}
               />
             ))}
             <DeviceList devices={devices} />

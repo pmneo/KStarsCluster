@@ -228,6 +228,55 @@ table td:first-child {
   color: var(--accent);
 }
 
+.capture-queue {
+  margin-top: 12px;
+}
+
+.capture-queue-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.capture-queue-progress span {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: #10121a;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.sequence-steps {
+  margin-top: 0;
+}
+
+.sequence-steps th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: normal;
+  padding: 4px 8px 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sequence-steps td {
+  padding: 4px 8px 4px 0;
+}
+
+.sequence-steps tr.active-job td {
+  color: var(--accent);
+}
+
 .image-strip {
   display: flex;
   gap: 8px;

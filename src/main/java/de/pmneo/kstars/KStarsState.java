@@ -276,6 +276,15 @@ public class KStarsState extends WithLogging {
     }
 
     public final ConcurrentHashMap<String,CaptureStatus> captureStatus = new ConcurrentHashMap<>();
+
+    /**
+     * Parsed Capture.getSequenceQueueStatusJSON(train) result, refreshed once per second from
+     * the periodic status broadcaster (never from a signal handler — it's a synchronous D-Bus
+     * call). One entry per train, holding the full sequence queue detail Ekos itself shows:
+     * active job progress/remaining time and every step's filter/exposure/count/status.
+     */
+    public final ConcurrentHashMap<String, Object> sequenceQueueStatus = new ConcurrentHashMap<>();
+
     public CaptureStatus handleCaptureStatus( CaptureStatus state, String train ) {
 
         if( state != null ) {

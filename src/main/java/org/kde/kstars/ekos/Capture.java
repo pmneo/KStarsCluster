@@ -38,6 +38,7 @@ public interface Capture extends DBusInterface {
     public boolean saveSequenceQueue(String path);
     public void clearSequenceQueue();
     public String getSequenceQueueStatus();
+    public String getSequenceQueueStatusJSON(String train);
     public void setMaximumGuidingDeviation(boolean enable, double value);
     public void setInSequenceFocus(boolean enable, double HFR);
     public int getJobCount();
