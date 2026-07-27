@@ -7,3 +7,7 @@ target/
 dependency-reduced-pom.xml
 .playwright-mcp/
 thumb-cache/
+
+# Fetched at build time by websrc/KStarsCluster/scripts/fetch-vendor.mjs — too large/volatile to commit.
+websrc/KStarsCluster/public/vendor/
+src/main/resources/web/vendor/

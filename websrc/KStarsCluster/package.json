@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/fetch-vendor.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/fetch-vendor.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },

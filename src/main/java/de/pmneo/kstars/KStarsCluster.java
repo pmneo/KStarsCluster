@@ -187,6 +187,7 @@ public abstract class KStarsCluster extends KStarsState {
 		try {
 			refreshSequenceQueueStatus();
 			refreshMountCoords();
+			refreshFov();
 
 			String json = new GsonBuilder().create().toJson( buildStatusSnapshot() );
 			if( !json.equals( lastBroadcastStatus ) ) {
@@ -244,6 +245,25 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 		catch( Throwable t ) {
 			logDebug( "Failed to refresh mount coordinates: " + t );
+		}
+	}
+
+	/** Align.fov is [widthArcmin, heightArcmin, arcsecPerPixel] — same read-only-property,
+	 *  broadcaster-thread-only rule. Feeds the sky map's FOV rectangle. */
+	@SuppressWarnings("unchecked")
+	private void refreshFov() {
+		if( !ekosReady.get() || this.align == null ) {
+			return;
+		}
+
+		try {
+			List<Double> fovValues = (List<Double>) this.align.read( "fov" );
+			if( fovValues != null && fovValues.size() >= 2 && fovValues.get( 0 ) > 0 && fovValues.get( 1 ) > 0 ) {
+				fov.set( new double[]{ fovValues.get( 0 ), fovValues.get( 1 ) } );
+			}
+		}
+		catch( Throwable t ) {
+			logDebug( "Failed to refresh FOV: " + t );
 		}
 	}
 
@@ -444,6 +464,12 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	protected void ekosDisconnected() {
+		// ekosReady never got reset back to false here before — harmless while the periodic
+		// broadcaster only read cached values, but the sequence-queue/mount-coords/FOV refreshes
+		// (all guarded by ekosReady) make real D-Bus calls, and those started throwing (and
+		// logging) once per second against now-stale device proxies after every Ekos stop.
+		ekosReady.set( false );
+
 		// Full disconnect (not just unsubscribe): createDevices() only re-registers the
 		// Ekos/INDI signal handlers (ekosStatusChanged, indiStatusChanged, heartbeat,
 		// propertyValueChanged) while con == null. A bare unsubscribe() here would leave
@@ -1567,6 +1593,14 @@ public abstract class KStarsCluster extends KStarsState {
 			mountCoordsMap.put( "ra", coords[0] );
 			mountCoordsMap.put( "dec", coords[1] );
 			res.put( "mountCoords", mountCoordsMap );
+		}
+
+		double[] fovValues = fov.get();
+		if( fovValues != null ) {
+			Map<String,Object> fovMap = new LinkedHashMap<>();
+			fovMap.put( "widthArcmin", fovValues[0] );
+			fovMap.put( "heightArcmin", fovValues[1] );
+			res.put( "fov", fovMap );
 		}
 
 		return res;

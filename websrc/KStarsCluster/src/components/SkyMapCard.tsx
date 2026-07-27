@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SchedulerJob } from '../api/types';
+import { imageUrl, DEFAULT_STRETCH } from '../api/imageApi';
 
 // Aladin Lite v3 is loaded via <script> in index.html, not bundled — it ships no official types.
 declare global {
@@ -17,9 +18,9 @@ interface SurveyOption {
 
 /** Custom entries verified against each survey's own HiPS `properties` file (frame/order/tile format). */
 const SURVEYS: SurveyOption[] = [
+  { id: 'nsns-ohs8', label: 'NSNS [OIII]+Hα+[SII]', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/ohs8', frame: 'equatorial', order: 6 } },
   { id: 'dss2-color', label: 'DSS2 (color)', builtin: 'P/DSS2/color' },
   { id: 'nsns-rgb8', label: 'NSNS RGB continuum', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/rgb8', frame: 'equatorial', order: 5 } },
-  { id: 'nsns-ohs8', label: 'NSNS [OIII]+Hα+[SII]', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/ohs8', frame: 'equatorial', order: 6 } },
   { id: 'nsns-hbr8', label: 'NSNS Hα + continuum (color)', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/hbr8', frame: 'equatorial', order: 6 } },
   { id: 'nsns-halpha8', label: 'NSNS Hα (8-bit)', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/halpha8', frame: 'equatorial', order: 6 } },
   { id: 'nsns-oiii8', label: 'NSNS [OIII] (8-bit)', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/oiii8', frame: 'equatorial', order: 6 } },
@@ -29,21 +30,48 @@ const SURVEYS: SurveyOption[] = [
 interface Props {
   mountCoords?: { ra: number; dec: number };
   activeJob: SchedulerJob | null;
+  fov?: { widthArcmin: number; heightArcmin: number };
+  pa?: number;
+  lastImageFilename?: string;
 }
 
-export function SkyMapCard({ mountCoords, activeJob }: Props) {
+/** Four corners of a centerRa/centerDec-centered rectangle, widthDeg x heightDeg, rotated by paDeg
+ * (East of North). Corners are pre-divided by cos(dec) on the RA axis — Aladin's own projection
+ * re-applies that scaling when rendering RA/DEC, so this cancels out to the correct on-sky size.
+ * dx is flipped (+dx = West, not East) — verified empirically: RA increases to the left on an
+ * unmirrored equatorial display, so a plain +East-is-right offset renders the overlay image
+ * mirrored left-right. */
+function fovCorners(centerRa: number, centerDec: number, widthDeg: number, heightDeg: number, paDeg: number): [number, number][] {
+  const paRad = (paDeg * Math.PI) / 180;
+  const cosDec = Math.max(0.01, Math.cos((centerDec * Math.PI) / 180));
+  const halfW = widthDeg / 2;
+  const halfH = heightDeg / 2;
+  const offsets: [number, number][] = [[halfW, -halfH], [-halfW, -halfH], [-halfW, halfH], [halfW, halfH]];
+  return offsets.map(([dx, dy]) => {
+    const rx = dx * Math.cos(paRad) - dy * Math.sin(paRad);
+    const ry = dx * Math.sin(paRad) + dy * Math.cos(paRad);
+    return [centerRa + rx / cosDec, centerDec + ry];
+  });
+}
+
+export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const overlayImgRef = useRef<HTMLImageElement>(null);
   const aladinRef = useRef<any>(null);
   const mountCatalogRef = useRef<any>(null);
   const targetCatalogRef = useRef<any>(null);
+  const fovOverlayRef = useRef<any>(null);
   const [ready, setReady] = useState(false);
   const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
+  const [showLastImage, setShowLastImage] = useState(false);
 
   useEffect(() => {
     if (!window.A || !containerRef.current) return;
     window.A.init.then(() => {
+      // Always init with a builtin survey — the default (possibly custom) survey from SURVEYS[0]
+      // is applied right after via the surveyId effect below, which handles both cases.
       const aladin = window.A.aladin(containerRef.current, {
-        survey: SURVEYS[0].builtin,
+        survey: 'P/DSS2/color',
         fov: 60,
         target: '0 +0',
         cooFrame: 'equatorial',
@@ -57,6 +85,10 @@ export function SkyMapCard({ mountCoords, activeJob }: Props) {
       aladin.addCatalog(targetCat);
       mountCatalogRef.current = mountCat;
       targetCatalogRef.current = targetCat;
+
+      const fovOverlay = window.A.graphicOverlay({ color: '#38bdf8', lineWidth: 2 });
+      aladin.addOverlay(fovOverlay);
+      fovOverlayRef.current = fovOverlay;
 
       setReady(true);
     });
@@ -100,6 +132,56 @@ export function SkyMapCard({ mountCoords, activeJob }: Props) {
     }
   }, [ready, activeJob?.name, activeJob?.targetRA, activeJob?.targetDEC]);
 
+  // The FOV rectangle (sky-registered polygon) and the last-image screen overlay (plain CSS,
+  // since Aladin's image layers need real WCS — our capture previews have none) share the same
+  // corner math, recomputed whenever the mount moves, the FOV changes, or the view pans/zooms.
+  useEffect(() => {
+    if (!ready) return;
+    const aladin = aladinRef.current;
+    const overlay = fovOverlayRef.current;
+
+    function redraw() {
+      overlay.removeAll();
+      if (!mountCoords || !fov) {
+        if (overlayImgRef.current) overlayImgRef.current.style.display = 'none';
+        return;
+      }
+
+      const raDeg = mountCoords.ra * 15;
+      const corners = fovCorners(raDeg, mountCoords.dec, fov.widthArcmin / 60, fov.heightArcmin / 60, pa ?? 0);
+      overlay.add(window.A.polygon(corners));
+
+      if (overlayImgRef.current && showLastImage && lastImageFilename) {
+        const px = corners.map(([ra, dec]) => aladin.world2pix(ra, dec));
+        const cx = (px[0][0] + px[2][0]) / 2;
+        const cy = (px[0][1] + px[2][1]) / 2;
+        const topW = Math.hypot(px[1][0] - px[0][0], px[1][1] - px[0][1]);
+        const rightH = Math.hypot(px[2][0] - px[1][0], px[2][1] - px[1][1]);
+        const angle = (Math.atan2(px[1][1] - px[0][1], px[1][0] - px[0][0]) * 180) / Math.PI;
+
+        const img = overlayImgRef.current;
+        img.style.display = 'block';
+        img.style.width = `${topW}px`;
+        img.style.height = `${rightH}px`;
+        img.style.left = `${cx}px`;
+        img.style.top = `${cy}px`;
+        img.style.marginLeft = `${-topW / 2}px`;
+        img.style.marginTop = `${-rightH / 2}px`;
+        img.style.transform = `rotate(${angle}deg)`;
+      } else if (overlayImgRef.current) {
+        overlayImgRef.current.style.display = 'none';
+      }
+    }
+
+    redraw();
+    aladin.on('positionChanged', redraw);
+    aladin.on('zoomChanged', redraw);
+    return () => {
+      // Aladin Lite v3 has no off(); harmless to leave stale listeners on an instance that's
+      // being torn down along with its container.
+    };
+  }, [ready, mountCoords?.ra, mountCoords?.dec, fov?.widthArcmin, fov?.heightArcmin, pa, showLastImage, lastImageFilename]);
+
   function centerOnMount() {
     if (aladinRef.current && mountCoords) {
       aladinRef.current.gotoRaDec(mountCoords.ra * 15, mountCoords.dec);
@@ -116,8 +198,26 @@ export function SkyMapCard({ mountCoords, activeJob }: Props) {
           ))}
         </select>
         <button type="button" onClick={centerOnMount} disabled={!mountCoords}>Center on mount</button>
+        <label className="sky-map-toggle">
+          <input
+            type="checkbox"
+            checked={showLastImage}
+            onChange={(e) => setShowLastImage(e.target.checked)}
+            disabled={!lastImageFilename}
+          />
+          Show last image
+        </label>
       </div>
-      <div ref={containerRef} className="sky-map" />
+      <div ref={containerRef} className="sky-map">
+        {lastImageFilename && (
+          <img
+            ref={overlayImgRef}
+            src={imageUrl(lastImageFilename, 600, DEFAULT_STRETCH)}
+            alt="Last capture"
+            className="sky-map-last-image"
+          />
+        )}
+      </div>
     </div>
   );
 }

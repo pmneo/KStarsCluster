@@ -1,5 +1,5 @@
 import { useStatusSocket } from './api/useStatusSocket';
-import { getTrains, getDevices } from './api/types';
+import { getTrains, getDevices, getLastImageFilename } from './api/types';
 import { ConnectionCard } from './components/ConnectionCard';
 import { TrainCard } from './components/TrainCard';
 import { SchedulerCard } from './components/SchedulerCard';
@@ -42,7 +42,13 @@ export function App() {
             <ObservatoryCard roofStatus={status.roofStatus} />
             <CalibrationCard />
             <SchedulerCard schedulerState={status.schedulerState} activeJob={status.activeJob} jobs={status.jobs} />
-            <SkyMapCard mountCoords={status.mountCoords} activeJob={status.activeJob} />
+            <SkyMapCard
+              mountCoords={status.mountCoords}
+              activeJob={status.activeJob}
+              fov={status.fov}
+              pa={status.alignment?.pa}
+              lastImageFilename={getLastImageFilename(status)}
+            />
             {trains.map((train) => (
               <TrainCard
                 key={train}

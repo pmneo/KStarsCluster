@@ -147,6 +147,8 @@ export interface StatusSnapshot {
   sequenceQueue: Record<string, SequenceQueueStatus>;
   /** Mount.equatorialCoords — RA in decimal hours, DEC in decimal degrees. Absent until the first read succeeds. */
   mountCoords?: { ra: number; dec: number };
+  /** Align.fov — the active camera+telescope's actual field of view. Absent until the first read succeeds. */
+  fov?: { widthArcmin: number; heightArcmin: number };
   [key: string]: unknown;
 }
 
@@ -156,7 +158,7 @@ const KNOWN_STATUS_KEYS = new Set([
   'ditheringActive', 'alignStatus', 'weatherState', 'mountStatus',
   'schedulerState', 'captureStatus', 'focusState', 'guideStatus',
   'activeJob', 'jobs', 'alignment', 'roofStatus', 'serverInfo',
-  'hfrHistory', 'images', 'sequenceQueue', 'mountCoords',
+  'hfrHistory', 'images', 'sequenceQueue', 'mountCoords', 'fov',
 ]);
 
 /** Trains aren't a fixed set on the backend — derive them from whichever per-train maps are present. */
@@ -165,6 +167,19 @@ export function getTrains(status: StatusSnapshot): string[] {
   Object.keys(status.captureStatus ?? {}).forEach((t) => trains.add(t));
   Object.keys(status.focusState ?? {}).forEach((t) => trains.add(t));
   return Array.from(trains).sort();
+}
+
+/** Most recent capture across all trains, for the sky map's "last image" overlay. */
+export function getLastImageFilename(status: StatusSnapshot): string | undefined {
+  let latest: CapturedImage | undefined;
+  for (const images of Object.values(status.images ?? {})) {
+    for (const img of images) {
+      if (!latest || img.ts > latest.ts) {
+        latest = img;
+      }
+    }
+  }
+  return latest?.filename;
 }
 
 /** Filter wheels / cameras / caps are flat top-level keys named after their INDI device name. */

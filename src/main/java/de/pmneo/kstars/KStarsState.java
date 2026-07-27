@@ -288,6 +288,9 @@ public class KStarsState extends WithLogging {
     /** Mount.equatorialCoords, refreshed once per second — {RA hours, DEC degrees}, or null before the first read. */
     public final AtomicReference<double[]> mountCoords = new AtomicReference<>();
 
+    /** Align.fov, refreshed once per second — {width arcmin, height arcmin}, or null before the first read. */
+    public final AtomicReference<double[]> fov = new AtomicReference<>();
+
     public CaptureStatus handleCaptureStatus( CaptureStatus state, String train ) {
 
         if( state != null ) {
