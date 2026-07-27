@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.regex.Pattern;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -52,6 +53,7 @@ import com.google.gson.GsonBuilder;
 
 import bsh.Interpreter;
 
+import de.pmneo.kstars.utils.AllskyClient;
 import de.pmneo.kstars.utils.Coordinates;
 import de.pmneo.kstars.utils.EkosAnalyzeLog;
 import de.pmneo.kstars.utils.FitsThumbnail;
@@ -144,6 +146,7 @@ public abstract class KStarsCluster extends KStarsState {
 	private final List<Runnable> subscriptions = new ArrayList<>();
 
 	protected final HttpClient client;
+	private final AllskyClient allskyClient = new AllskyClient();
 
 	public KStarsCluster( String logPrefix ) throws DBusException {
 		super( logPrefix );
@@ -279,9 +282,12 @@ public abstract class KStarsCluster extends KStarsState {
 
 	/** Mount.equatorialCoords is a plain D-Bus property read (RA hours, DEC degrees) — same
 	 *  broadcaster-thread-only rule as the sequence queue refresh above. Feeds the sky map's
-	 *  "where is the telescope pointing right now" marker. Already J2000 — same frame as the
-	 *  scheduler's target coordinates and Aladin's own sky surveys, no precession needed here
-	 *  (unlike Align's solution result, see fillAlignment()). */
+	 *  "where is the telescope pointing right now" marker.
+	 *
+	 *  It reports JNow (apparent place — what the mount is actually slewing/tracking against),
+	 *  same as Align's solution result — precessed to J2000 here so it lines up with the sky map
+	 *  (Aladin, its HiPS surveys) and the scheduler's own target coordinates, all of which are
+	 *  J2000. See RaDecUtils.jNowToJ2000() and fillAlignment(). */
 	@SuppressWarnings("unchecked")
 	private void refreshMountCoords() {
 		if( !ekosReady.get() || this.mount == null ) {
@@ -291,7 +297,7 @@ public abstract class KStarsCluster extends KStarsState {
 		try {
 			List<Double> coords = (List<Double>) this.mount.read( "equatorialCoords" );
 			if( coords != null && coords.size() >= 2 ) {
-				mountCoords.set( new double[]{ coords.get( 0 ), coords.get( 1 ) } );
+				mountCoords.set( RaDecUtils.jNowToJ2000( coords.get( 0 ), coords.get( 1 ), System.currentTimeMillis() ) );
 			}
 		}
 		catch( Throwable t ) {
@@ -1456,6 +1462,44 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 		} );
 
+		actions.put( "allsky", ( parts, req, resp ) -> {
+			if( parts.length < 2 ) {
+				return "usage: allsky/<latest|chart|image>";
+			}
+			switch( parts[1] ) {
+				case "latest":
+					return fetchAllskyLatest();
+
+				case "chart": {
+					int limitS = clamp( parseIntParam( req, "limitS", 15000 ), 60, 86400 );
+					return fetchAllskyChart( limitS );
+				}
+
+				case "image": {
+					String path = req.getParameter( "path" );
+					if( path == null || !ALLSKY_IMAGE_PATH.matcher( path ).matches() ) {
+						resp.setStatus( HttpServletResponse.SC_BAD_REQUEST );
+						return null;
+					}
+
+					byte[] jpeg = allskyClient.fetchImage( path );
+					if( jpeg == null ) {
+						resp.setStatus( HttpServletResponse.SC_NOT_FOUND );
+						return null;
+					}
+
+					resp.setContentType( "image/jpeg" );
+					resp.setContentLength( jpeg.length );
+					resp.getOutputStream().write( jpeg );
+					resp.getOutputStream().flush();
+					return null;
+				}
+
+				default:
+					return "unknown allsky action " + parts[1];
+			}
+		} );
+
 		actions.put( "flats", ( parts, req, resp ) -> {
 			if( mountStatus.get() != MountStatus.MOUNT_PARKED ) {
 				return "mount is not parked";
@@ -2220,6 +2264,67 @@ public abstract class KStarsCluster extends KStarsState {
 			return null;
 		}
 		return fitsFile;
+	}
+
+	private static final Pattern ALLSKY_IMAGE_PATH = Pattern.compile( "images/[A-Za-z0-9_.\\-/]+\\.jpe?g" );
+
+	/**
+	 * indi-allsky's plain "latest" endpoint doesn't include star count/SQM — only its "loop"
+	 * endpoint does, per-image — so this reads loop's most recent entry instead, giving the same
+	 * image plus the star/SQM data in one call.
+	 */
+	@SuppressWarnings("unchecked")
+	private Map<String,Object> fetchAllskyLatest() throws Exception {
+		Map<String,Object> loop = allskyClient.fetchLoop( 900 );
+
+		Map<String,Object> res = new LinkedHashMap<>();
+		List<Map<String,Object>> images = (List<Map<String,Object>>) loop.get( "image_list" );
+		if( images != null && !images.isEmpty() ) {
+			Map<String,Object> latest = images.get( 0 );
+			res.put( "url", latest.get( "url" ) );
+			res.put( "stars", latest.get( "stars" ) );
+			res.put( "jsqm", latest.get( "jsqm" ) );
+			res.put( "moonmode", latest.get( "moonmode" ) );
+			res.put( "ts", secondsToMillis( latest.get( "timestamp" ) ) );
+		}
+
+		Object starsAvg = mapGet( loop, "stars_data", "avg" );
+		if( starsAvg != null ) {
+			res.put( "starsAvg", starsAvg );
+		}
+
+		return res;
+	}
+
+	/** Star/SQM history for the chart — oldest first, matching every other chart in this app
+	 *  (indi-allsky's own loop response is newest first). */
+	@SuppressWarnings("unchecked")
+	private List<Map<String,Object>> fetchAllskyChart( int limitS ) throws Exception {
+		Map<String,Object> loop = allskyClient.fetchLoop( limitS );
+		List<Map<String,Object>> images = (List<Map<String,Object>>) loop.get( "image_list" );
+
+		List<Map<String,Object>> points = new ArrayList<>();
+		if( images != null ) {
+			for( int i = images.size() - 1; i >= 0; i-- ) {
+				Map<String,Object> img = images.get( i );
+				Map<String,Object> point = new LinkedHashMap<>();
+				point.put( "ts", secondsToMillis( img.get( "timestamp" ) ) );
+				point.put( "stars", img.get( "stars" ) );
+				point.put( "jsqm", img.get( "jsqm" ) );
+				points.add( point );
+			}
+		}
+		return points;
+	}
+
+	@SuppressWarnings("unchecked")
+	private static Object mapGet( Map<String,Object> m, String key, String subKey ) {
+		Object sub = m.get( key );
+		return sub instanceof Map ? ((Map<String,Object>) sub).get( subKey ) : null;
+	}
+
+	private static long secondsToMillis( Object seconds ) {
+		return seconds instanceof Number ? ((Number) seconds).longValue() * 1000L : 0L;
 	}
 
 	private static byte[] notFoundImageBytes;
