@@ -148,10 +148,30 @@ public class FitsThumbnail {
         // setSample() on the raster writes the byte value directly, no color conversion.
         java.awt.image.WritableRaster raster = out.getRaster();
         for( int oy = 0; oy < outH; oy++ ) {
-            int sy = Math.min( img.height - 1, (int) (oy / scale) );
+            int sy0 = (int) (oy / scale);
+            int sy1 = Math.min( img.height, Math.max( sy0 + 1, (int) ((oy + 1) / scale) ) );
             for( int ox = 0; ox < outW; ox++ ) {
-                int sx = Math.min( img.width - 1, (int) (ox / scale) );
-                double t = clamp( (img.normalized( sy, sx ) - s) / (h - s), 0, 1 );
+                int sx0 = (int) (ox / scale);
+                int sx1 = Math.min( img.width, Math.max( sx0 + 1, (int) ((ox + 1) / scale) ) );
+
+                // Box-average the source pixels a thumbnail's output pixel covers (in linear,
+                // pre-stretch space) instead of picking one nearest source pixel — nearest-
+                // neighbor downscaling of a 6000px+ FITS to a ~200px thumbnail looks noisy/
+                // aliased; averaging first and stretching once is both correct (MTF is
+                // nonlinear, so it must run after the average, not before) and cheap, since at
+                // full resolution (scale == 1) the box is always exactly 1x1 — unchanged cost.
+                double sum = 0;
+                int count = 0;
+                for( int sy = sy0; sy < sy1; sy++ ) {
+                    for( int sx = sx0; sx < sx1; sx++ ) {
+                        sum += img.normalized( sy, sx );
+                        count++;
+                    }
+                }
+                double avgNorm = count > 0 ? sum / count
+                        : img.normalized( Math.min( img.height - 1, sy0 ), Math.min( img.width - 1, sx0 ) );
+
+                double t = clamp( (avgNorm - s) / (h - s), 0, 1 );
                 int gray = (int) Math.round( 255 * mtf( m, t ) );
                 raster.setSample( ox, oy, 0, gray );
             }
