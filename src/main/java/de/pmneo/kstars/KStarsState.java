@@ -49,6 +49,69 @@ public class KStarsState extends WithLogging {
         }
     }
 
+    /**
+     * One entry per Capture.captureComplete signal — carries the exact saved path, so the web
+     * UI's image preview never has to guess a directory or filename convention.
+     */
+    public static class CapturedImage {
+        public final long ts;
+        public final String filename;
+        public final String filter;
+        public final double exposure;
+        public final double hfr;
+        public final double eccentricity;
+        public final double median;
+        public final double snr;
+        public final int starCount;
+        public final int width;
+        public final int height;
+        public final int type;
+
+        public CapturedImage( long ts, Map<String,Object> m ) {
+            this.ts = ts;
+            this.filename = str( m, "filename" );
+            this.filter = str( m, "filter" );
+            this.exposure = num( m, "exposure" );
+            this.hfr = num( m, "hfr" );
+            this.eccentricity = num( m, "eccentricity" );
+            this.median = num( m, "median" );
+            this.snr = num( m, "snr" );
+            this.starCount = (int) num( m, "starCount" );
+            this.width = (int) num( m, "width" );
+            this.height = (int) num( m, "height" );
+            this.type = (int) num( m, "type" );
+        }
+
+        private static String str( Map<String,Object> m, String key ) {
+            Object v = m.get( key );
+            return v == null ? null : v.toString();
+        }
+
+        private static double num( Map<String,Object> m, String key ) {
+            Object v = m.get( key );
+            if( v instanceof Number ) {
+                return ((Number) v).doubleValue();
+            }
+            try {
+                return v == null ? 0 : Double.parseDouble( v.toString() );
+            }
+            catch( Throwable t ) {
+                return 0;
+            }
+        }
+    }
+
+    private static final int CAPTURED_IMAGES_CAP = 50;
+    public final ConcurrentHashMap<String, Deque<CapturedImage>> capturedImages = new ConcurrentHashMap<>();
+
+    public void recordCapturedImage( String train, Map<String,Object> metadata ) {
+        Deque<CapturedImage> history = capturedImages.computeIfAbsent( train, t -> new ConcurrentLinkedDeque<>() );
+        history.addLast( new CapturedImage( System.currentTimeMillis(), metadata ) );
+        while( history.size() > CAPTURED_IMAGES_CAP ) {
+            history.pollFirst();
+        }
+    }
+
     public final DirtyBoolean schedulerRunning = new DirtyBoolean( false );
     public final DirtyBoolean gudingRunning = new DirtyBoolean( false );
     public final DirtyBoolean mountIsTracking = new DirtyBoolean( false );

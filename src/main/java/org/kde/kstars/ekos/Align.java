@@ -11,6 +11,7 @@ import org.freedesktop.dbus.exceptions.DBusException;
 import org.freedesktop.dbus.interfaces.DBusInterface;
 import org.freedesktop.dbus.messages.DBusSignal;
 import org.freedesktop.dbus.types.UInt32;
+import org.freedesktop.dbus.types.Variant;
 
 /**
  * Auto-generated class.
@@ -63,13 +64,18 @@ public interface Align extends DBusInterface {
     }
 
     public static class newSolution extends DBusSignal {
-        private final Map<String,Object> solution;
-        public newSolution(String _path, Map<String,Object> dbusMap) throws DBusException {
-            super(_path);
+        private final Map<String, Variant<?>> solution;
+        public newSolution(String _path, Map<String, Variant<?>> dbusMap) throws DBusException {
+            super(_path, dbusMap);
             this.solution = dbusMap;
         }
+        /** Unwrapped — the wire type is a{sv} (map of Variant), callers just want plain values. */
         public Map<String,Object> getSolution() {
-            return solution;
+            Map<String,Object> unwrapped = new java.util.LinkedHashMap<>();
+            for( Map.Entry<String, Variant<?>> e : solution.entrySet() ) {
+                unwrapped.put( e.getKey(), e.getValue() == null ? null : e.getValue().getValue() );
+            }
+            return unwrapped;
         }
     }
 

@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -46,6 +47,7 @@ import com.google.gson.GsonBuilder;
 import bsh.Interpreter;
 
 import de.pmneo.kstars.utils.Coordinates;
+import de.pmneo.kstars.utils.FitsThumbnail;
 import de.pmneo.kstars.utils.RaDecUtils;
 import de.pmneo.kstars.web.CommandServlet.Action;
 
@@ -256,6 +258,10 @@ public abstract class KStarsCluster extends KStarsState {
 		} ) );
 		subscriptions.add( this.capture.addNewStatusHandler( Capture.newStatus.class, status -> {
 			this.handleCaptureStatus( status.getStatus(), status.train );
+		} ) );
+		subscriptions.add( this.capture.addSigHandler( Capture.captureComplete.class, sig -> {
+			logMessage( "Captured " + sig.getMetadata().get( "filename" ) + " (" + sig.getTrain() + ")" );
+			recordCapturedImage( sig.getTrain(), sig.getMetadata() );
 		} ) );
 		subscriptions.add( this.mount.addNewStatusHandler( Mount.newStatus.class, status -> {
 			this.handleMountStatus( status.getStatus() );
@@ -734,12 +740,13 @@ public abstract class KStarsCluster extends KStarsState {
 			canStop = false;
 		}
 
+		/*
 		var lastCapture = System.currentTimeMillis() - lastCapturedImage.get();
-
 		if( lastCapture < TimeUnit.MINUTES.toMillis( 10 ) ) {
 			waitToStopReasons.append( "\n\tLast capture was less than 10 Minutes ago" );
 			canStop = false;
 		}
+		*/
 
 		for( IndiCap cap : capDevices.values() ) {
 			if( !cap.isParked() || cap.isBusy() ) {
@@ -1261,6 +1268,57 @@ public abstract class KStarsCluster extends KStarsState {
 				return hfrHistory;
 			}
 			return hfrHistory.getOrDefault( parts[1], new java.util.ArrayDeque<>() );
+		} );
+
+		actions.put( "images", ( parts, req, resp ) -> {
+			if( parts.length < 2 ) {
+				return "usage: images/<list/train|thumb|autostretch>";
+			}
+			switch( parts[1] ) {
+				case "list":
+					if( parts.length < 3 ) {
+						return "usage: images/list/<train>";
+					}
+					return listRecentImages( parts[2] );
+
+				case "thumb": {
+					File fitsFile = resolveFileParam( req, resp );
+					if( fitsFile == null ) {
+						return null;
+					}
+
+					int maxDim = clamp( parseIntParam( req, "maxDim", 320 ), 32, 8000 );
+					double shadows = clamp( parseDoubleParam( req, "shadows", 0.0 ), 0, 1 );
+					double midtones = clamp( parseDoubleParam( req, "midtones", 0.5 ), 0, 1 );
+					double highlights = clamp( parseDoubleParam( req, "highlights", 1.0 ), 0, 1 );
+
+					byte[] jpeg = renderThumbnailCached( fitsFile, maxDim, shadows, midtones, highlights );
+					resp.setContentType( "image/jpeg" );
+					resp.setContentLength( jpeg.length );
+					resp.getOutputStream().write( jpeg );
+					resp.getOutputStream().flush();
+					return null;
+				}
+
+				case "autostretch": {
+					File fitsFile = resolveFileParam( req, resp );
+					if( fitsFile == null ) {
+						return null;
+					}
+
+					boolean strong = "true".equals( req.getParameter( "strong" ) );
+					double[] shmh = FitsThumbnail.computeAutoStretch( fitsFile, strong );
+
+					Map<String,Object> res = new LinkedHashMap<>();
+					res.put( "shadows", shmh[0] );
+					res.put( "midtones", shmh[1] );
+					res.put( "highlights", shmh[2] );
+					return res;
+				}
+
+				default:
+					return "unknown images action " + parts[1];
+			}
 		} );
 
 		actions.put( "flats", ( parts, req, resp ) -> {
@@ -1917,5 +1975,115 @@ public abstract class KStarsCluster extends KStarsState {
 		catch( Throwable t ) {
 			//ignore
 		}
+	}
+
+	/** Recent captures for one train, newest first — sourced from Capture.captureComplete, not filesystem scanning. */
+	public List<Map<String,Object>> listRecentImages( String train ) {
+		Deque<CapturedImage> history = capturedImages.getOrDefault( train, new ConcurrentLinkedDeque<>() );
+
+		List<Map<String,Object>> res = new ArrayList<>();
+		for( CapturedImage img : history ) {
+			Map<String,Object> entry = new LinkedHashMap<>();
+			entry.put( "ts", img.ts );
+			entry.put( "filename", img.filename );
+			entry.put( "filter", img.filter );
+			entry.put( "exposure", img.exposure );
+			entry.put( "hfr", img.hfr );
+			entry.put( "eccentricity", img.eccentricity );
+			entry.put( "median", img.median );
+			entry.put( "starCount", img.starCount );
+			entry.put( "width", img.width );
+			entry.put( "height", img.height );
+			entry.put( "type", img.type );
+			res.add( entry );
+		}
+		Collections.reverse( res );
+		return res;
+	}
+
+	private static int parseIntParam( HttpServletRequest req, String name, int fallback ) {
+		try {
+			String v = req.getParameter( name );
+			return v == null ? fallback : Integer.parseInt( v );
+		}
+		catch( Throwable t ) {
+			return fallback;
+		}
+	}
+
+	private static double parseDoubleParam( HttpServletRequest req, String name, double fallback ) {
+		try {
+			String v = req.getParameter( name );
+			return v == null ? fallback : Double.parseDouble( v );
+		}
+		catch( Throwable t ) {
+			return fallback;
+		}
+	}
+
+	private static int clamp( int v, int lo, int hi ) {
+		return Math.max( lo, Math.min( hi, v ) );
+	}
+
+	private static double clamp( double v, double lo, double hi ) {
+		return Math.max( lo, Math.min( hi, v ) );
+	}
+
+	/** Shared by the thumb/autostretch sub-actions: validates the "file" param, 404s on the response if it's unusable. */
+	private File resolveFileParam( HttpServletRequest req, HttpServletResponse resp ) {
+		String file = req.getParameter( "file" );
+		if( file == null || file.isBlank() ) {
+			resp.setStatus( HttpServletResponse.SC_BAD_REQUEST );
+			return null;
+		}
+		File fitsFile = resolveKnownCapturedFile( file );
+		if( fitsFile == null ) {
+			resp.setStatus( HttpServletResponse.SC_NOT_FOUND );
+			return null;
+		}
+		return fitsFile;
+	}
+
+	/**
+	 * Refuses to render anything that wasn't actually reported by a captureComplete signal —
+	 * the "file" query param on the thumb action is client-supplied, so this is the only thing
+	 * standing between it and an arbitrary local file read.
+	 */
+	public File resolveKnownCapturedFile( String filename ) {
+		for( Deque<CapturedImage> history : capturedImages.values() ) {
+			for( CapturedImage img : history ) {
+				if( filename.equals( img.filename ) ) {
+					File f = new File( filename );
+					return f.isFile() ? f : null;
+				}
+			}
+		}
+		return null;
+	}
+
+	private static final File THUMBNAIL_CACHE_DIR = new File( "./thumb-cache" );
+
+	/** Serves a cached render if present, otherwise renders and caches one keyed by path+mtime+size+stretch. */
+	public byte[] renderThumbnailCached( File fitsFile, int maxDim, double shadows, double midtones, double highlights ) throws Exception {
+		THUMBNAIL_CACHE_DIR.mkdirs();
+
+		String cacheKey = Integer.toHexString( fitsFile.getAbsolutePath().hashCode() ) + "_" + fitsFile.lastModified()
+				+ "_" + maxDim + "_" + shadows + "_" + midtones + "_" + highlights + ".jpg";
+		File cacheFile = new File( THUMBNAIL_CACHE_DIR, cacheKey );
+
+		if( cacheFile.isFile() ) {
+			return Files.readAllBytes( cacheFile.toPath() );
+		}
+
+		byte[] jpeg = FitsThumbnail.render( fitsFile, maxDim, shadows, midtones, highlights );
+
+		try {
+			Files.write( cacheFile.toPath(), jpeg );
+		}
+		catch( Throwable t ) {
+			logError( "Failed to cache thumbnail for " + fitsFile, t );
+		}
+
+		return jpeg;
 	}
 }

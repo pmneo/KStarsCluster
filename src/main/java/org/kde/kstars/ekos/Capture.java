@@ -1,11 +1,14 @@
 package org.kde.kstars.ekos;
 
+import java.util.Map;
+
 import org.freedesktop.dbus.annotations.DBusInterfaceName;
 import org.freedesktop.dbus.annotations.DBusProperty;
 import org.freedesktop.dbus.annotations.DBusProperty.Access;
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.freedesktop.dbus.interfaces.DBusInterface;
 import org.freedesktop.dbus.messages.DBusSignal;
+import org.freedesktop.dbus.types.Variant;
 
 import de.pmneo.kstars.KStarsCluster;
 
@@ -52,6 +55,34 @@ public interface Capture extends DBusInterface {
     public void ignoreSequenceHistory();
     public void setCapturedFramesMap(String signature, int count, String train);
 
+
+    /**
+     * Fires once per saved frame with the exact saved path — confirmed live via dbus-monitor:
+     * a{sv} metadata (binx, biny, eccentricity, exposure, filename, filter, height, hfr, median,
+     * snr, starCount, type, width) followed by the train name string.
+     */
+    public static class captureComplete extends DBusSignal {
+        private final Map<String, Variant<?>> metadata;
+        private final String train;
+
+        public captureComplete(String _path, Map<String, Variant<?>> metadata, String train) throws DBusException {
+            super(_path, metadata, train);
+            this.metadata = metadata;
+            this.train = train;
+        }
+
+        /** Unwrapped — the wire type is a{sv} (map of Variant), callers just want plain values. */
+        public Map<String,Object> getMetadata() {
+            Map<String,Object> unwrapped = new java.util.LinkedHashMap<>();
+            for( Map.Entry<String, Variant<?>> e : metadata.entrySet() ) {
+                unwrapped.put( e.getKey(), e.getValue() == null ? null : e.getValue().getValue() );
+            }
+            return unwrapped;
+        }
+        public String getTrain() {
+            return train;
+        }
+    }
 
     public static class newLog extends DBusSignal {
         private final String text;

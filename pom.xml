@@ -124,6 +124,13 @@
             <artifactId>javaplot</artifactId>
             <version>0.5.0</version>
         </dependency>
+
+        <!-- FITS reading for the web UI's image preview thumbnails -->
+        <dependency>
+            <groupId>gov.nasa.gsfc.heasarc</groupId>
+            <artifactId>nom-tam-fits</artifactId>
+            <version>1.21.1</version>
+        </dependency>
     </dependencies>
 
     <build>

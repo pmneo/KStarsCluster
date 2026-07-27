@@ -35,6 +35,27 @@ export function getJobStateLabel(state: number): string {
   return JOB_STATE_LABELS[state] ?? `JOB_STATE_${state}`;
 }
 
+export interface CapturedImage {
+  ts: number;
+  filename: string;
+  filter: string;
+  exposure: number;
+  hfr: number;
+  eccentricity: number;
+  median: number;
+  starCount: number;
+  width: number;
+  height: number;
+  type: number;
+}
+
+/** INDI CCDChip::CCDFrameType order — confirmed against a real captureComplete signal (Flat frame -> type 3). */
+const FRAME_TYPE_LABELS = ['Light', 'Bias', 'Dark', 'Flat'];
+
+export function getFrameTypeLabel(type: number): string {
+  return FRAME_TYPE_LABELS[type] ?? `Type ${type}`;
+}
+
 export interface AlignmentInfo {
   solutionResult: number[] | null;
   pa?: number;
