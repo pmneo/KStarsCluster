@@ -3,10 +3,12 @@ package de.pmneo.kstars.web;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 import com.google.gson.GsonBuilder;
 
 import de.pmneo.kstars.KStarsCluster;
+import de.pmneo.kstars.SimpleLogger;
 import jakarta.servlet.ServletConfig;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
@@ -18,6 +20,9 @@ public class CommandServlet extends HttpServlet
     public interface Action {
         public Object doAction( String[] pathParts, HttpServletRequest req, HttpServletResponse resp ) throws Exception;
     }
+
+    /** Polled continuously by the UI (status WS fallback, HFR chart) — logging every call would drown out actual commands. */
+    private static final Set<String> QUIET_ACTIONS = Set.of( "status", "hfr" );
 
     private Map<String,Action> actions = new HashMap<>();
 
@@ -57,6 +62,9 @@ public class CommandServlet extends HttpServlet
         Action a = actions.get( action );
 
         if( a != null ) {
+            if( !QUIET_ACTIONS.contains( action ) ) {
+                SimpleLogger.getLogger().logMessage( "Web action: /" + String.join( "/", parts ) );
+            }
             try {
                 Object res = a.doAction( parts, req, resp);
 

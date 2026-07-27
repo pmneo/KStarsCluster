@@ -12,6 +12,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -174,6 +175,22 @@ public abstract class KStarsCluster extends KStarsState {
 		catch( Throwable t ) {
 			logError( "Failed to start http client", t);
 		}
+
+		schedulerService.scheduleWithFixedDelay( this::broadcastStatusIfChanged, 1, 1, TimeUnit.SECONDS );
+	}
+
+	private String lastBroadcastStatus = null;
+	private void broadcastStatusIfChanged() {
+		try {
+			String json = new GsonBuilder().create().toJson( buildStatusSnapshot() );
+			if( !json.equals( lastBroadcastStatus ) ) {
+				lastBroadcastStatus = json;
+				StatusBroadcaster.getInstance().broadcast( json );
+			}
+		}
+		catch( Throwable t ) {
+			logError( "Failed to broadcast status", t );
+		}
 	}
 
 	protected void createDevices() throws DBusException {
@@ -257,6 +274,7 @@ public abstract class KStarsCluster extends KStarsState {
 		} ) );
 		subscriptions.add( this.focus.addSigHandler( Focus.newHFR.class, hfr -> {
 			logDebug( hfr.getName() + ": new hfr " + hfr.getHFR() + " @ " + hfr.getPosition() );
+			recordHfr( hfr.getTrain(), hfr.getHFR(), hfr.getPosition() );
 		} ) );
 		subscriptions.add( this.scheduler.addNewStatusHandler( Scheduler.newStatus.class, status -> {
 			this.handleSchedulerStatus( status.getStatus() );
@@ -476,17 +494,19 @@ public abstract class KStarsCluster extends KStarsState {
 						if( !config.isNight(range) ) {
 							Calendar now = range[2];
 							if( getKStarsRuntime() > TimeUnit.HOURS.toSeconds( 5 ) && now.get( Calendar.HOUR_OF_DAY ) >= 15 ) {
-								logMessage( "It's day and KStars is running more than 5h, stopping KStars" );
-								stopKStars();
+								safeStopEkos( "It's day and KStars is running more than 5h" );
 							}
 						}
 
-						if( !isWeatherSafty()) {
+						if( !isWeatherSafty() && !manualStartRequested.get() ) {
 							logMessageOnce( "Weather conditions are UNSAFE, skip start of ekos");
 							sleep( 5000L );
 						}
 						else {
-							logMessage( "Weather conditions are SAFE, starting ekos now" );
+							logMessage( manualStartRequested.get()
+									? "Manual start requested, starting ekos now"
+									: "Weather conditions are SAFE, starting ekos now" );
+							manualStartRequested.set( false );
 
 							try {
 								showEkos.methods.trigger();
@@ -559,7 +579,7 @@ public abstract class KStarsCluster extends KStarsState {
 		long runtime = getKStarsRuntime();
 		if( runtime < 0 ) {
 			Calendar[] range = config.getCivilTwilight();
-			if( config.isNight(range) ) {
+			if( config.isNight(range) || manualStartRequested.get() ) {
 				logMessage( "Starting kstars" );
 				try {
 					// -f forks setsid instead of exec'ing in place, so it can exit right away and
@@ -667,57 +687,7 @@ public abstract class KStarsCluster extends KStarsState {
 					long badWeatherTimeout = TimeUnit.HOURS.toMillis(1);
 
 					if( badWeatherDuration >= badWeatherTimeout ) {
-						StringBuilder waitToStopReasons = new StringBuilder();
-						boolean canStop = canStopEkos(waitToStopReasons);
-
-						if( !canStop ) {
-							logMessageOnce( waitToStopReasons.toString() );
-						}
-						else {
-							logMessage( "Shutting down Ekos / KStars after " + (badWeatherDuration / 1000 / 60 ) + " Minutes" );
-
-							try {
-								for( IndiFilterWheel filterWheel : filterDevices.values() ) {
-									logMessage( "Setting Filter slot to L of " + filterWheel.deviceName );
-									filterWheel.setFilterSlot( 1 );
-								}
-
-								WaitUntil.waitUntil( "changeFilter", 20,
-										() -> filterDevices.values().stream()
-												.noneMatch(fw -> fw.getFilterSlotStatus() != IpsState.IPS_OK ) );
-
-								for( String train : this.focusState.keySet() ) {
-									logMessage( "Caputure one focus image on train " + train);
-									this.focus.methods.capture( train, 0 );
-								}
-
-								sleep( 1000L );
-
-								WaitUntil.waitUntil( "captureFinished", 20,
-										() -> this.focusState.values().stream().noneMatch( s -> s != FocusState.FOCUS_IDLE ) );
-
-								logMessage( "Caputure one focus image done" );
-							}
-							catch( Throwable t ) {
-								logError( "Failed to go back to L before shutdown", t );
-							}
-
-							WaitUntil.waitUntil( "canStop", 120,
-									() -> {
-										ensureMountIsParked();
-										var sb = new  StringBuilder();
-										try {
-											return canStopEkos(sb);
-										}
-										finally {
-											logMessageOnce( sb.toString() );
-										}
-									} );
-
-							if( !stopEkos() ) {
-								stopKStars();
-							}
-							stopUsbDevices();
+						if( safeStopEkos( "Weather is UNSAFE since " + (badWeatherDuration / 1000 / 60 ) + " Minutes" ) ) {
 							return;
 						}
 					}
@@ -742,8 +712,8 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 
-	private boolean canStopEkos(StringBuilder waitToStopReasons) {
-		waitToStopReasons.append( "Weather is UNSAFE since 1 hour, check if we can shutdown ekos" );
+	private boolean canStopEkos(StringBuilder waitToStopReasons, String reason) {
+		waitToStopReasons.append( reason ).append( ", check if we can shutdown ekos" );
 
 		boolean canStop = true;
 
@@ -796,6 +766,71 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 		}
 		return canStop;
+	}
+
+	/**
+	 * Safe shutdown: refuses to do anything if {@link #canStopEkos} says it's not yet safe
+	 * (returns false — caller decides whether/when to retry, e.g. by re-checking on its own
+	 * next loop tick). Once safe, sets filters to L and takes one reference focus frame per
+	 * train, then waits up to 120s for the checklist to hold (parking the mount along the
+	 * way) before stopping Ekos/KStars regardless of whether it ever fully settled — this
+	 * bounded-then-stop-anyway behavior matches the original bad-weather shutdown exactly,
+	 * just shared across every caller instead of duplicated.
+	 */
+	protected boolean safeStopEkos( String reason ) {
+		StringBuilder waitToStopReasons = new StringBuilder();
+
+		if( !canStopEkos( waitToStopReasons, reason ) ) {
+			logMessageOnce( waitToStopReasons.toString() );
+			return false;
+		}
+
+		logMessage( "Shutting down Ekos / KStars (" + reason + ")" );
+
+		try {
+			for( IndiFilterWheel filterWheel : filterDevices.values() ) {
+				logMessage( "Setting Filter slot to L of " + filterWheel.deviceName );
+				filterWheel.setFilterSlot( 1 );
+			}
+
+			WaitUntil.waitUntil( "changeFilter", 20,
+					() -> filterDevices.values().stream()
+							.noneMatch(fw -> fw.getFilterSlotStatus() != IpsState.IPS_OK ) );
+
+			for( String train : this.focusState.keySet() ) {
+				logMessage( "Caputure one focus image on train " + train);
+				this.focus.methods.capture( train, 0 );
+			}
+
+			sleep( 1000L );
+
+			WaitUntil.waitUntil( "captureFinished", 20,
+					() -> this.focusState.values().stream().noneMatch( s -> s != FocusState.FOCUS_IDLE ) );
+
+			logMessage( "Caputure one focus image done" );
+		}
+		catch( Throwable t ) {
+			logError( "Failed to go back to L before shutdown", t );
+		}
+
+		WaitUntil.waitUntil( "canStop", 120,
+				() -> {
+					ensureMountIsParked();
+					var sb = new StringBuilder();
+					try {
+						return canStopEkos( sb, reason );
+					}
+					finally {
+						logMessageOnce( sb.toString() );
+					}
+				} );
+
+		if( !stopEkos() ) {
+			stopKStars();
+		}
+		stopUsbDevices();
+
+		return true;
 	}
 
 	protected long ekosLoopDelay = 5000;
@@ -855,6 +890,26 @@ public abstract class KStarsCluster extends KStarsState {
 
 	protected final AtomicBoolean ekosReady = new AtomicBoolean(false);
 
+	/**
+	 * Set by the "start Ekos/KStars" web action. Bypasses both the twilight gate (in
+	 * {@link #tryStartKStars()}) and the weather-safety gate (in {@link #start()}'s loop)
+	 * for exactly one start attempt — starting the Ekos *software* doesn't move any
+	 * hardware by itself, so overriding those gates on manual request is safe. Cleared
+	 * once that one attempt has actually been triggered.
+	 */
+	protected final AtomicBoolean manualStartRequested = new AtomicBoolean( false );
+
+	/**
+	 * Cached instead of calling align.methods.getSolutionResult() / scheduler.read("jsonJobs")
+	 * from buildStatusSnapshot() — that method is invoked from the periodic status broadcaster
+	 * (its own scheduled thread) AND from Jetty request threads, neither of which is the single
+	 * signal-handling thread the rest of this codebase relies on to keep at most one synchronous
+	 * D-Bus call in flight at a time. Refreshed only from signal handlers / connect-time bootstrap
+	 * (see the Align.newSolution subscription, ekosReady(), and updateSchedulerActiveJob()).
+	 */
+	protected final AtomicReference<List<Double>> lastAlignSolution = new AtomicReference<>( List.of() );
+	protected final AtomicReference<List<SchedulerJob>> allSchedulerJobs = new AtomicReference<>( List.of() );
+
 	protected boolean checkEkosReady( boolean autoConnect ) {
 		try {
 			ekos.checkAlive();
@@ -906,6 +961,15 @@ public abstract class KStarsCluster extends KStarsState {
 			catch( Throwable t ) {
 				logError( "Failed to read status from device " + d.interfaceName, t );
 			}
+		}
+
+		//one-off fetch on connect, same as the device loop above — afterwards this is only
+		//ever refreshed from the Align.newSolution signal, never polled (see lastAlignSolution)
+		try {
+			lastAlignSolution.set( this.align.methods.getSolutionResult() );
+		}
+		catch( Throwable t ) {
+			logError( "Failed to read initial align solution", t );
 		}
 
 		//initial job determination: when we connect while a job is ALREADY executing,
@@ -969,6 +1033,17 @@ public abstract class KStarsCluster extends KStarsState {
 			case ALIGN_COMPLETE:
 			case ALIGN_FAILED:
 				alignProgressCounter.set( 0 );
+
+				if( state == AlignState.ALIGN_COMPLETE ) {
+					// refresh the cache buildStatusSnapshot() reads — this runs on the signal
+					// thread, same safe context as everything else in this handler
+					try {
+						lastAlignSolution.set( this.align.methods.getSolutionResult() );
+					}
+					catch( Throwable t ) {
+						logError( "Failed to read align solution", t );
+					}
+				}
 			break;
 
 			case ALIGN_IDLE:
@@ -1077,7 +1152,11 @@ public abstract class KStarsCluster extends KStarsState {
 		} );
 
 		actions.put( "stopKStars", (parts, req, resp ) -> {
-				stopKStars();
+				return safeStopEkos( "Manual stop requested via web UI" ) ? "OK" : "Not safe to stop yet, see log";
+		} );
+
+		actions.put( "startEkos", (parts, req, resp ) -> {
+				manualStartRequested.set( true );
 				return "OK";
 		} );
 
@@ -1093,29 +1172,96 @@ public abstract class KStarsCluster extends KStarsState {
 		} );
 
 
-		actions.put( "exec", ( parts, req, resp ) -> {
-			
-			int len = req.getContentLength();
-
-			if( len > 0 ) {
-				byte[] buffer = new byte[len];
-				int pos = 0;
-				InputStream in = req.getInputStream();
-				while( ( len = in.read(buffer, pos, buffer.length - pos ) ) >= 0 ) {
-					pos += len;
-				}
-
-				String content = new String( buffer, StandardCharsets.UTF_8 );
-
-				Interpreter i = new Interpreter();
-				i.set( "cluster", this );
-				return i.eval( content );
+		actions.put( "scheduler", ( parts, req, resp ) -> {
+			if( parts.length < 2 ) {
+				return "usage: scheduler/<start|stop>";
 			}
-
-			return "Not yet implemented";
+			switch( parts[1] ) {
+				case "start":
+					scheduler.methods.start();
+					return "OK";
+				case "stop":
+					scheduler.methods.stop();
+					return "OK";
+				default:
+					return "unknown scheduler action " + parts[1];
+			}
 		} );
 
+		actions.put( "focus", ( parts, req, resp ) -> {
+			if( parts.length < 3 ) {
+				return "usage: focus/<run|abort>/<train>";
+			}
+			String train = parts[2];
+			switch( parts[1] ) {
+				case "run":
+					focus.methods.abort( train );
+					focus.methods.start( train );
+					return "OK";
+				case "abort":
+					focus.methods.abort( train );
+					return "OK";
+				default:
+					return "unknown focus action " + parts[1];
+			}
+		} );
 
+		actions.put( "capture", ( parts, req, resp ) -> {
+			if( parts.length < 3 ) {
+				return "usage: capture/abort/<train>";
+			}
+			String train = parts[2];
+			switch( parts[1] ) {
+				case "abort":
+					capture.methods.abort( train );
+					return "OK";
+				default:
+					return "unknown capture action " + parts[1];
+			}
+		} );
+
+		actions.put( "cap", ( parts, req, resp ) -> {
+			if( parts.length < 2 ) {
+				return "usage: cap/<open|close>";
+			}
+			switch( parts[1] ) {
+				case "open":
+					unparkCap();
+					return "OK";
+				case "close":
+					parkCap();
+					return "OK";
+				default:
+					return "unknown cap action " + parts[1];
+			}
+		} );
+
+		actions.put( "light", ( parts, req, resp ) -> {
+			if( parts.length < 2 ) {
+				return "usage: light/<on|off>";
+			}
+			switch( parts[1] ) {
+				case "on":
+					for( IndiLightBox light : lightBoxDevices.values() ) {
+						light.lightOn();
+					}
+					return "OK";
+				case "off":
+					for( IndiLightBox light : lightBoxDevices.values() ) {
+						light.lightOff();
+					}
+					return "OK";
+				default:
+					return "unknown light action " + parts[1];
+			}
+		} );
+
+		actions.put( "hfr", ( parts, req, resp ) -> {
+			if( parts.length < 2 ) {
+				return hfrHistory;
+			}
+			return hfrHistory.getOrDefault( parts[1], new java.util.ArrayDeque<>() );
+		} );
 
 		actions.put( "flats", ( parts, req, resp ) -> {
 			if( mountStatus.get() != MountStatus.MOUNT_PARKED ) {
@@ -1228,18 +1374,45 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	public Map<String,Object> statusAction( String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
-		if( !ekosReady.get() ) {
-			return NOT_CONNECTED;
+		if( ekosReady.get() ) {
+			String capPark = req.getParameter( "capPark" );
+			if( "park".equals( capPark ) ) {
+				for( IndiCap capDevice : capDevices.values() ) {
+					capDevice.park();
+				}
+			}
+			else if( "unpark".equals( capPark ) ) {
+				for( IndiCap capDevice : capDevices.values() ) {
+					capDevice.unpark();
+				}
+			}
 		}
 
+		return buildStatusSnapshot();
+	}
+
+	/** Same payload as {@link #statusAction}, without the req-bound capPark side effect — reused by the periodic status WebSocket broadcast. */
+	public Map<String,Object> buildStatusSnapshot() {
 		Map<String,Object> res = new LinkedHashMap<>();
+
+		// Always available, regardless of connection state — lets the UI tell "KStars
+		// process isn't running" apart from "KStars is running but Ekos isn't ready yet".
+		res.put( "kstarsRunning", getKStarsRuntime() >= 0 );
+		res.put( "ekosReady", ekosReady.get() );
+		res.put( "ekosStatus", ekosStatus.get() );
+		res.put( "manualStartRequested", manualStartRequested.get() );
+		res.put( "automationSuspended", this.automationSuspended.get() );
+
+		if( !ekosReady.get() ) {
+			return res;
+		}
 
 		for( IndiFilterWheel filterDevice : filterDevices.values() ) {
 			Map<String,Object> device = new LinkedHashMap<>();
 			List<String> filters = filterDevice.getFilters() ;
 			device.put( "filters", filters );
 			device.put( "currentFilter", filters.get( filterDevice.getFilterSlot() - 1 ) );
-			
+
 			res.put( filterDevice.deviceName, device );
 		}
 
@@ -1261,23 +1434,24 @@ public abstract class KStarsCluster extends KStarsState {
 			cap.put( "name", capDevice.deviceName );
 			cap.put( "parked", capDevice.isParked() );
 
-			if( "park".equals( req.getParameter( "capPark" ) ) ) {
-				capDevice.park();
-			}
-			else if( "unpark".equals( req.getParameter( "capPark" ) ) ) {
-				capDevice.unpark();
-			}
-		
-
 			res.put( capDevice.deviceName, cap );
 		}
 
-		res.put( "automationSuspended", this.automationSuspended.get() );
-			
+		// A physical flat panel (e.g. Gemini Flat-Wizard) is often ONE INDI device exposing
+		// both the dust cap and the light — merge into the existing entry instead of
+		// overwriting it when the device name collides with one from the cap loop above.
+		for( IndiLightBox lightBox : lightBoxDevices.values() ) {
+			@SuppressWarnings("unchecked")
+			Map<String,Object> device = (Map<String,Object>) res.computeIfAbsent( lightBox.deviceName, n -> new LinkedHashMap<>() );
+			device.put( "name", lightBox.deviceName );
+			device.put( "lightOn", lightBox.isLightOn() );
+		}
+
 		fillStatus( res );
-		
-		res.put( "alignment", fillAlignment(new HashMap<>(), this.align.methods.getSolutionResult() ) );
-		
+
+		res.put( "alignment", fillAlignment( new HashMap<>(), lastAlignSolution.get() ) );
+		res.put( "jobs", allSchedulerJobs.get() );
+
 		return res;
 	}
 
@@ -1359,11 +1533,6 @@ public abstract class KStarsCluster extends KStarsState {
 		return c;
 	}
     
-
-	private final static Map<String,Object> NOT_CONNECTED = new HashMap<>();
-	static {
-		NOT_CONNECTED.put( "result", "KStars not connected" );
-	}
 
 	public boolean captureAndSolveAndWait( boolean autoSync ) {
 
@@ -1474,6 +1643,27 @@ public abstract class KStarsCluster extends KStarsState {
 
 
 	/**
+	 * Raw D-Bus fetch of every job in the loaded schedule (not just the currently executing
+	 * one) — only ever called from {@link #updateSchedulerActiveJob}, i.e. from the same
+	 * signal-handler-safe contexts that already refresh {@link #schedulerActiveJob}. Cached
+	 * into {@link #allSchedulerJobs}; buildStatusSnapshot() reads the cache, never this.
+	 */
+	private List<SchedulerJob> fetchAllSchedulerJobs() {
+		try {
+			final String jsonJobs = (String) this.scheduler.read( "jsonJobs" );
+			if( jsonJobs == null || jsonJobs.isBlank() ) {
+				return List.of();
+			}
+			SchedulerJob[] jobs = new GsonBuilder().create().fromJson( jsonJobs, SchedulerJob[].class );
+			return jobs == null ? List.of() : Arrays.asList( jobs );
+		}
+		catch( Throwable t ) {
+			logError( "Failed to read scheduler jobs", t );
+			return List.of();
+		}
+	}
+
+	/**
 	 * Tracks the scheduler's active job via the currentJobJson property (one read per
 	 * poll — it carries name, state, stage and target RA/DEC in one go). Unlike the
 	 * old name-based tracking this also sees state changes WITHIN the same job, i.e.
@@ -1482,6 +1672,8 @@ public abstract class KStarsCluster extends KStarsState {
 	protected void updateSchedulerActiveJob( String jobName ) {
 		try {
 			logDebug( "Updating scheduler active job" );
+			allSchedulerJobs.set( fetchAllSchedulerJobs() );
+
 			final String currentJobJson = (String) this.scheduler.read( "currentJobJson" );
 
 			SchedulerJob job = null;

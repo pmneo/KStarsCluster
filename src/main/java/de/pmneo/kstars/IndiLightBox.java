@@ -9,12 +9,14 @@ public class IndiLightBox extends IndiDevice {
     }
 
     public void lightOff() {
+        logMessage( "Request light off for " + deviceName );
         indi.methods.setSwitch( this.deviceName, "FLAT_LIGHT_CONTROL", "FLAT_LIGHT_ON",  "Off" );
         indi.methods.setSwitch( this.deviceName, "FLAT_LIGHT_CONTROL", "FLAT_LIGHT_OFF", "On"  );
         this.indi.methods.sendProperty( deviceName, "FLAT_LIGHT_CONTROL" );
     }
 
     public void lightOn() {
+        logMessage( "Request light on for " + deviceName );
         indi.methods.setSwitch( this.deviceName, "FLAT_LIGHT_CONTROL", "FLAT_LIGHT_ON",  "On"  );
         indi.methods.setSwitch( this.deviceName, "FLAT_LIGHT_CONTROL", "FLAT_LIGHT_OFF", "Off" );
         this.indi.methods.sendProperty( deviceName, "FLAT_LIGHT_CONTROL" );

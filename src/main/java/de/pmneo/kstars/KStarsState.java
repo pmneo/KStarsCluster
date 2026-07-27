@@ -1,7 +1,9 @@
 package de.pmneo.kstars;
 
+import java.util.Deque;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.kde.kstars.Ekos.CommunicationStatus;
@@ -22,6 +24,30 @@ public class KStarsState extends WithLogging {
 		
     public final ConcurrentHashMap<String,Boolean> captureRunning = new ConcurrentHashMap<String,Boolean>();
     public final ConcurrentHashMap<String,Boolean> focusRunning = new ConcurrentHashMap<String,Boolean> ();
+
+    /** Recent HFR samples per train, newest last — feeds the web UI's HFR graph. */
+    public static class HfrSample {
+        public final long ts;
+        public final double hfr;
+        public final int position;
+
+        public HfrSample( long ts, double hfr, int position ) {
+            this.ts = ts;
+            this.hfr = hfr;
+            this.position = position;
+        }
+    }
+
+    private static final int HFR_HISTORY_CAP = 300;
+    public final ConcurrentHashMap<String, Deque<HfrSample>> hfrHistory = new ConcurrentHashMap<>();
+
+    public void recordHfr( String train, double hfr, int position ) {
+        Deque<HfrSample> history = hfrHistory.computeIfAbsent( train, t -> new ConcurrentLinkedDeque<>() );
+        history.addLast( new HfrSample( System.currentTimeMillis(), hfr, position ) );
+        while( history.size() > HFR_HISTORY_CAP ) {
+            history.pollFirst();
+        }
+    }
 
     public final DirtyBoolean schedulerRunning = new DirtyBoolean( false );
     public final DirtyBoolean gudingRunning = new DirtyBoolean( false );

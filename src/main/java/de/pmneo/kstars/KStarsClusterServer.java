@@ -110,9 +110,10 @@ public class KStarsClusterServer extends KStarsCluster {
                         }
          
                         if( schedulerErrors > 5 ) {
-                            logMessage( "Scheduler start failed for " + schedulerErrors + " times. Killing kstars and retry" );
-                            schedulerErrors = 0;
-                            stopKStars();
+                            logMessage( "Scheduler start failed for " + schedulerErrors + " times. Trying to safely stop kstars and retry" );
+                            if( safeStopEkos( "Recovering after " + schedulerErrors + " consecutive scheduler start failures" ) ) {
+                                schedulerErrors = 0;
+                            }
                             return;
                         }
                         else {
@@ -554,6 +555,7 @@ public class KStarsClusterServer extends KStarsCluster {
             case IDLE:
             case UNPARKED:
             case UNPARKING:
+                parkCap();
                 //PARK
                 logMessage( "Request dome park, weather status = " + weatherState.get() );
                 try {
@@ -566,10 +568,15 @@ public class KStarsClusterServer extends KStarsCluster {
             default:
                 break;
         }
-
-        parkCap();
     }
 
+
+    @Override
+    public Map<String,Object> buildStatusSnapshot() {
+        Map<String,Object> res = super.buildStatusSnapshot();
+        res.put( "roofStatus", roofStatus.get() );
+        return res;
+    }
 
     public void addActions( Map<String, Action> actions ) {
         super.addActions(actions);

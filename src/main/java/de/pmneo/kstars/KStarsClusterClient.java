@@ -26,8 +26,6 @@ import com.google.gson.GsonBuilder;
 
 import de.pmneo.kstars.utils.IOUtils;
 import de.pmneo.kstars.web.CommandServlet.Action;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
 
 public class KStarsClusterClient extends KStarsCluster {
     
@@ -581,8 +579,8 @@ public class KStarsClusterClient extends KStarsCluster {
 
 
     @Override
-    public Map<String,Object> statusAction(String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        Map<String,Object> res = super.statusAction(parts, req, resp);
+    public Map<String,Object> buildStatusSnapshot() {
+        Map<String,Object> res = super.buildStatusSnapshot();
 
         Map<String,Object> serverInfo = server.fillStatus( new HashMap<>() );
         serverInfo.put( "alignment", fillAlignment(new HashMap<>(), serverSolutionResult.get() ) );

@@ -98,5 +98,8 @@ public interface Focus extends DBusInterface {
         public int getPosition() {
             return position;
         }
+        public String getTrain() {
+            return train;
+        }
     }
 }

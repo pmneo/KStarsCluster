@@ -1,6 +1,5 @@
 package de.pmneo.kstars;
 
-import java.io.File;
 import java.net.URI;
 import java.net.URL;
 import java.util.Arrays;
@@ -18,6 +17,7 @@ import com.sampullara.cli.Argument;
 
 import de.pmneo.kstars.web.CommandServlet;
 import de.pmneo.kstars.web.LoggingSocket;
+import de.pmneo.kstars.web.StatusSocket;
 
 
 public class ServerRunner {
@@ -99,17 +99,10 @@ public class ServerRunner {
     {
         Server server = new Server( webPort );
 
-        URL webRootLocation = null;
-		
-		File devWeb = new File( "./src/web/index.html" );
-
-		if( devWeb.exists() ) {
-			webRootLocation = devWeb.getCanonicalFile().toURI().toURL();
-		}
-		
-		if( webRootLocation == null ) {
-			webRootLocation = ServerRunner.class.getResource("/web/index.html");
-		}
+        // The web UI (websrc/KStarsCluster, a Vite/React app) builds straight into this
+        // classpath location — see its vite.config.ts. Iterate on it with `npm run dev`
+        // (proxies /cmd, /logging, /status to this server) instead of rebuilding the jar.
+        URL webRootLocation = ServerRunner.class.getResource("/web/index.html");
         if (webRootLocation == null)
         {
             throw new IllegalStateException("Unable to determine webroot URL location");
@@ -130,8 +123,10 @@ public class ServerRunner {
         server.setHandler(contextHandler);
 
         // Add WebSocket endpoints
-        JakartaWebSocketServletContainerInitializer.configure(contextHandler, (context, wsContainer) ->
-            wsContainer.addEndpoint(LoggingSocket.class) );
+        JakartaWebSocketServletContainerInitializer.configure(contextHandler, (context, wsContainer) -> {
+            wsContainer.addEndpoint(LoggingSocket.class);
+            wsContainer.addEndpoint(StatusSocket.class);
+        } );
 
         // Add Servlet endpoints
 
