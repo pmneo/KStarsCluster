@@ -4,6 +4,13 @@ export interface HfrSample {
   position: number;
 }
 
+/** Guide.newAxisDelta — one sample per guide frame, arcsec RA/DEC guiding error. */
+export interface GuideDeltaSample {
+  ts: number;
+  ra: number;
+  de: number;
+}
+
 export interface SchedulerJob {
   name: string;
   altitude: number;
@@ -149,6 +156,9 @@ export interface StatusSnapshot {
   mountCoords?: { ra: number; dec: number };
   /** Align.fov — the active camera+telescope's actual field of view. Absent until the first read succeeds. */
   fov?: { widthArcmin: number; heightArcmin: number };
+  guideDeltaHistory: GuideDeltaSample[];
+  /** Guide.newAxisSigma — latest RA/DEC guiding RMS, in arcsec. Absent until the first signal arrives. */
+  guideSigma?: { ra: number; de: number };
   [key: string]: unknown;
 }
 
@@ -159,6 +169,7 @@ const KNOWN_STATUS_KEYS = new Set([
   'schedulerState', 'captureStatus', 'focusState', 'guideStatus',
   'activeJob', 'jobs', 'alignment', 'roofStatus', 'serverInfo',
   'hfrHistory', 'images', 'sequenceQueue', 'mountCoords', 'fov',
+  'guideDeltaHistory', 'guideSigma',
 ]);
 
 /** Trains aren't a fixed set on the backend — derive them from whichever per-train maps are present. */

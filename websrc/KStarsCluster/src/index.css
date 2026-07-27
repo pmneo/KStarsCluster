@@ -292,13 +292,19 @@ table td:first-child {
   padding: 4px 8px;
 }
 
+.sky-map-toggles {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
 .sky-map-toggle {
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 0.8rem;
   color: var(--muted);
-  margin-left: auto;
 }
 
 .sky-map {

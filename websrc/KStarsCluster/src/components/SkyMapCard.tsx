@@ -64,6 +64,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const [ready, setReady] = useState(false);
   const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
   const [showLastImage, setShowLastImage] = useState(false);
+  const [followMount, setFollowMount] = useState(false);
 
   useEffect(() => {
     if (!window.A || !containerRef.current) return;
@@ -182,11 +183,11 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     };
   }, [ready, mountCoords?.ra, mountCoords?.dec, fov?.widthArcmin, fov?.heightArcmin, pa, showLastImage, lastImageFilename]);
 
-  function centerOnMount() {
-    if (aladinRef.current && mountCoords) {
-      aladinRef.current.gotoRaDec(mountCoords.ra * 15, mountCoords.dec);
-    }
-  }
+  // Keeps the view centered on the mount as it moves, instead of a one-shot "center now" click.
+  useEffect(() => {
+    if (!ready || !followMount || !mountCoords || !aladinRef.current) return;
+    aladinRef.current.gotoRaDec(mountCoords.ra * 15, mountCoords.dec);
+  }, [ready, followMount, mountCoords?.ra, mountCoords?.dec]);
 
   return (
     <div className="card card--wide">
@@ -197,16 +198,26 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             <option key={s.id} value={s.id}>{s.label}</option>
           ))}
         </select>
-        <button type="button" onClick={centerOnMount} disabled={!mountCoords}>Center on mount</button>
-        <label className="sky-map-toggle">
-          <input
-            type="checkbox"
-            checked={showLastImage}
-            onChange={(e) => setShowLastImage(e.target.checked)}
-            disabled={!lastImageFilename}
-          />
-          Show last image
-        </label>
+        <div className="sky-map-toggles">
+          <label className="sky-map-toggle">
+            <input
+              type="checkbox"
+              checked={followMount}
+              onChange={(e) => setFollowMount(e.target.checked)}
+              disabled={!mountCoords}
+            />
+            Follow mount
+          </label>
+          <label className="sky-map-toggle">
+            <input
+              type="checkbox"
+              checked={showLastImage}
+              onChange={(e) => setShowLastImage(e.target.checked)}
+              disabled={!lastImageFilename}
+            />
+            Show last image
+          </label>
+        </div>
       </div>
       <div ref={containerRef} className="sky-map">
         {lastImageFilename && (

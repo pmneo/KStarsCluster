@@ -9,6 +9,7 @@ import { CalibrationCard } from './components/CalibrationCard';
 import { LogPanel } from './components/LogPanel';
 import { DeviceList } from './components/DeviceList';
 import { SkyMapCard } from './components/SkyMapCard';
+import { GuideCard } from './components/GuideCard';
 
 export function App() {
   const { status, connected } = useStatusSocket();
@@ -42,6 +43,12 @@ export function App() {
             <ObservatoryCard roofStatus={status.roofStatus} />
             <CalibrationCard />
             <SchedulerCard schedulerState={status.schedulerState} activeJob={status.activeJob} jobs={status.jobs} />
+            <GuideCard
+              guideStatus={status.guideStatus}
+              ditheringActive={status.ditheringActive}
+              guideSigma={status.guideSigma}
+              guideDeltaHistory={status.guideDeltaHistory ?? []}
+            />
             <SkyMapCard
               mountCoords={status.mountCoords}
               activeJob={status.activeJob}
