@@ -12,6 +12,8 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.Request;
@@ -75,7 +77,7 @@ public abstract class KStarsCluster extends KStarsState {
 	public Device<QAction> quitKStars;
 
 
-	protected Map<String, IndiDevice> indiDevices = new HashMap<>();
+	protected Map<String, List<IndiDevice>> indiDevices = new HashMap<>();
 	protected Map<String, IndiCamera> cameraDevices = new HashMap<>();
 	protected Map<String, IndiFilterWheel> filterDevices = new HashMap<>();
 	protected Map<String, IndiRotator> rotatorDevices = new HashMap<>();
@@ -214,10 +216,22 @@ public abstract class KStarsCluster extends KStarsState {
 		this.devices.add( this.scheduler );
 
 
-		this.subscriptions.add( this.ekos.addSigHandler( Ekos.ekosStatusChanged.class, status -> {
+		if( !subscriptions.isEmpty() ) {
+			for( Runnable unsub : subscriptions ) {
+				try {
+					unsub.run();
+				}
+				catch( Throwable t ) {
+					logError( "Failed to unsubscribe", t );
+				}
+			}
+			subscriptions.clear();
+		}
+
+		subscriptions.add( this.ekos.addSigHandler( Ekos.ekosStatusChanged.class, status -> {
 			this.handleEkosStatus( status.getStatus() );
 		} ) );
-		this.subscriptions.add( this.ekos.addSigHandler( Ekos.indiStatusChanged.class, status -> {
+		subscriptions.add( this.ekos.addSigHandler( Ekos.indiStatusChanged.class, status -> {
 			this.handleEkosIndiStatus( status.getStatus() );
 		} ) );
 		subscriptions.add( this.guide.addNewStatusHandler( Guide.newStatus.class, status -> {
@@ -263,9 +277,11 @@ public abstract class KStarsCluster extends KStarsState {
 			lastHeartbeat.set( System.currentTimeMillis() );
 		} ) );
 		subscriptions.add( this.indi.addSigHandler( INDI.propertyValueChanged.class, sig -> {
-			IndiDevice d = indiDevices.get( sig.getDevice() );
-			if( d != null ) {
-				d.onPropertyChanged( sig.getProperty(), sig.getJson() );
+			var devices = indiDevices.get( sig.getDevice() );
+			if( devices != null ) {
+				for( var d : devices ) {
+					d.onPropertyChanged( sig.getProperty(), sig.getJson() );
+				}
 			}
 		} ) );
 
@@ -293,11 +309,21 @@ public abstract class KStarsCluster extends KStarsState {
 		} ) );
 
 		indiDevices.clear();
-		indiDevices.putAll( cameraDevices );
-		indiDevices.putAll( filterDevices );
-		indiDevices.putAll( rotatorDevices );
-		indiDevices.putAll( capDevices );
-		indiDevices.putAll( lightBoxDevices );
+		BiConsumer<String,IndiDevice> putAll = (k,v) -> {
+			indiDevices.compute( k, (n,l) -> {
+				if( l == null ) {
+					l = new ArrayList<>();
+				}
+				l.add( v );
+				return l;
+			});
+		};
+		cameraDevices.forEach(putAll);
+		filterDevices.forEach(putAll);
+		rotatorDevices.forEach(putAll);
+		capDevices.forEach(putAll);
+		lightBoxDevices.forEach(putAll);
+
 
 		logMessage( "INDI devices refreshed: " + cameraDevices.size() + " cameras, " + filterDevices.size() + " filter wheels, "
 				+ rotatorDevices.size() + " rotators, " + capDevices.size() + " caps, " + lightBoxDevices.size() + " light boxes" );
@@ -642,51 +668,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 					if( badWeatherDuration >= badWeatherTimeout ) {
 						StringBuilder waitToStopReasons = new StringBuilder();
-						waitToStopReasons.append( "Weather is UNSAFE since 1 hour, check if we can shutdown ekos" );
-
-						boolean canStop = true;
-
-						if( !devicesComplete.get() ) {
-							waitToStopReasons.append( "\n\tINDI device enumeration is incomplete, can not verify cap/camera state" );
-							canStop = false;
-						}
-						if( this.mountStatus.get() != MountStatus.MOUNT_PARKED ) {
-							waitToStopReasons.append( "\n\tMount is not yet parked, wait for parking" );
-							canStop = false;
-						}
-						if( this.captureRunning.containsValue( Boolean.TRUE ) )  {
-							waitToStopReasons.append( "\n\tA capture is in progress" );
-							canStop = false;
-						}
-
-						var lastCapture = System.currentTimeMillis() - lastCapturedImage.get();
-
-						if( lastCapture < TimeUnit.MINUTES.toMillis( 10 ) ) {
-							waitToStopReasons.append( "\n\tLast capture was less than 10 Minutes ago" );
-							canStop = false;
-						}
-
-						for( IndiCap cap : capDevices.values() ) {
-							if( !cap.isParked() || cap.isBusy() ) {
-								waitToStopReasons.append( "\n\tCap " + cap.deviceName + " is not yet parked" );
-								canStop = false;
-							}
-						}
-
-						// Only request the camera warm-up once every other criterion is already
-						// met — never eagerly on every mount-park/scheduler-abort — so the cooler
-						// isn't cycled on/off during a short bad-weather spell. Once we get here we
-						// are already committed to stopping, so it's fine to wait past the usual
-						// 60 Minutes for the cooler to actually finish warming up.
-						if( canStop ) {
-							for( IndiCamera camera : cameraDevices.values() ) {
-								camera.warm();
-								if( camera.isCooling() || camera.isCoolerBusy() ) {
-									waitToStopReasons.append( "\n\tCamera " + camera.deviceName + " is still cooling/warming up" );
-									canStop = false;
-								}
-							}
-						}
+						boolean canStop = canStopEkos(waitToStopReasons);
 
 						if( !canStop ) {
 							logMessageOnce( waitToStopReasons.toString() );
@@ -695,16 +677,14 @@ public abstract class KStarsCluster extends KStarsState {
 							logMessage( "Shutting down Ekos / KStars after " + (badWeatherDuration / 1000 / 60 ) + " Minutes" );
 
 							try {
-								WaitUntil maxWait = new WaitUntil( 20, "changeFilter" );
-
 								for( IndiFilterWheel filterWheel : filterDevices.values() ) {
 									logMessage( "Setting Filter slot to L of " + filterWheel.deviceName );
 									filterWheel.setFilterSlot( 1 );
 								}
 
-								while( filterDevices.values().stream().anyMatch( fw -> fw.getFilterSlotStatus() != IpsState.IPS_OK ) && maxWait.check() ) {
-									sleep( 10 );
-								}
+								WaitUntil.waitUntil( "changeFilter", 20,
+										() -> filterDevices.values().stream()
+												.noneMatch(fw -> fw.getFilterSlotStatus() != IpsState.IPS_OK ) );
 
 								for( String train : this.focusState.keySet() ) {
 									logMessage( "Caputure one focus image on train " + train);
@@ -713,33 +693,26 @@ public abstract class KStarsCluster extends KStarsState {
 
 								sleep( 1000L );
 
-								maxWait.reset();
-
-								while( this.focusState.values().stream().anyMatch( s -> s != FocusState.FOCUS_IDLE ) && maxWait.check() ) {
-									sleep( 10 );
-								}
+								WaitUntil.waitUntil( "captureFinished", 20,
+										() -> this.focusState.values().stream().noneMatch( s -> s != FocusState.FOCUS_IDLE ) );
 
 								logMessage( "Caputure one focus image done" );
-
-								sleep( 5000L );
-
-								// Taking this confirmation focus frame can make Ekos/the driver auto-unpark
-								// the dust cap so the sensor sees light — wait for that unpark to actually
-								// finish, then re-park it before we actually stop Ekos, otherwise the cap
-								// can be left open for the whole stopped period.
-								WaitUntil.waitUntil( "capUnpark", 30, () ->
-										capDevices.values().stream().noneMatch( IndiCap::isBusy ) );
-
-								parkCap();
-
-								WaitUntil.waitUntil( "capPark", 60, () ->
-										capDevices.values().stream().allMatch( cap -> cap.isParked() && !cap.isBusy() ) );
 							}
 							catch( Throwable t ) {
 								logError( "Failed to go back to L before shutdown", t );
 							}
 
-							ensureMountIsParked();
+							WaitUntil.waitUntil( "canStop", 120,
+									() -> {
+										ensureMountIsParked();
+										var sb = new  StringBuilder();
+										try {
+											return canStopEkos(sb);
+										}
+										finally {
+											logMessageOnce( sb.toString() );
+										}
+									} );
 
 							if( !stopEkos() ) {
 								stopKStars();
@@ -767,6 +740,62 @@ public abstract class KStarsCluster extends KStarsState {
 			long remaining = Math.max( 500, ekosLoopDelay - checkTime );
 			sleep( remaining );
 		}
+	}
+
+	private boolean canStopEkos(StringBuilder waitToStopReasons) {
+		waitToStopReasons.append( "Weather is UNSAFE since 1 hour, check if we can shutdown ekos" );
+
+		boolean canStop = true;
+
+		if( !devicesComplete.get() ) {
+			waitToStopReasons.append( "\n\tINDI device enumeration is incomplete, can not verify cap/camera state" );
+			canStop = false;
+		}
+		if( this.automationSuspended.get() ) {
+			waitToStopReasons.append( "\n\tAutomation suspended" );
+			canStop = false;
+		}
+		if( this.mountStatus.get() != MountStatus.MOUNT_PARKED ) {
+			waitToStopReasons.append( "\n\tMount is not yet parked, wait for parking" );
+			canStop = false;
+		}
+		if( this.captureRunning.containsValue( Boolean.TRUE ) )  {
+			waitToStopReasons.append( "\n\tA capture is in progress" );
+			canStop = false;
+		}
+
+		var lastCapture = System.currentTimeMillis() - lastCapturedImage.get();
+
+		if( lastCapture < TimeUnit.MINUTES.toMillis( 10 ) ) {
+			waitToStopReasons.append( "\n\tLast capture was less than 10 Minutes ago" );
+			canStop = false;
+		}
+
+		for( IndiCap cap : capDevices.values() ) {
+			if( !cap.isParked() || cap.isBusy() ) {
+				if( !cap.isBusy() ) {
+					cap.park();
+				}
+				waitToStopReasons.append( "\n\tCap " + cap.deviceName + " is not yet parked" );
+				canStop = false;
+			}
+		}
+
+		// Only request the camera warm-up once every other criterion is already
+		// met — never eagerly on every mount-park/scheduler-abort — so the cooler
+		// isn't cycled on/off during a short bad-weather spell. Once we get here we
+		// are already committed to stopping, so it's fine to wait past the usual
+		// 60 Minutes for the cooler to actually finish warming up.
+		if( canStop ) {
+			for( IndiCamera camera : cameraDevices.values() ) {
+				camera.warm();
+				if( camera.isCooling() || camera.isCoolerBusy() ) {
+					waitToStopReasons.append( "\n\tCamera " + camera.deviceName + " is still cooling/warming up" );
+					canStop = false;
+				}
+			}
+		}
+		return canStop;
 	}
 
 	protected long ekosLoopDelay = 5000;
@@ -1118,7 +1147,7 @@ public abstract class KStarsCluster extends KStarsState {
 						//SECONDARY_TRAIN, "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_A_nocal.esq"
 				);
 
-				List<Integer> trainIds = trains.values().stream().map( train -> capture.methods.findCameraPosition( train, true ) ).toList();
+				List<Integer> trainIds = trains.keySet().stream().map( train -> capture.methods.findCameraPosition( train, true ) ).toList();
 
 				for( var train : trains.keySet() ) {
 					capture.methods.abort(train);

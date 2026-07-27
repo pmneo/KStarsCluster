@@ -8,6 +8,20 @@ public class IndiCap extends IndiDevice {
         super(deviceName, indi);
     }
 
+    @Override
+    public void onPropertyChanged(String propertyName, String json) {
+        super.onPropertyChanged(propertyName, json);
+
+        /*
+        var p = getProperty(  propertyName );
+        logMessage( "onPropertyChanged on " + System.identityHashCode(this) + "/" + propertyName
+                + "\n\tjson:   " + json
+                + "\n\tparsed: " + p.toJson()
+                + "\n\tisParked: " + isParked() + " / isBusy " + isBusy()
+        );
+         */
+    }
+
     public void unpark() {
         var capPark = getProperty( "CAP_PARK" );
         if( isParked() && capPark.state != INDI.IpsState.IPS_BUSY ) {
@@ -23,7 +37,7 @@ public class IndiCap extends IndiDevice {
 
     public void park() {
         var capPark = getProperty( "CAP_PARK" );
-        if( !isParked() && capPark.state != INDI.IpsState.IPS_BUSY ) {
+        if( !isParked() && !isBusy() ) {
             logMessage( "Request cap park for " + deviceName );
             capPark.state = INDI.IpsState.IPS_BUSY;
             capPark.setSwitch( "PARK", true );

@@ -7,7 +7,7 @@ import java.util.concurrent.TimeUnit;
 
 public class Weather extends WithLogging{
     private boolean weatherSafty = false;
-    private long lastWeatherCheck = -1;
+    private long lastWeatherCheck = System.currentTimeMillis();
 
     public boolean checkWeatherStatus( HttpClient client ) {
         long delta = TimeUnit.MILLISECONDS.toSeconds( System.currentTimeMillis() - this.lastWeatherCheck );

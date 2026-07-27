@@ -11,7 +11,7 @@ import java.util.stream.Collectors;
 import org.kde.kstars.INDI;
 import org.kde.kstars.INDI.DriverInterface;
 
-public class IndiDevice {
+public class IndiDevice extends WithLogging {
     public final String deviceName;
     public final Device< INDI > indi;
 
@@ -55,24 +55,14 @@ public class IndiDevice {
 	}
 
     public IndiDevice( String deviceName, Device<INDI> indi ) {
+		super( deviceName );
         this.deviceName = deviceName;
         this.indi = indi;
     }
 
-	public void logMessage( Object message ) {
-		SimpleLogger.getLogger().logMessage( message );
-	}
-
-	private final java.util.concurrent.atomic.AtomicReference<String> lastMessage = new java.util.concurrent.atomic.AtomicReference<>("");
-	public void logMessageOnce( String message ) {
-		if( message.equals( lastMessage.getAndSet( message ) ) ) {
-			return;
-		}
-		SimpleLogger.getLogger().logMessage( message );
-	}
-
-	public void logError( Object message, Throwable t ) {
-        SimpleLogger.getLogger().logError( message, t );
+	@Override
+	protected String createLogPrefix(String logPrefix) {
+		return super.createLogPrefix( getClass().getSimpleName() + " / " + logPrefix );
 	}
 
 	// -------------------------------------------------------------------------
@@ -109,6 +99,9 @@ public class IndiDevice {
 		if( p != null ) {
 			properties.put( propertyName, p );
 		}
+		else {
+			logError( "Failed to parse property: " + json, null );
+		}
 	}
 
 	/**
@@ -130,7 +123,15 @@ public class IndiDevice {
 	}
 
 	public boolean setProperty(IndiProperty prop) {
-		return this.indi.methods.setPropertyJSON( this.deviceName, prop.name, prop.toElementsJson() );
+		try {
+			return this.indi.methods.setPropertyJSON(this.deviceName, prop.name, prop.toElementsJson());
+		}
+		finally {
+			var json = this.indi.methods.getPropertyJSON( this.deviceName, prop.name, true );
+			if( json != null && !json.isBlank() ) {
+				onPropertyChanged(prop.name, json);
+			}
+		}
 	}
 
 

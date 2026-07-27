@@ -10,7 +10,11 @@ public class WithLogging {
         this( null );
     }
     public WithLogging( String logPrefix ) {
-        this.logPrefix = "[" + Objects.requireNonNullElse( logPrefix, getClass().getSimpleName() ) + "] ";
+        this.logPrefix = this.createLogPrefix(  logPrefix );
+    }
+
+    protected String createLogPrefix( String logPrefix ) {
+        return "[" + Objects.requireNonNullElse( logPrefix, getClass().getSimpleName() ) + "] ";
     }
 
     private final AtomicReference<String> lastMessage = new AtomicReference<String>("");
@@ -22,6 +26,7 @@ public class WithLogging {
     }
 
     public void logMessage( Object message ) {
+        lastMessage.set( "" );
         SimpleLogger.getLogger().logMessage( logPrefix + message );
     }
 
