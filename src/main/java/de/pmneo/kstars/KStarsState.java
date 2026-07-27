@@ -285,6 +285,9 @@ public class KStarsState extends WithLogging {
      */
     public final ConcurrentHashMap<String, Object> sequenceQueueStatus = new ConcurrentHashMap<>();
 
+    /** Mount.equatorialCoords, refreshed once per second — {RA hours, DEC degrees}, or null before the first read. */
+    public final AtomicReference<double[]> mountCoords = new AtomicReference<>();
+
     public CaptureStatus handleCaptureStatus( CaptureStatus state, String train ) {
 
         if( state != null ) {

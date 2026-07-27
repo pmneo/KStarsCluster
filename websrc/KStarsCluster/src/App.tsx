@@ -8,6 +8,7 @@ import { ObservatoryCard } from './components/ObservatoryCard';
 import { CalibrationCard } from './components/CalibrationCard';
 import { LogPanel } from './components/LogPanel';
 import { DeviceList } from './components/DeviceList';
+import { SkyMapCard } from './components/SkyMapCard';
 
 export function App() {
   const { status, connected } = useStatusSocket();
@@ -41,6 +42,7 @@ export function App() {
             <ObservatoryCard roofStatus={status.roofStatus} />
             <CalibrationCard />
             <SchedulerCard schedulerState={status.schedulerState} activeJob={status.activeJob} jobs={status.jobs} />
+            <SkyMapCard mountCoords={status.mountCoords} activeJob={status.activeJob} />
             {trains.map((train) => (
               <TrainCard
                 key={train}

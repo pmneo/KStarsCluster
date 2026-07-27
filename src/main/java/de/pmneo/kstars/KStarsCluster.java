@@ -186,6 +186,7 @@ public abstract class KStarsCluster extends KStarsState {
 	private void broadcastStatusIfChanged() {
 		try {
 			refreshSequenceQueueStatus();
+			refreshMountCoords();
 
 			String json = new GsonBuilder().create().toJson( buildStatusSnapshot() );
 			if( !json.equals( lastBroadcastStatus ) ) {
@@ -223,6 +224,26 @@ public abstract class KStarsCluster extends KStarsState {
 			catch( Throwable t ) {
 				logDebug( "Failed to refresh sequence queue status for " + train + ": " + t );
 			}
+		}
+	}
+
+	/** Mount.equatorialCoords is a plain D-Bus property read (RA hours, DEC degrees) — same
+	 *  broadcaster-thread-only rule as the sequence queue refresh above. Feeds the sky map's
+	 *  "where is the telescope pointing right now" marker. */
+	@SuppressWarnings("unchecked")
+	private void refreshMountCoords() {
+		if( !ekosReady.get() || this.mount == null ) {
+			return;
+		}
+
+		try {
+			List<Double> coords = (List<Double>) this.mount.read( "equatorialCoords" );
+			if( coords != null && coords.size() >= 2 ) {
+				mountCoords.set( new double[]{ coords.get( 0 ), coords.get( 1 ) } );
+			}
+		}
+		catch( Throwable t ) {
+			logDebug( "Failed to refresh mount coordinates: " + t );
 		}
 	}
 
@@ -1539,6 +1560,14 @@ public abstract class KStarsCluster extends KStarsState {
 		res.put( "images", images );
 
 		res.put( "sequenceQueue", sequenceQueueStatus );
+
+		double[] coords = mountCoords.get();
+		if( coords != null ) {
+			Map<String,Object> mountCoordsMap = new LinkedHashMap<>();
+			mountCoordsMap.put( "ra", coords[0] );
+			mountCoordsMap.put( "dec", coords[1] );
+			res.put( "mountCoords", mountCoordsMap );
+		}
 
 		return res;
 	}

@@ -145,6 +145,8 @@ export interface StatusSnapshot {
   hfrHistory: Record<string, HfrSample[]>;
   images: Record<string, CapturedImage[]>;
   sequenceQueue: Record<string, SequenceQueueStatus>;
+  /** Mount.equatorialCoords — RA in decimal hours, DEC in decimal degrees. Absent until the first read succeeds. */
+  mountCoords?: { ra: number; dec: number };
   [key: string]: unknown;
 }
 
@@ -154,7 +156,7 @@ const KNOWN_STATUS_KEYS = new Set([
   'ditheringActive', 'alignStatus', 'weatherState', 'mountStatus',
   'schedulerState', 'captureStatus', 'focusState', 'guideStatus',
   'activeJob', 'jobs', 'alignment', 'roofStatus', 'serverInfo',
-  'hfrHistory', 'images', 'sequenceQueue',
+  'hfrHistory', 'images', 'sequenceQueue', 'mountCoords',
 ]);
 
 /** Trains aren't a fixed set on the backend — derive them from whichever per-train maps are present. */
