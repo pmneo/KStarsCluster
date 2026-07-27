@@ -96,6 +96,8 @@ export interface StatusSnapshot {
   alignment: AlignmentInfo;
   roofStatus?: string;
   serverInfo?: unknown;
+  hfrHistory: Record<string, HfrSample[]>;
+  images: Record<string, CapturedImage[]>;
   [key: string]: unknown;
 }
 
@@ -105,6 +107,7 @@ const KNOWN_STATUS_KEYS = new Set([
   'ditheringActive', 'alignStatus', 'weatherState', 'mountStatus',
   'schedulerState', 'captureStatus', 'focusState', 'guideStatus',
   'activeJob', 'jobs', 'alignment', 'roofStatus', 'serverInfo',
+  'hfrHistory', 'images',
 ]);
 
 /** Trains aren't a fixed set on the backend — derive them from whichever per-train maps are present. */

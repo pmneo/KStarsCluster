@@ -1,34 +1,3 @@
-import { useEffect, useState } from 'react';
-import type { CapturedImage } from './types';
-
-/** New captures only ever show up via the Capture.captureComplete signal — a plain poll is enough, no dedicated WS needed. */
-export function useRecentImages(train: string, intervalMs = 5000) {
-  const [images, setImages] = useState<CapturedImage[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function poll() {
-      try {
-        const res = await fetch(`/cmd/images/list/${encodeURIComponent(train)}`);
-        const data: CapturedImage[] = await res.json();
-        if (!cancelled) setImages(data);
-      } catch {
-        //transient fetch failure — next poll will retry
-      }
-    }
-
-    poll();
-    const id = setInterval(poll, intervalMs);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [train, intervalMs]);
-
-  return images;
-}
-
 /** PixInsight ScreenTransferFunction convention — all in [0,1]. midtones=0.5 is neutral (linear). */
 export interface StretchSettings {
   shadows: number;

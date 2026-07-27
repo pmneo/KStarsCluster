@@ -49,6 +49,8 @@ export function App() {
                 focusState={status.focusState[train]}
                 captureRunning={status.captureRunning[train]}
                 focusRunning={status.focusRunning[train]}
+                hfrHistory={status.hfrHistory?.[train] ?? []}
+                images={status.images?.[train] ?? []}
               />
             ))}
             <DeviceList devices={devices} />

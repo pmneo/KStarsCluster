@@ -262,6 +262,20 @@ table td:first-child {
   text-overflow: ellipsis;
 }
 
+.stf-toggle {
+  font-size: 0.65rem;
+  background: #10121a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.image-thumb--editing img {
+  border-color: var(--accent);
+}
+
 .log-panel {
   height: 260px;
   display: flex;

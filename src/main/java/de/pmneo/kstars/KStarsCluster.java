@@ -593,7 +593,7 @@ public abstract class KStarsCluster extends KStarsState {
 					// child of this JVM (only its session/pgid changes), so anything that kills the
 					// JVM's whole process tree (e.g. IntelliJ's "terminate process tree" on Stop)
 					// takes kstars down with it.
-					var p = Runtime.getRuntime().exec( new String[]{ "setsid", "-f", "nohup", "kstars", "--ekosweb" } );
+					var p = Runtime.getRuntime().exec( new String[]{ "setsid", "-f", "nohup", "kstars" } );
 
 					new Thread( () -> {
 						try {
@@ -1263,24 +1263,11 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 		} );
 
-		actions.put( "hfr", ( parts, req, resp ) -> {
-			if( parts.length < 2 ) {
-				return hfrHistory;
-			}
-			return hfrHistory.getOrDefault( parts[1], new java.util.ArrayDeque<>() );
-		} );
-
 		actions.put( "images", ( parts, req, resp ) -> {
 			if( parts.length < 2 ) {
-				return "usage: images/<list/train|thumb|autostretch>";
+				return "usage: images/<thumb|autostretch>";
 			}
 			switch( parts[1] ) {
-				case "list":
-					if( parts.length < 3 ) {
-						return "usage: images/list/<train>";
-					}
-					return listRecentImages( parts[2] );
-
 				case "thumb": {
 					File fitsFile = resolveFileParam( req, resp );
 					if( fitsFile == null ) {
@@ -1509,6 +1496,16 @@ public abstract class KStarsCluster extends KStarsState {
 
 		res.put( "alignment", fillAlignment( new HashMap<>(), lastAlignSolution.get() ) );
 		res.put( "jobs", allSchedulerJobs.get() );
+
+		// Folded into the status push instead of separate polling loops for the HFR chart
+		// and image strip — one WebSocket, not three independently-polled REST endpoints.
+		res.put( "hfrHistory", hfrHistory );
+
+		Map<String, List<Map<String,Object>>> images = new LinkedHashMap<>();
+		for( String train : capturedImages.keySet() ) {
+			images.put( train, listRecentImages( train ) );
+		}
+		res.put( "images", images );
 
 		return res;
 	}

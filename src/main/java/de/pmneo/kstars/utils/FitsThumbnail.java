@@ -143,13 +143,17 @@ public class FitsThumbnail {
         int outH = Math.max( 1, Math.round( (float) (img.height * scale) ) );
 
         BufferedImage out = new BufferedImage( outW, outH, BufferedImage.TYPE_BYTE_GRAY );
+        // Writing via setRGB() on a TYPE_BYTE_GRAY image runs the packed sRGB value through
+        // that image's (linear) gray ColorSpace, silently darkening it even though R=G=B —
+        // setSample() on the raster writes the byte value directly, no color conversion.
+        java.awt.image.WritableRaster raster = out.getRaster();
         for( int oy = 0; oy < outH; oy++ ) {
             int sy = Math.min( img.height - 1, (int) (oy / scale) );
             for( int ox = 0; ox < outW; ox++ ) {
                 int sx = Math.min( img.width - 1, (int) (ox / scale) );
                 double t = clamp( (img.normalized( sy, sx ) - s) / (h - s), 0, 1 );
                 int gray = (int) Math.round( 255 * mtf( m, t ) );
-                out.setRGB( ox, oy, (gray << 16) | (gray << 8) | gray );
+                raster.setSample( ox, oy, 0, gray );
             }
         }
 
@@ -159,11 +163,27 @@ public class FitsThumbnail {
     }
 
     /**
-     * PixInsight's AutoSTF formula: shadows clip at median + k*MAD (k typically -2.8), highlights
-     * fixed at 1, and midtones solved by literally evaluating MTF(targetBackground, median-shadows)
-     * — not an inverse, just how the formula works out. "Strong" only pushes targetBackground
-     * higher (brighter target background -> more midtone lift); there's no single canonical
-     * "strong" constant, this is a reasonable, tunable heuristic.
+     * PixInsight's AutoSTF formula — verified by solving a real PixInsight-reported result
+     * backward. PixInsight's own ScreenTransferFunction process icon stores its parameters as
+     * P.STF = [c0, c1, m, r0, r1] — i.e. shadows clip, HIGHLIGHTS clip, then MIDTONES balance,
+     * in that order. Two branches depending on whether the image is predominantly dark or bright:
+     *
+     *   median < 0.5 (dark, typical light frame):
+     *     c0 (shadows) = clip(median + k*MAD, 0, 1);  c1 (highlights) = 1;
+     *     m (midtones) = MTF(targetBackground, median - c0)
+     *
+     *   median >= 0.5 (bright, e.g. a flat frame):
+     *     c0 (shadows) = 0;  c1 (highlights) = clip(median - k*MAD, 0, 1);
+     *     m (midtones) = MTF(c1 - median, targetBackground)   <- note the swapped arguments,
+     *     and that this branch's c1 is the plain clip point, not an MTF output
+     *
+     * Verified against a real PixInsight AutoSTF result on a real flat frame, matched to 7
+     * significant figures on both the median and the two derived values.
+     *
+     * "Strong" is PixInsight's own alternate AutoSTF preset, not a heuristic — reverse-solved
+     * from a real PixInsight "Strong AutoSTF" result the same way as the normal preset above:
+     * shadowsClipping=-2.1 and targetBackground=0.5 (vs. -2.8/0.25 for the normal preset),
+     * matched to 5 significant figures on both derived values.
      */
     public static double[] computeAutoStretch( File fitsFile, boolean strong ) throws Exception {
         Image img = load( fitsFile );
@@ -178,13 +198,19 @@ public class FitsThumbnail {
         Collections.sort( deviations );
         double mad = deviations.get( deviations.size() / 2 ) * 1.4826;
 
-        double shadowsClipping = -2.8;
+        double shadowsClipping = strong ? -2.1 : -2.8;
         double targetBackground = strong ? 0.5 : 0.25;
 
-        double shadows = clamp( median + shadowsClipping * mad, 0, 1 );
-        double midtones = mtf( targetBackground, median - shadows );
-
-        return new double[]{ shadows, midtones, 1.0 };
+        if( median < 0.5 ) {
+            double shadows = clamp( median + shadowsClipping * mad, 0, 1 );
+            double midtones = mtf( targetBackground, median - shadows );
+            return new double[]{ shadows, midtones, 1.0 };
+        }
+        else {
+            double highlights = clamp( median - shadowsClipping * mad, 0, 1 );
+            double midtones = mtf( highlights - median, targetBackground );
+            return new double[]{ 0.0, midtones, highlights };
+        }
     }
 
     private static double clamp( double v, double lo, double hi ) {
