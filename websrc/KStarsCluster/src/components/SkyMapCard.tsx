@@ -16,9 +16,15 @@ interface SurveyOption {
   custom?: { url: string; frame: string; order: number };
 }
 
-/** Custom entries verified against each survey's own HiPS `properties` file (frame/order/tile format). */
+/** Custom entries verified against each survey's own HiPS `properties` file (frame/order/tile format).
+ * "nsns-sho" isn't a real simg.de survey — simg.de only publishes single-channel Hα/[OIII]/[SII]
+ * HiPS and its own fixed-mapping combos (ohs8/hbr8/rgb8), no proper SHO/Hubble palette. Our own
+ * backend (HipsProxyServlet, /hips/sho/*) fetches all three single-channel tiles for whatever
+ * path Aladin requests and recombines them (R=SII, G=Hα, B=[OIII]) server-side, where CORS
+ * doesn't apply — a client-side remap isn't possible since Aladin fetches tiles directly. */
 const SURVEYS: SurveyOption[] = [
   { id: 'nsns-ohs8', label: 'NSNS [OIII]+Hα+[SII]', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/ohs8', frame: 'equatorial', order: 6 } },
+  { id: 'nsns-sho', label: 'NSNS SHO (Hubble palette)', custom: { url: '/hips/sho', frame: 'equatorial', order: 6 } },
   { id: 'dss2-color', label: 'DSS2 (color)', builtin: 'P/DSS2/color' },
   { id: 'nsns-rgb8', label: 'NSNS RGB continuum', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/rgb8', frame: 'equatorial', order: 5 } },
   { id: 'nsns-hbr8', label: 'NSNS Hα + continuum (color)', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/hbr8', frame: 'equatorial', order: 6 } },

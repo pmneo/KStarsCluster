@@ -16,6 +16,7 @@ import com.sampullara.cli.Args;
 import com.sampullara.cli.Argument;
 
 import de.pmneo.kstars.web.CommandServlet;
+import de.pmneo.kstars.web.HipsProxyServlet;
 import de.pmneo.kstars.web.LoggingSocket;
 import de.pmneo.kstars.web.StatusSocket;
 
@@ -131,6 +132,7 @@ public class ServerRunner {
         // Add Servlet endpoints
 
 		contextHandler.addServlet(CommandServlet.class, "/cmd/*");
+        contextHandler.addServlet(HipsProxyServlet.class, "/hips/*");
         contextHandler.addServlet(DefaultServlet.class, "/");
 
         // Start Server
