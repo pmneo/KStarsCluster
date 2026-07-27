@@ -74,6 +74,15 @@ header h1 {
   grid-column: span 2;
 }
 
+/* Below this, auto-fit only actually fits one 280px column — grid-column: span 2 would still
+   force a phantom second column into existence, squeezing the wide cards' real content into a
+   sliver and pushing anything that doesn't wrap (buttons, table cells) out past the edge. */
+@media (max-width: 640px) {
+  .card--wide {
+    grid-column: span 1;
+  }
+}
+
 .card h3 {
   margin: 0 0 12px;
   font-size: 1rem;
@@ -126,6 +135,7 @@ button:disabled {
   margin-top: 12px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -280,6 +290,7 @@ table td:first-child {
 .sky-map-controls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
 }
