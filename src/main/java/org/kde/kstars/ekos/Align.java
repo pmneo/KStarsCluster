@@ -82,7 +82,7 @@ public interface Align extends DBusInterface {
     public static class newLog extends DBusSignal {
         private final String text;
         public newLog(String _path, String _text) throws DBusException {
-            super(_path);
+            super(_path, _text);
             this.text = _text;
         }
         public String getText() {

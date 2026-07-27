@@ -1,5 +1,10 @@
 package de.pmneo.kstars;
 
+import java.awt.Color;
+import java.awt.FontMetrics;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileReader;
@@ -48,12 +53,15 @@ import com.google.gson.GsonBuilder;
 import bsh.Interpreter;
 
 import de.pmneo.kstars.utils.Coordinates;
+import de.pmneo.kstars.utils.EkosAnalyzeLog;
 import de.pmneo.kstars.utils.FitsThumbnail;
 import de.pmneo.kstars.utils.RaDecUtils;
 import de.pmneo.kstars.web.CommandServlet.Action;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+
+import javax.imageio.ImageIO;
 
 
 public abstract class KStarsCluster extends KStarsState {
@@ -180,6 +188,47 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 
 		schedulerService.scheduleWithFixedDelay( this::broadcastStatusIfChanged, 1, 1, TimeUnit.SECONDS );
+
+		restoreHistoryFromAnalyzeLog();
+	}
+
+	/**
+	 * Our capture/HFR/guide ring buffers only ever get filled by live D-Bus signals, so every
+	 * restart of this server starts them empty even though KStars/Ekos itself kept running the
+	 * whole time. Ekos' own Analyze module already logs exactly this history to disk (session by
+	 * session) — replay the latest file once at startup so the web UI isn't blank right after a
+	 * restart.
+	 */
+	private void restoreHistoryFromAnalyzeLog() {
+		try {
+			File analyzeDir = new File( System.getProperty( "user.home" ), ".local/share/kstars/analyze" );
+			// Same caps as the ring buffers these feed (50 images, 300 HFR/guide samples) — the
+			// most recent file alone is often a short guiding-only test with zero captures, so
+			// this walks backward through up to 10 files merging history until met.
+			EkosAnalyzeLog.ParsedHistory history = EkosAnalyzeLog.parseRecent( analyzeDir, 50, 300, 300, 10 );
+
+			for( KStarsState.CapturedImage img : history.images ) {
+				Map<String,Object> m = new LinkedHashMap<>();
+				m.put( "filename", img.filename );
+				m.put( "filter", img.filter );
+				m.put( "exposure", img.exposure );
+				m.put( "hfr", img.hfr );
+				m.put( "type", img.type );
+				recordCapturedImage( PRIMARY_TRAIN, img.ts, m );
+			}
+			for( KStarsState.HfrSample s : history.hfrSamples ) {
+				recordHfr( PRIMARY_TRAIN, s.ts, s.hfr, s.position );
+			}
+			for( KStarsState.GuideDeltaSample s : history.guideSamples ) {
+				recordGuideDelta( s.ts, s.ra, s.de );
+			}
+
+			logMessage( "Restored " + history.images.size() + " images, " + history.hfrSamples.size()
+					+ " HFR samples, " + history.guideSamples.size() + " guide samples from the Ekos analyze log" );
+		}
+		catch( Throwable t ) {
+			logError( "Failed to restore history from analyze log", t );
+		}
 	}
 
 	private String lastBroadcastStatus = null;
@@ -230,7 +279,9 @@ public abstract class KStarsCluster extends KStarsState {
 
 	/** Mount.equatorialCoords is a plain D-Bus property read (RA hours, DEC degrees) — same
 	 *  broadcaster-thread-only rule as the sequence queue refresh above. Feeds the sky map's
-	 *  "where is the telescope pointing right now" marker. */
+	 *  "where is the telescope pointing right now" marker. Already J2000 — same frame as the
+	 *  scheduler's target coordinates and Aladin's own sky surveys, no precession needed here
+	 *  (unlike Align's solution result, see fillAlignment()). */
 	@SuppressWarnings("unchecked")
 	private void refreshMountCoords() {
 		if( !ekosReady.get() || this.mount == null ) {
@@ -327,6 +378,12 @@ public abstract class KStarsCluster extends KStarsState {
 		} ) );
 		subscriptions.add( this.guide.addNewStatusHandler( Guide.newStatus.class, status -> {
 			this.handleGuideStatus( status.getStatus() );
+		} ) );
+		subscriptions.add( this.guide.addSigHandler( Guide.newAxisDelta.class, sig -> {
+			recordGuideDelta( sig.getRa(), sig.getDe() );
+		} ) );
+		subscriptions.add( this.guide.addSigHandler( Guide.newAxisSigma.class, sig -> {
+			recordGuideSigma( sig.getRa(), sig.getDe() );
 		} ) );
 		subscriptions.add( this.capture.addNewStatusHandler( Capture.newStatus.class, status -> {
 			this.handleCaptureStatus( status.getStatus(), status.train );
@@ -1349,6 +1406,19 @@ public abstract class KStarsCluster extends KStarsState {
 				case "thumb": {
 					File fitsFile = resolveFileParam( req, resp );
 					if( fitsFile == null ) {
+						// A missing/blank "file" param (400) is a caller bug — leave that as a
+						// plain error response. A file that's unrecognized/gone (404) is the
+						// normal case for e.g. analyze-log-restored images whose files have
+						// since been moved or deleted — serve a placeholder instead of leaving
+						// the <img> tag broken.
+						if( resp.getStatus() == HttpServletResponse.SC_NOT_FOUND ) {
+							byte[] placeholder = getNotFoundImageBytes();
+							resp.setStatus( HttpServletResponse.SC_OK );
+							resp.setContentType( "image/jpeg" );
+							resp.setContentLength( placeholder.length );
+							resp.getOutputStream().write( placeholder );
+							resp.getOutputStream().flush();
+						}
 						return null;
 					}
 
@@ -1603,6 +1673,16 @@ public abstract class KStarsCluster extends KStarsState {
 			res.put( "fov", fovMap );
 		}
 
+		res.put( "guideDeltaHistory", guideDeltaHistory );
+
+		double[] sigma = guideSigma.get();
+		if( sigma != null ) {
+			Map<String,Object> guideSigmaMap = new LinkedHashMap<>();
+			guideSigmaMap.put( "ra", sigma[0] );
+			guideSigmaMap.put( "de", sigma[1] );
+			res.put( "guideSigma", guideSigmaMap );
+		}
+
 		return res;
 	}
 
@@ -1630,8 +1710,13 @@ public abstract class KStarsCluster extends KStarsState {
 			res.put( "pa", pa );
 			
 			try {
-				res.put( "ra", RaDecUtils.degreesToRA( alignSolution.get(1) ) );
-				res.put( "dec", RaDecUtils.degreesToDEC( alignSolution.get(2) )  );
+				// Align's solve result is JNow (apparent place at the moment of the solve), unlike
+				// Mount.equatorialCoords and the scheduler's target coordinates, which are both
+				// J2000 — precessed here (dynamically, against the actual current time, not some
+				// fixed epoch) so this lines up with everything else that's J2000.
+				double[] j2000 = RaDecUtils.jNowToJ2000( alignSolution.get( 1 ) / 15.0, alignSolution.get( 2 ), System.currentTimeMillis() );
+				res.put( "ra", RaDecUtils.degreesToRA( j2000[0] * 15.0 ) );
+				res.put( "dec", RaDecUtils.degreesToDEC( j2000[1] ) );
 			}
 			catch( Throwable t ) {
 
@@ -2135,6 +2220,36 @@ public abstract class KStarsCluster extends KStarsState {
 			return null;
 		}
 		return fitsFile;
+	}
+
+	private static byte[] notFoundImageBytes;
+
+	/**
+	 * Images restored from the Ekos analyze log on startup can point at files that have since
+	 * been moved (e.g. by an external reorganizing tool) or deleted — rather than a broken-image
+	 * icon in the browser, the thumb action serves this placeholder instead.
+	 */
+	private static synchronized byte[] getNotFoundImageBytes() throws IOException {
+		if( notFoundImageBytes != null ) {
+			return notFoundImageBytes;
+		}
+
+		BufferedImage img = new BufferedImage( 320, 213, BufferedImage.TYPE_INT_RGB );
+		Graphics2D g = img.createGraphics();
+		g.setRenderingHint( RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON );
+		g.setColor( new Color( 0x20, 0x20, 0x20 ) );
+		g.fillRect( 0, 0, img.getWidth(), img.getHeight() );
+		g.setColor( new Color( 0x80, 0x80, 0x80 ) );
+		g.setFont( g.getFont().deriveFont( 18f ) );
+		FontMetrics fm = g.getFontMetrics();
+		String text = "Image not found";
+		g.drawString( text, (img.getWidth() - fm.stringWidth( text )) / 2, img.getHeight() / 2 );
+		g.dispose();
+
+		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+		ImageIO.write( img, "jpg", bytes );
+		notFoundImageBytes = bytes.toByteArray();
+		return notFoundImageBytes;
 	}
 
 	/**

@@ -89,7 +89,7 @@ public interface Capture extends DBusInterface {
         private final String text;
 
         public newLog(String _path, String _text) throws DBusException {
-            super(_path);
+            super(_path, _text);
             this.text = _text;
         }
 

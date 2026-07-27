@@ -69,7 +69,7 @@ public interface Guide extends DBusInterface {
         private final double de;
 
         public newAxisDelta(String _path, double _ra, double _de) throws DBusException {
-            super(_path);
+            super(_path, _ra, _de);
             this.ra = _ra;
             this.de = _de;
         }
@@ -89,7 +89,7 @@ public interface Guide extends DBusInterface {
         private final double de;
 
         public newAxisSigma(String _path, double _ra, double _de) throws DBusException {
-            super(_path);
+            super(_path, _ra, _de);
             this.ra = _ra;
             this.de = _de;
         }
@@ -104,7 +104,7 @@ public interface Guide extends DBusInterface {
     public static class newLog extends DBusSignal {
         private String text;
         public newLog(String _path, String _text) throws DBusException {
-            super(_path);
+            super(_path, _text);
             this.text = _text;
         }
         public String getText() {

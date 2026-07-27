@@ -42,11 +42,51 @@ public class KStarsState extends WithLogging {
     public final ConcurrentHashMap<String, Deque<HfrSample>> hfrHistory = new ConcurrentHashMap<>();
 
     public void recordHfr( String train, double hfr, int position ) {
+        recordHfr( train, System.currentTimeMillis(), hfr, position );
+    }
+
+    /** ts-taking overload — lets the startup analyze-log replay backfill history with the
+     *  original recorded times instead of "now". */
+    public void recordHfr( String train, long ts, double hfr, int position ) {
         Deque<HfrSample> history = hfrHistory.computeIfAbsent( train, t -> new ConcurrentLinkedDeque<>() );
-        history.addLast( new HfrSample( System.currentTimeMillis(), hfr, position ) );
+        history.addLast( new HfrSample( ts, hfr, position ) );
         while( history.size() > HFR_HISTORY_CAP ) {
             history.pollFirst();
         }
+    }
+
+    /** One Guide.newAxisDelta signal per guide frame — RA/DEC guiding error, in arcsec. */
+    public static class GuideDeltaSample {
+        public final long ts;
+        public final double ra;
+        public final double de;
+
+        public GuideDeltaSample( long ts, double ra, double de ) {
+            this.ts = ts;
+            this.ra = ra;
+            this.de = de;
+        }
+    }
+
+    private static final int GUIDE_HISTORY_CAP = 300;
+    /** Guiding is one mount/one guide camera — unlike HFR/capture, never per-train. */
+    public final Deque<GuideDeltaSample> guideDeltaHistory = new ConcurrentLinkedDeque<>();
+    public final AtomicReference<double[]> guideSigma = new AtomicReference<>();
+
+    public void recordGuideDelta( double ra, double de ) {
+        recordGuideDelta( System.currentTimeMillis(), ra, de );
+    }
+
+    /** ts-taking overload — see recordHfr(train, ts, hfr, position). */
+    public void recordGuideDelta( long ts, double ra, double de ) {
+        guideDeltaHistory.addLast( new GuideDeltaSample( ts, ra, de ) );
+        while( guideDeltaHistory.size() > GUIDE_HISTORY_CAP ) {
+            guideDeltaHistory.pollFirst();
+        }
+    }
+
+    public void recordGuideSigma( double ra, double de ) {
+        guideSigma.set( new double[]{ ra, de } );
     }
 
     /**
@@ -105,8 +145,13 @@ public class KStarsState extends WithLogging {
     public final ConcurrentHashMap<String, Deque<CapturedImage>> capturedImages = new ConcurrentHashMap<>();
 
     public void recordCapturedImage( String train, Map<String,Object> metadata ) {
+        recordCapturedImage( train, System.currentTimeMillis(), metadata );
+    }
+
+    /** ts-taking overload — see recordHfr(train, ts, hfr, position). */
+    public void recordCapturedImage( String train, long ts, Map<String,Object> metadata ) {
         Deque<CapturedImage> history = capturedImages.computeIfAbsent( train, t -> new ConcurrentLinkedDeque<>() );
-        history.addLast( new CapturedImage( System.currentTimeMillis(), metadata ) );
+        history.addLast( new CapturedImage( ts, metadata ) );
         while( history.size() > CAPTURED_IMAGES_CAP ) {
             history.pollFirst();
         }
@@ -285,7 +330,8 @@ public class KStarsState extends WithLogging {
      */
     public final ConcurrentHashMap<String, Object> sequenceQueueStatus = new ConcurrentHashMap<>();
 
-    /** Mount.equatorialCoords, refreshed once per second — {RA hours, DEC degrees}, or null before the first read. */
+    /** Mount.equatorialCoords, refreshed once per second — {RA hours, DEC degrees} in J2000, or
+     *  null before the first read. */
     public final AtomicReference<double[]> mountCoords = new AtomicReference<>();
 
     /** Align.fov, refreshed once per second — {width arcmin, height arcmin}, or null before the first read. */

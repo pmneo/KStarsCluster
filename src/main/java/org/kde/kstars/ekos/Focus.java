@@ -70,7 +70,7 @@ public interface Focus extends DBusInterface {
     public static class newLog extends DBusSignal {
         private final String text;
         public newLog(String _path, String _text) throws DBusException {
-            super(_path);
+            super(_path, _text);
             this.text = _text;
         }
         public String getText() {
@@ -85,7 +85,7 @@ public interface Focus extends DBusInterface {
         private final String train;
 
         public newHFR(String _path, double _HFR, int _position, boolean inAutoFocus, String train) throws DBusException {
-            super(_path);
+            super(_path, _HFR, _position, inAutoFocus, train);
             this.HFR = _HFR;
             this.inAutoFocus = inAutoFocus;
             this.position = _position;
