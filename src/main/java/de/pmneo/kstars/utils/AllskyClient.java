@@ -3,7 +3,6 @@ package de.pmneo.kstars.utils;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.URI;
-import java.net.URL;
 import java.security.cert.X509Certificate;
 import java.util.Map;
 
@@ -17,9 +16,11 @@ import com.google.gson.Gson;
 /**
  * indi-allsky (https://github.com/aaronwmorris/indi-allsky) exposes a small JSON API for its
  * latest capture and a rolling window of recent ones — queried for a quick "how clear is the sky
- * right now" widget, since star count/SQM tend to drop sharply under cloud, a useful independent
- * cross-check alongside the weather station. Self-signed cert on this local LAN device, same as
- * visiting it directly in a browser and clicking through the warning once.
+ * right now" widget, since star count tends to drop sharply under cloud, a useful independent
+ * cross-check alongside the weather station. One instance per physical camera/host — there can
+ * be more than one indi-allsky install on the LAN (e.g. one per site). Self-signed cert on these
+ * local LAN devices, same as visiting one directly in a browser and clicking through the warning
+ * once.
  *
  * Uses the classic HttpsURLConnection instead of java.net.http.HttpClient: the newer HttpClient
  * keeps enforcing hostname/SAN verification even with a trust-all TrustManager and
@@ -29,12 +30,15 @@ import com.google.gson.Gson;
  */
 public class AllskyClient {
 
-    private static final String BASE_URL = "https://192.168.0.109/indi-allsky/";
-
+    private final String baseUrl;
+    private final int cameraId;
     private final SSLContext sslContext;
     private final Gson gson = new Gson();
 
-    public AllskyClient() {
+    public AllskyClient( String host, int cameraId ) {
+        this.baseUrl = "https://" + host + "/indi-allsky/";
+        this.cameraId = cameraId;
+
         try {
             sslContext = SSLContext.getInstance( "TLS" );
             sslContext.init( null, new TrustManager[]{ new X509TrustManager() {
@@ -64,11 +68,35 @@ public class AllskyClient {
         return out.toByteArray();
     }
 
-    /** Raw parsed response of GET js/loop?camera_id=1&limit_s={limitS} — image_list (newest
-     *  first), plus stars_data/jsqm_data/camera_sqm_*_data summary stats over the window. */
+    /** Raw parsed response of GET js/loop?camera_id={cameraId}&limit_s={limitS} — image_list
+     *  (newest first), plus stars_data/jsqm_data/camera_sqm_*_data summary stats over the window.
+     *  Some indi-allsky installs return an always-empty image_list here (timelapse indexing
+     *  disabled server-side) even while capturing fine — don't rely on this alone for "is there a
+     *  latest image", see {@link #fetchLatest(int)}. */
     @SuppressWarnings("unchecked")
     public Map<String,Object> fetchLoop( int limitS ) throws Exception {
-        String url = BASE_URL + "js/loop?camera_id=1&limit_s=" + limitS;
+        String url = baseUrl + "js/loop?camera_id=" + cameraId + "&limit_s=" + limitS;
+        HttpsURLConnection conn = open( url );
+        try {
+            if( conn.getResponseCode() != 200 ) {
+                throw new IllegalStateException( "indi-allsky returned HTTP " + conn.getResponseCode() + " for " + url );
+            }
+            String body = new String( readAll( conn.getInputStream() ) );
+            return gson.fromJson( body, Map.class );
+        }
+        finally {
+            conn.disconnect();
+        }
+    }
+
+    /** Raw parsed response of GET js/latest?camera_id={cameraId}&limit_s={limitS} — the single
+     *  most recent capture (latest_image.url/width/height/moonmode), regardless of whether this
+     *  install's timelapse indexing (which {@link #fetchLoop} depends on) is enabled. limitS here
+     *  is a staleness cutoff — the endpoint returns latest_image.url == null if the most recent
+     *  capture is older than that, so pass a generous window (e.g. a full day). */
+    @SuppressWarnings("unchecked")
+    public Map<String,Object> fetchLatest( int limitS ) throws Exception {
+        String url = baseUrl + "js/latest?camera_id=" + cameraId + "&limit_s=" + limitS;
         HttpsURLConnection conn = open( url );
         try {
             if( conn.getResponseCode() != 200 ) {
@@ -85,7 +113,7 @@ public class AllskyClient {
     /** Fetches the JPEG at a path exactly as returned in a loop/latest response's "url" field
      *  (relative to the indi-allsky web root) — null on any non-200 response. */
     public byte[] fetchImage( String relativePath ) throws Exception {
-        HttpsURLConnection conn = open( BASE_URL + relativePath );
+        HttpsURLConnection conn = open( baseUrl + relativePath );
         try {
             if( conn.getResponseCode() != 200 ) {
                 return null;

@@ -6,9 +6,17 @@ const LATEST_POLL_MS = 60_000;
 const CHART_POLL_MS = 5 * 60_000;
 const CHART_LIMIT_S = 15_000;
 
-/** Independent cross-check against the weather station — cloud cover drops star count and
- * shifts SQM sharply, so this is a quick "is the sky actually clear right now" glance. */
-export function AllskyCard() {
+interface Props {
+  cam: string;
+  label: string;
+  /** false for a camera pointed at the dome interior rather than the sky — skips the star
+   * count overlay and history chart (and doesn't even fetch the chart) entirely. */
+  showDetails: boolean;
+}
+
+/** Independent cross-check against the weather station — cloud cover drops star count sharply,
+ * so this is a quick "is the sky actually clear right now" glance. */
+export function AllskyCard({ cam, label, showDetails }: Props) {
   const [latest, setLatest] = useState<AllskyLatest | null>(null);
   const [points, setPoints] = useState<AllskyPoint[]>([]);
   const [error, setError] = useState(false);
@@ -17,7 +25,7 @@ export function AllskyCard() {
     let cancelled = false;
 
     function pollLatest() {
-      fetchAllskyLatest()
+      fetchAllskyLatest(cam)
         .then((data) => { if (!cancelled) { setLatest(data); setError(false); } })
         .catch(() => { if (!cancelled) setError(true); });
     }
@@ -25,13 +33,14 @@ export function AllskyCard() {
     pollLatest();
     const interval = setInterval(pollLatest, LATEST_POLL_MS);
     return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  }, [cam]);
 
   useEffect(() => {
+    if (!showDetails) return undefined;
     let cancelled = false;
 
     function pollChart() {
-      fetchAllskyChart(CHART_LIMIT_S)
+      fetchAllskyChart(cam, CHART_LIMIT_S)
         .then((data) => { if (!cancelled) setPoints(data); })
         .catch(() => { /* chart is a nice-to-have — leave whatever was showing */ });
     }
@@ -39,31 +48,26 @@ export function AllskyCard() {
     pollChart();
     const interval = setInterval(pollChart, CHART_POLL_MS);
     return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  }, [cam, showDetails]);
+
+  const imgUrl = latest?.url ? allskyImageUrl(cam, latest.url) : undefined;
 
   return (
-    <div className="card card--wide">
-      <h3>Allsky</h3>
-      {error && <div className="hfr-chart-empty">Allsky camera unreachable</div>}
-      {latest && (
-        <dl>
-          <dt>Stars</dt>
-          <dd>
-            {latest.stars ?? '—'}
-            {latest.starsAvg != null && <> (avg {latest.starsAvg.toFixed(1)})</>}
-          </dd>
-          <dt>SQM</dt>
-          <dd>{latest.jsqm != null ? latest.jsqm.toFixed(1) : '—'}</dd>
-          <dt>Moon</dt>
-          <dd>{latest.moonmode ? 'up' : 'down'}</dd>
-        </dl>
+    <div className="card allsky-card" style={imgUrl ? { backgroundImage: `url(${imgUrl})` } : undefined}>
+      <a href={imgUrl} target="_blank" rel="noreferrer" className="allsky-card-link" aria-label={label}>
+        <h3>{label}</h3>
+        {error && <div className="hfr-chart-empty">Allsky camera unreachable</div>}
+        {showDetails && latest && (
+          <span className="allsky-overlay">
+            ★ {latest.stars ?? '—'} · {latest.moonmode == null ? 'moon —' : latest.moonmode ? 'moon up' : 'moon down'}
+          </span>
+        )}
+      </a>
+      {showDetails && (
+        <div className="allsky-chart-wrap">
+          <AllskyChart points={points} />
+        </div>
       )}
-      {latest?.url && (
-        <a href={allskyImageUrl(latest.url)} target="_blank" rel="noreferrer" className="allsky-image-link">
-          <img src={allskyImageUrl(latest.url)} alt="Latest allsky capture" className="allsky-image" loading="lazy" />
-        </a>
-      )}
-      <AllskyChart points={points} />
     </div>
   );
 }

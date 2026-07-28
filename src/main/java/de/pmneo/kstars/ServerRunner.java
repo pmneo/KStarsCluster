@@ -7,9 +7,11 @@ import java.util.List;
 import java.util.concurrent.Callable;
 
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.servlet.DefaultServlet;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.eclipse.jetty.websocket.jakarta.server.config.JakartaWebSocketServletContainerInitializer;
 
 import com.sampullara.cli.Args;
@@ -98,7 +100,17 @@ public class ServerRunner {
 
 	public static void startServer( KStarsCluster cluster ) throws Exception
     {
-        Server server = new Server( webPort );
+        // Jetty's bare default (new Server(port)) keeps only 8 threads warm — a burst of
+        // requests that each block on outbound I/O (sky map tile proxying, the allsky camera
+        // widgets) forces it to spin up more on demand, showing up as latency spikes. 200 max
+        // is still Jetty's own default (already generous for this app); just keeping more
+        // threads warm by default.
+        QueuedThreadPool threadPool = new QueuedThreadPool( 200, 20 );
+        Server server = new Server( threadPool );
+
+        ServerConnector connector = new ServerConnector( server );
+        connector.setPort( webPort );
+        server.addConnector( connector );
 
         // The web UI (websrc/KStarsCluster, a Vite/React app) builds straight into this
         // classpath location — see its vite.config.ts. Iterate on it with `npm run dev`

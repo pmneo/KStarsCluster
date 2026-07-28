@@ -10,7 +10,7 @@ import { LogPanel } from './components/LogPanel';
 import { DeviceList } from './components/DeviceList';
 import { SkyMapCard } from './components/SkyMapCard';
 import { GuideCard } from './components/GuideCard';
-import { AllskyCard } from './components/AllskyCard';
+import { AllskySection } from './components/AllskySection';
 
 export function App() {
   const { status, connected } = useStatusSocket();
@@ -38,7 +38,7 @@ export function App() {
             automationSuspended={status.automationSuspended}
           />
         )}
-        <AllskyCard />
+        <AllskySection />
         {ready && status && (
           <>
             <CoolingCard />

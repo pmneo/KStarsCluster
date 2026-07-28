@@ -360,6 +360,15 @@ table td:first-child {
   background: #000;
 }
 
+/* Same footprint as the real thumbnail, so nothing shifts once it swaps in on scroll. */
+.image-thumb-placeholder {
+  width: 120px;
+  height: 80px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #10121a;
+}
+
 .image-caption {
   font-size: 0.7rem;
   color: var(--muted);
@@ -383,18 +392,50 @@ table td:first-child {
   border-color: var(--accent);
 }
 
-.allsky-image-link {
-  display: block;
-  margin-top: 12px;
+/* Scaled to cover a fixed-height box and centered rather than shown at native size+aspect —
+ * compact regardless of whether the source camera is portrait or landscape, with the star/moon
+ * overlay sitting directly on top instead of a separate stats row above it. */
+/* The latest capture as the card's own background — full bleed behind the title, overlay AND
+ * the chart, not just a separate image box above them. */
+.allsky-card {
+  position: relative;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  background-color: #000;
+  background-size: cover;
+  background-position: center;
+  overflow: hidden;
 }
 
-.allsky-image {
-  width: 100%;
-  max-height: 240px;
-  object-fit: contain;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: #000;
+.allsky-card-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+.allsky-card h3 {
+  color: var(--text);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+}
+
+.allsky-overlay {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text);
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Pinned to the bottom instead of taking up flow space, with a dark gradient behind it so the
+ * chart stays readable over whatever brightness the photo underneath happens to be. */
+.allsky-chart-wrap {
+  margin-top: auto;
+  background: linear-gradient(to top, rgba(10, 12, 18, 0.92) 40%, rgba(10, 12, 18, 0));
+  padding-top: 40px;
 }
 
 .log-panel {

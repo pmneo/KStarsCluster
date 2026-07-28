@@ -9,10 +9,12 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 
@@ -35,8 +37,14 @@ public class HipsProxyServlet extends HttpServlet {
 
     /** palette id -> {R survey, G survey, B survey} — all three are the DR0.2 8-bit single-channel HiPS. */
     private static final Map<String, String[]> PALETTES = Map.of(
-        "sho", new String[]{ "sii8", "halpha8", "oiii8" }  // classic Hubble/SHO palette: R=SII, G=Halpha, B=OIII
+        "sho", new String[]{ "sii8", "halpha8", "oiii8" },  // classic Hubble/SHO palette: R=SII, G=Halpha, B=OIII
+        "hso", new String[]{ "halpha8", "sii8", "oiii8" }   // R=Halpha, G=SII, B=OIII
     );
+
+    /** simg.de survey folders that we proxy+cache as a straight passthrough (no channel
+     *  recombination) — same benefit as the combined palettes above: every tile is fetched from
+     *  simg.de at most once, ever, instead of hammering their server on every browser pan/zoom. */
+    private static final Set<String> RAW_SURVEYS = Set.of( "halpha8", "oiii8", "sii8", "ohs8", "hbr8", "rgb8" );
 
     private static final String BASE_URL = "https://www.simg.de/nebulae3/dr0_2/";
     private static final Pattern TILE_PATH = Pattern.compile( "Norder\\d+/(Dir\\d+/Npix\\d+|Allsky)\\.png" );
@@ -65,7 +73,8 @@ public class HipsProxyServlet extends HttpServlet {
         String tilePath = parts[1];
 
         String[] channels = PALETTES.get( palette );
-        if( channels == null ) {
+        boolean raw = channels == null && RAW_SURVEYS.contains( palette );
+        if( channels == null && !raw ) {
             resp.sendError( HttpServletResponse.SC_NOT_FOUND );
             return;
         }
@@ -74,7 +83,12 @@ public class HipsProxyServlet extends HttpServlet {
             // Aladin fetches this even when frame/order are already passed explicitly to
             // createImageSurvey() — without it, it silently refuses to actually switch survey
             // (logs "Survey not found" and stays on whatever was showing before).
-            servePropertiesFile( req, resp, palette );
+            if( raw ) {
+                serveRawProperties( req, resp, palette );
+            }
+            else {
+                servePropertiesFile( req, resp, palette );
+            }
             return;
         }
 
@@ -89,16 +103,16 @@ public class HipsProxyServlet extends HttpServlet {
             return;
         }
 
-        byte[] combined;
+        byte[] tile;
         try {
-            combined = fetchAndCombine( channels, tilePath );
+            tile = raw ? fetchBytes( BASE_URL + palette + "/" + tilePath ).join() : fetchAndCombine( channels, tilePath );
         }
         catch( Exception e ) {
             resp.sendError( HttpServletResponse.SC_BAD_GATEWAY );
             return;
         }
 
-        if( combined == null ) {
+        if( tile == null ) {
             // Sparse HiPS tree — this pix legitimately doesn't exist at this order, same as a
             // real HiPS service would 404 it. Not cached: a 404 today doesn't mean one tomorrow.
             resp.sendError( HttpServletResponse.SC_NOT_FOUND );
@@ -106,8 +120,15 @@ public class HipsProxyServlet extends HttpServlet {
         }
 
         cacheFile.getParentFile().mkdirs();
-        Files.write( cacheFile.toPath(), combined );
-        serveBytes( resp, combined );
+        Files.write( cacheFile.toPath(), tile );
+        serveBytes( resp, tile );
+    }
+
+    private static String channelLabel( String survey ) {
+        if( survey.startsWith( "halpha" ) ) return "Halpha";
+        if( survey.startsWith( "oiii" ) ) return "OIII";
+        if( survey.startsWith( "sii" ) ) return "SII";
+        return survey;
     }
 
     /** Minimal HiPS properties file — same key fields real HiPS trees publish (frame, order,
@@ -116,9 +137,13 @@ public class HipsProxyServlet extends HttpServlet {
         String baseUrl = req.getScheme() + "://" + req.getServerName() + ":" + req.getServerPort()
                 + req.getContextPath() + req.getServletPath() + "/" + palette;
 
-        String properties = "obs_collection       = Northern Sky Narrowband Survey (SHO composite)\n"
-                + "obs_title            = NSNS DR0.2: SHO (Hubble palette, proxied)\n"
-                + "obs_description      = Server-side R=SII/G=Halpha/B=OIII composite of simg.de's single-channel HiPS surveys, combined on the fly by KStarsCluster since simg.de doesn't publish one directly.\n"
+        String[] channels = PALETTES.get( palette );
+        String paletteUpper = palette.toUpperCase();
+        String channelDesc = "R=" + channelLabel( channels[0] ) + "/G=" + channelLabel( channels[1] ) + "/B=" + channelLabel( channels[2] );
+
+        String properties = "obs_collection       = Northern Sky Narrowband Survey (" + paletteUpper + " composite)\n"
+                + "obs_title            = NSNS DR0.2: " + paletteUpper + " composite (proxied)\n"
+                + "obs_description      = Server-side " + channelDesc + " composite of simg.de's single-channel HiPS surveys, combined on the fly by KStarsCluster since simg.de doesn't publish one directly.\n"
                 + "hips_frame           = equatorial\n"
                 + "hips_order           = 6\n"
                 + "hips_order_min       = 0\n"
@@ -133,6 +158,39 @@ public class HipsProxyServlet extends HttpServlet {
 
         resp.setContentType( "text/plain;charset=utf-8" );
         resp.getWriter().write( properties );
+    }
+
+    /** For raw (non-recombined) surveys, proxy simg.de's own real properties file instead of
+     *  synthesizing one — it already has the correct description/copyright/order/etc. The only
+     *  thing that has to change is hips_service_url, which otherwise points straight at simg.de
+     *  and would make Aladin fetch every subsequent tile directly from them, bypassing our cache
+     *  entirely. Cached to disk like any other tile — simg.de's properties files don't change. */
+    private void serveRawProperties( HttpServletRequest req, HttpServletResponse resp, String survey ) throws IOException {
+        File cacheFile = new File( CACHE_DIR, survey + "/properties" );
+        byte[] bytes;
+        if( cacheFile.isFile() ) {
+            bytes = Files.readAllBytes( cacheFile.toPath() );
+        }
+        else {
+            byte[] fetched = fetchBytes( BASE_URL + survey + "/properties" ).join();
+            if( fetched == null ) {
+                resp.sendError( HttpServletResponse.SC_NOT_FOUND );
+                return;
+            }
+            String ourUrl = req.getScheme() + "://" + req.getServerName() + ":" + req.getServerPort()
+                    + req.getContextPath() + req.getServletPath() + "/" + survey;
+            String rewritten = new String( fetched, StandardCharsets.UTF_8 )
+                    .replaceAll( "(?m)^hips_service_url\\s*=.*$", "hips_service_url     = " + ourUrl );
+            bytes = rewritten.getBytes( StandardCharsets.UTF_8 );
+
+            cacheFile.getParentFile().mkdirs();
+            Files.write( cacheFile.toPath(), bytes );
+        }
+
+        resp.setContentType( "text/plain;charset=utf-8" );
+        resp.setContentLength( bytes.length );
+        resp.getOutputStream().write( bytes );
+        resp.getOutputStream().flush();
     }
 
     private void serveBytes( HttpServletResponse resp, byte[] bytes ) throws IOException {

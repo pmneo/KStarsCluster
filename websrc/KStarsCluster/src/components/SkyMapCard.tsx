@@ -17,20 +17,25 @@ interface SurveyOption {
 }
 
 /** Custom entries verified against each survey's own HiPS `properties` file (frame/order/tile format).
- * "nsns-sho" isn't a real simg.de survey — simg.de only publishes single-channel Hα/[OIII]/[SII]
- * HiPS and its own fixed-mapping combos (ohs8/hbr8/rgb8), no proper SHO/Hubble palette. Our own
- * backend (HipsProxyServlet, /hips/sho/*) fetches all three single-channel tiles for whatever
- * path Aladin requests and recombines them (R=SII, G=Hα, B=[OIII]) server-side, where CORS
- * doesn't apply — a client-side remap isn't possible since Aladin fetches tiles directly. */
+ * "nsns-sho"/"nsns-hso" aren't real simg.de surveys — simg.de only publishes single-channel
+ * Hα/[OIII]/[SII] HiPS and its own fixed-mapping combos (ohs8/hbr8/rgb8), no proper Hubble-style
+ * palette. Our own backend (HipsProxyServlet, /hips/{sho,hso}/*) fetches all three single-channel
+ * tiles for whatever path Aladin requests and recombines them server-side, where CORS doesn't
+ * apply — a client-side remap isn't possible since Aladin fetches tiles directly.
+ * Every other NSNS entry also goes through our backend (/hips/{survey}/*, straight passthrough)
+ * rather than simg.de directly — same HipsProxyServlet, just caching each tile instead of
+ * recombining it, so repeat pans/zooms don't keep re-hitting simg.de's server.
+ * SHO is listed first — it's the default survey (see surveyId's initial state below). */
 const SURVEYS: SurveyOption[] = [
-  { id: 'nsns-ohs8', label: 'NSNS [OIII]+Hα+[SII]', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/ohs8', frame: 'equatorial', order: 6 } },
   { id: 'nsns-sho', label: 'NSNS SHO (Hubble palette)', custom: { url: '/hips/sho', frame: 'equatorial', order: 6 } },
+  { id: 'nsns-hso', label: 'NSNS HSO (Hα/[SII]/[OIII])', custom: { url: '/hips/hso', frame: 'equatorial', order: 6 } },
+  { id: 'nsns-ohs8', label: 'NSNS [OIII]+Hα+[SII]', custom: { url: '/hips/ohs8', frame: 'equatorial', order: 6 } },
   { id: 'dss2-color', label: 'DSS2 (color)', builtin: 'P/DSS2/color' },
-  { id: 'nsns-rgb8', label: 'NSNS RGB continuum', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/rgb8', frame: 'equatorial', order: 5 } },
-  { id: 'nsns-hbr8', label: 'NSNS Hα + continuum (color)', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/hbr8', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-halpha8', label: 'NSNS Hα (8-bit)', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/halpha8', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-oiii8', label: 'NSNS [OIII] (8-bit)', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/oiii8', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-sii8', label: 'NSNS [SII] (8-bit)', custom: { url: 'https://www.simg.de/nebulae3/dr0_2/sii8', frame: 'equatorial', order: 6 } },
+  { id: 'nsns-rgb8', label: 'NSNS RGB continuum', custom: { url: '/hips/rgb8', frame: 'equatorial', order: 5 } },
+  { id: 'nsns-hbr8', label: 'NSNS Hα + continuum (color)', custom: { url: '/hips/hbr8', frame: 'equatorial', order: 6 } },
+  { id: 'nsns-halpha8', label: 'NSNS Hα (8-bit)', custom: { url: '/hips/halpha8', frame: 'equatorial', order: 6 } },
+  { id: 'nsns-oiii8', label: 'NSNS [OIII] (8-bit)', custom: { url: '/hips/oiii8', frame: 'equatorial', order: 6 } },
+  { id: 'nsns-sii8', label: 'NSNS [SII] (8-bit)', custom: { url: '/hips/sii8', frame: 'equatorial', order: 6 } },
 ];
 
 interface Props {
@@ -60,6 +65,26 @@ function fovCorners(centerRa: number, centerDec: number, widthDeg: number, heigh
   });
 }
 
+/** Builds the Aladin image-survey object for a SURVEYS entry. Used both for the initial aladin()
+ * call and for later switches, so the default survey never has to be swapped in after an initial
+ * builtin one — that would otherwise briefly hit alasky/CDS for properties/MocServer/tiles before
+ * being replaced. `A.imageHiPS` works without an aladin instance.
+ * The custom URL is resolved to absolute: Aladin only recognizes it as a real HiPS location via
+ * `new URL(...)`; a relative path fails that check and falls back to querying CDS's MocServer to
+ * guess a matching public HiPS ID before it ever tries our proxy. */
+function buildImageSurvey(survey: SurveyOption) {
+  if (survey.custom) {
+    const url = new URL(survey.custom.url, window.location.origin).href;
+    return window.A.imageHiPS(url, {
+      name: survey.label,
+      cooFrame: survey.custom.frame,
+      maxOrder: survey.custom.order,
+      imgFormat: 'png',
+    });
+  }
+  return survey.builtin;
+}
+
 export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayImgRef = useRef<HTMLImageElement>(null);
@@ -67,6 +92,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const mountCatalogRef = useRef<any>(null);
   const targetCatalogRef = useRef<any>(null);
   const fovOverlayRef = useRef<any>(null);
+  const appliedSurveyIdRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
   const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
   const [showLastImage, setShowLastImage] = useState(false);
@@ -75,16 +101,17 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   useEffect(() => {
     if (!window.A || !containerRef.current) return;
     window.A.init.then(() => {
-      // Always init with a builtin survey — the default (possibly custom) survey from SURVEYS[0]
-      // is applied right after via the surveyId effect below, which handles both cases.
+      const defaultSurvey = SURVEYS[0];
       const aladin = window.A.aladin(containerRef.current, {
-        survey: 'P/DSS2/color',
+        survey: buildImageSurvey(defaultSurvey),
         fov: 60,
         target: '0 +0',
         cooFrame: 'equatorial',
         showFullscreenControl: false,
+        log: false,
       });
       aladinRef.current = aladin;
+      appliedSurveyIdRef.current = defaultSurvey.id;
 
       const mountCat = window.A.catalog({ name: 'mount', sourceSize: 20, color: '#4ade80' });
       const targetCat = window.A.catalog({ name: 'target', sourceSize: 20, color: '#f59e0b' });
@@ -102,16 +129,10 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   }, []);
 
   useEffect(() => {
-    if (!ready || !aladinRef.current) return;
+    if (!ready || !aladinRef.current || appliedSurveyIdRef.current === surveyId) return;
+    appliedSurveyIdRef.current = surveyId;
     const survey = SURVEYS.find((s) => s.id === surveyId) ?? SURVEYS[0];
-    if (survey.builtin) {
-      aladinRef.current.setImageSurvey(survey.builtin);
-    } else if (survey.custom) {
-      const hips = aladinRef.current.createImageSurvey(
-        survey.id, survey.label, survey.custom.url, survey.custom.frame, survey.custom.order, { imgFormat: 'png' },
-      );
-      aladinRef.current.setImageSurvey(hips);
-    }
+    aladinRef.current.setImageSurvey(buildImageSurvey(survey));
   }, [ready, surveyId]);
 
   useEffect(() => {

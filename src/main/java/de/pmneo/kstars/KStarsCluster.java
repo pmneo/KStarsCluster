@@ -146,7 +146,16 @@ public abstract class KStarsCluster extends KStarsState {
 	private final List<Runnable> subscriptions = new ArrayList<>();
 
 	protected final HttpClient client;
-	private final AllskyClient allskyClient = new AllskyClient();
+
+	/** showDetails: whether star count/history are meaningful for this camera — false for one
+	 *  pointed at the dome interior rather than the sky (no point charting "stars" there). */
+	private record AllskyCamera( String label, boolean showDetails, AllskyClient client ) {}
+
+	/** One indi-allsky install per site — "cam" query param on the allsky/* actions selects which. */
+	private final Map<String, AllskyCamera> allskyCameras = Map.of(
+			"default", new AllskyCamera( "Allsky", true, new AllskyClient( "192.168.0.109", 1 ) ),
+			"obsy", new AllskyCamera( "Allsky (Obsy)", false, new AllskyClient( "192.168.0.145", 2 ) )
+	);
 
 	public KStarsCluster( String logPrefix ) throws DBusException {
 		super( logPrefix );
@@ -758,6 +767,14 @@ public abstract class KStarsCluster extends KStarsState {
 					// takes kstars down with it.
 					var p = Runtime.getRuntime().exec( new String[]{ "setsid", "-f", "nohup", "kstars" } );
 
+					new Thread( () -> {
+						try {
+							p.getInputStream().readAllBytes();
+						}
+						catch( Throwable t ) {
+							logError( "Failed to start kstars", t );
+						}
+					}).start();
 					new Thread( () -> {
 						try {
 							p.getErrorStream().readAllBytes();
@@ -1469,7 +1486,7 @@ public abstract class KStarsCluster extends KStarsState {
 					}
 
 					boolean strong = "true".equals( req.getParameter( "strong" ) );
-					double[] shmh = FitsThumbnail.computeAutoStretch( fitsFile, strong );
+					double[] shmh = computeAutoStretchCached( fitsFile, strong );
 
 					Map<String,Object> res = new LinkedHashMap<>();
 					res.put( "shadows", shmh[0] );
@@ -1485,15 +1502,34 @@ public abstract class KStarsCluster extends KStarsState {
 
 		actions.put( "allsky", ( parts, req, resp ) -> {
 			if( parts.length < 2 ) {
-				return "usage: allsky/<latest|chart|image>";
+				return "usage: allsky/<cameras|latest|chart|image>";
 			}
+
+			if( "cameras".equals( parts[1] ) ) {
+				Map<String,Object> res = new LinkedHashMap<>();
+				allskyCameras.forEach( ( id, cam ) -> {
+					Map<String,Object> info = new LinkedHashMap<>();
+					info.put( "label", cam.label() );
+					info.put( "showDetails", cam.showDetails() );
+					res.put( id, info );
+				} );
+				return res;
+			}
+
+			String camId = req.getParameter( "cam" );
+			AllskyCamera cam = allskyCameras.get( camId != null ? camId : "default" );
+			if( cam == null ) {
+				resp.setStatus( HttpServletResponse.SC_NOT_FOUND );
+				return "unknown allsky camera " + camId;
+			}
+
 			switch( parts[1] ) {
 				case "latest":
-					return fetchAllskyLatest();
+					return fetchAllskyLatest( cam.client() );
 
 				case "chart": {
 					int limitS = clamp( parseIntParam( req, "limitS", 15000 ), 60, 86400 );
-					return fetchAllskyChart( limitS );
+					return fetchAllskyChart( cam.client(), limitS );
 				}
 
 				case "image": {
@@ -1503,7 +1539,7 @@ public abstract class KStarsCluster extends KStarsState {
 						return null;
 					}
 
-					byte[] jpeg = allskyClient.fetchImage( path );
+					byte[] jpeg = cam.client().fetchImage( path );
 					if( jpeg == null ) {
 						resp.setStatus( HttpServletResponse.SC_NOT_FOUND );
 						return null;
@@ -2291,24 +2327,44 @@ public abstract class KStarsCluster extends KStarsState {
 
 	private static final Pattern ALLSKY_IMAGE_PATH = Pattern.compile( "images/[A-Za-z0-9_.\\-/]+\\.jpe?g" );
 
+	/** Generous staleness cutoff for js/latest — during the day capture can pause for hours, and
+	 *  the endpoint returns latest_image.url == null once the most recent capture is older than
+	 *  this, so this needs to comfortably span a capture gap, not just a single poll interval. */
+	private static final int ALLSKY_LATEST_MAX_AGE_S = 86400;
+
+	/** Window used to enrich the image with a star count — this is a nice-to-have overlay, not
+	 *  the source of the image itself (see below), so unlike the old escalating search this is
+	 *  just one request; if it comes up empty (e.g. capture gap, or an install with timelapse
+	 *  indexing disabled — see fetchLoop's javadoc) the image is still shown, just without it. */
+	private static final int ALLSKY_STARS_WINDOW_S = 3600;
+
 	/**
-	 * indi-allsky's plain "latest" endpoint doesn't include star count/SQM — only its "loop"
-	 * endpoint does, per-image — so this reads loop's most recent entry instead, giving the same
-	 * image plus the star/SQM data in one call.
+	 * The image itself always comes from js/latest — indi-allsky's own "Latest" page uses the same
+	 * endpoint, and unlike js/loop (used only below to enrich with star count) it reliably returns
+	 * the most recent capture even on installs where js/loop's image_list is permanently empty
+	 * (confirmed against a real camera: js/loop returned "No Timelapse Data" for every camera_id
+	 * and window up to 24h, while js/latest returned the actual latest frame). SQM turned out not
+	 * to be a useful signal here, so it's dropped rather than passed through.
 	 */
 	@SuppressWarnings("unchecked")
-	private Map<String,Object> fetchAllskyLatest() throws Exception {
-		Map<String,Object> loop = allskyClient.fetchLoop( 900 );
-
+	private Map<String,Object> fetchAllskyLatest( AllskyClient client ) throws Exception {
 		Map<String,Object> res = new LinkedHashMap<>();
+
+		Map<String,Object> latest = client.fetchLatest( ALLSKY_LATEST_MAX_AGE_S );
+		Object url = mapGet( latest, "latest_image", "url" );
+		if( url != null ) {
+			res.put( "url", url );
+			res.put( "moonmode", mapGet( latest, "latest_image", "moonmode" ) );
+		}
+
+		Map<String,Object> loop = client.fetchLoop( ALLSKY_STARS_WINDOW_S );
 		List<Map<String,Object>> images = (List<Map<String,Object>>) loop.get( "image_list" );
 		if( images != null && !images.isEmpty() ) {
-			Map<String,Object> latest = images.get( 0 );
-			res.put( "url", latest.get( "url" ) );
-			res.put( "stars", latest.get( "stars" ) );
-			res.put( "jsqm", latest.get( "jsqm" ) );
-			res.put( "moonmode", latest.get( "moonmode" ) );
-			res.put( "ts", secondsToMillis( latest.get( "timestamp" ) ) );
+			Map<String,Object> loopLatest = images.get( 0 );
+			res.putIfAbsent( "url", loopLatest.get( "url" ) );
+			res.putIfAbsent( "moonmode", loopLatest.get( "moonmode" ) );
+			res.put( "stars", loopLatest.get( "stars" ) );
+			res.put( "ts", secondsToMillis( loopLatest.get( "timestamp" ) ) );
 		}
 
 		Object starsAvg = mapGet( loop, "stars_data", "avg" );
@@ -2319,11 +2375,11 @@ public abstract class KStarsCluster extends KStarsState {
 		return res;
 	}
 
-	/** Star/SQM history for the chart — oldest first, matching every other chart in this app
+	/** Star-count history for the chart — oldest first, matching every other chart in this app
 	 *  (indi-allsky's own loop response is newest first). */
 	@SuppressWarnings("unchecked")
-	private List<Map<String,Object>> fetchAllskyChart( int limitS ) throws Exception {
-		Map<String,Object> loop = allskyClient.fetchLoop( limitS );
+	private List<Map<String,Object>> fetchAllskyChart( AllskyClient client, int limitS ) throws Exception {
+		Map<String,Object> loop = client.fetchLoop( limitS );
 		List<Map<String,Object>> images = (List<Map<String,Object>>) loop.get( "image_list" );
 
 		List<Map<String,Object>> points = new ArrayList<>();
@@ -2333,7 +2389,6 @@ public abstract class KStarsCluster extends KStarsState {
 				Map<String,Object> point = new LinkedHashMap<>();
 				point.put( "ts", secondsToMillis( img.get( "timestamp" ) ) );
 				point.put( "stars", img.get( "stars" ) );
-				point.put( "jsqm", img.get( "jsqm" ) );
 				points.add( point );
 			}
 		}
@@ -2395,6 +2450,26 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 		}
 		return null;
+	}
+
+	/** Keyed by path+mtime+strong. Reading the whole FITS file to sample median/MAD is the
+	 *  expensive part — every thumbnail in the image strip auto-fetches its own auto-stretch, so
+	 *  the same file+strong combo gets requested repeatedly (re-renders, multiple tabs, polling).
+	 *  The result is a handful of doubles, so a plain in-memory map is enough — no need for the
+	 *  disk cache the thumbnails themselves use. */
+	private final Map<String,double[]> autoStretchCache = new ConcurrentHashMap<>();
+
+	private double[] computeAutoStretchCached( File fitsFile, boolean strong ) throws Exception {
+		String cacheKey = fitsFile.getAbsolutePath() + "_" + fitsFile.lastModified() + "_" + strong;
+
+		double[] cached = autoStretchCache.get( cacheKey );
+		if( cached != null ) {
+			return cached;
+		}
+
+		double[] shmh = FitsThumbnail.computeAutoStretch( fitsFile, strong );
+		autoStretchCache.put( cacheKey, shmh );
+		return shmh;
 	}
 
 	private static final File THUMBNAIL_CACHE_DIR = new File( "./thumb-cache" );

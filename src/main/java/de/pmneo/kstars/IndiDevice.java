@@ -124,8 +124,10 @@ public class IndiDevice extends WithLogging {
 	public void onPropertyChanged( String propertyName, String json ) {
 		IndiProperty p = IndiProperty.parse( json );
 		if( p != null ) {
-			logMessage( "onPropertyChanged(" + json + ")");
-			properties.put( propertyName, p );
+			var oldProp = properties.put( propertyName, p );
+			if( oldProp != null && (System.currentTimeMillis() - oldProp.receivedAt) > TimeUnit.MINUTES.toMillis( 1 ) ) {
+				logMessage( "onPropertyChanged(" + json + ")");
+			}
 		}
 		else {
 			logError( "Failed to parse property: " + json, null );
