@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.Request;
@@ -983,26 +985,12 @@ public abstract class KStarsCluster extends KStarsState {
 		logMessage( "Shutting down Ekos / KStars (" + reason + ")" );
 
 		try {
-			for( IndiFilterWheel filterWheel : filterDevices.values() ) {
-				logMessage( "Setting Filter slot to L of " + filterWheel.deviceName );
-				filterWheel.setFilterSlot( 1 );
-			}
-
-			WaitUntil.waitUntil( "changeFilter", 20,
-					() -> filterDevices.values().stream()
-							.noneMatch(fw -> fw.getFilterSlotStatus() != IpsState.IPS_OK ) );
-
-			for( String train : this.focusState.keySet() ) {
-				logMessage( "Caputure one focus image on train " + train);
-				this.focus.methods.capture( train, 0 );
-			}
-
-			sleep( 1000L );
-
-			WaitUntil.waitUntil( "captureFinished", 20,
-					() -> this.focusState.values().stream().noneMatch( s -> s != FocusState.FOCUS_IDLE ) );
-
-			logMessage( "Caputure one focus image done" );
+			final Map<String,String> trains =
+					Stream.of( PRIMARY_TRAIN, SECONDARY_TRAIN )
+							.filter(train -> capture.methods.findCameraPosition( train, false ) >= 0 )
+							.collect( Collectors.toMap( k->k, v -> "/home/philip/ASI2600/OnEkosStop.esq") );
+			captureAndWait( trains );
+			logMessage( "Caputure one focus offeset image done" );
 		}
 		catch( Throwable t ) {
 			logError( "Failed to go back to L before shutdown", t );
@@ -1597,75 +1585,49 @@ public abstract class KStarsCluster extends KStarsState {
 
 				List<Integer> trainIds = trains.keySet().stream().map( train -> capture.methods.findCameraPosition( train, true ) ).toList();
 
-				for( var train : trains.keySet() ) {
-					capture.methods.abort(train);
-				}
 
-				var finished = new HashMap<String, Boolean>();
-
-				var unsub = this.capture.addNewStatusHandler(Capture.newStatus.class, status -> {
-					//System.out.println(status.train + ": " + status.getStatus());
-					if (status.getStatus() == CaptureStatus.CAPTURE_COMPLETE) {
-						finished.put(status.train, true);
-					} else {
-						finished.put(status.train, false);
-					}
-				});
 
 				for( var light : this.lightBoxDevices.values() ) {
 					light.lightOn();
 				}
 
-				try {
-					for (var pos : angles) {
-						logMessage("Moving rotator to postion " + pos);
-						WaitUntil.waitUntil(
-								"Rotators Idle",
-								120,
-								() -> rotatorDevices.values().stream().allMatch(r -> List.of(IpsState.IPS_IDLE, IpsState.IPS_OK).contains(r.getRotatorPositionStatus()) )
-						);
 
-						for (var r : rotatorDevices.values()) {
-							r.setRotatorPosition(pos);
-						}
+				for (var pos : angles) {
+					logMessage("Moving rotator to postion " + pos);
+					WaitUntil.waitUntil(
+							"Rotators Idle",
+							120,
+							() -> rotatorDevices.values().stream().allMatch(r -> List.of(IpsState.IPS_IDLE, IpsState.IPS_OK).contains(r.getRotatorPositionStatus()))
+					);
 
-						WaitUntil.waitUntil(
-								"Rotators Idle",
-								120,
-								() -> rotatorDevices.values().stream().allMatch(r -> r.getRotatorPositionStatus() == IpsState.IPS_OK)
-						);
-
-						logMessage("Moved rotator to postion " + pos);
-
-						for( var train : trains.entrySet() ) {
-							capture.methods.loadSequenceQueue(train.getValue(), train.getKey(), true, "");
-						}
-
-						finished.clear();
-
-						for( var train : trains.keySet() ) {
-							capture.methods.start(train);
-						}
-
-						WaitUntil.waitUntil(
-								"Capture Finished",
-								TimeUnit.MINUTES.toSeconds(30),
-								() -> (finished.size() == trains.size() && finished.values().stream().allMatch(b -> b.booleanValue()))
-						);
-
-						logMessage("all captures finished");
+					for (var r : rotatorDevices.values()) {
+						r.setRotatorPosition(pos);
 					}
 
-					for( var light : this.lightBoxDevices.values() ) {
-						light.lightOff();
+					WaitUntil.waitUntil(
+							"Rotators Idle",
+							120,
+							() -> rotatorDevices.values().stream().allMatch(r -> r.getRotatorPositionStatus() == IpsState.IPS_OK)
+					);
+
+					logMessage("Moved rotator to postion " + pos);
+
+
+					for (var train : trains.keySet()) {
+						capture.methods.abort(train);
 					}
 
-					mount.methods.park();
-					WaitUntil.waitUntil( "mount tracking", TimeUnit.MINUTES.toSeconds( 2 ),
-							() -> mountStatus.get() == MountStatus.MOUNT_PARKED );
-				} finally {
-					unsub.run();
+					captureAndWait(trains);
 				}
+
+				for( var light : this.lightBoxDevices.values() ) {
+					light.lightOff();
+				}
+
+				mount.methods.park();
+				WaitUntil.waitUntil( "mount tracking", TimeUnit.MINUTES.toSeconds( 2 ),
+						() -> mountStatus.get() == MountStatus.MOUNT_PARKED );
+
 
 				return trainIds.toString();
 			}
@@ -1673,6 +1635,38 @@ public abstract class KStarsCluster extends KStarsState {
 				automationSuspended.set( false );
 			}
 		} );
+	}
+
+	private void captureAndWait(Map<String, String> trains) throws DBusException {
+		var finished = new HashMap<String, Boolean>();
+
+		var unsub = this.capture.addNewStatusHandler(Capture.newStatus.class, status -> {
+			//System.out.println(status.train + ": " + status.getStatus());
+			if (status.getStatus() == CaptureStatus.CAPTURE_COMPLETE) {
+				finished.put(status.train, true);
+			} else {
+				finished.put(status.train, false);
+			}
+		});
+		try {
+			for (var train : trains.entrySet()) {
+				capture.methods.loadSequenceQueue(train.getValue(), train.getKey(), true, "");
+			}
+
+			for (var train : trains.keySet()) {
+				capture.methods.start(train);
+			}
+
+			WaitUntil.waitUntil(
+					"Capture Finished",
+					TimeUnit.MINUTES.toSeconds(30),
+					() -> (finished.size() == trains.size() && finished.values().stream().allMatch(b -> b.booleanValue()))
+			);
+
+			logMessage("all captures finished");
+		} finally {
+			unsub.run();
+		}
 	}
 
 	public Map<String,Object> statusAction( String[] parts, HttpServletRequest req, HttpServletResponse resp) throws IOException {
