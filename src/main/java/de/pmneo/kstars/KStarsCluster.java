@@ -769,7 +769,11 @@ public abstract class KStarsCluster extends KStarsState {
 
 					new Thread( () -> {
 						try {
-							p.getInputStream().readAllBytes();
+							int bytesRead = 0;
+							while( p.getInputStream().read() >= 0 ) {
+								bytesRead++;
+							}
+							logMessage( "Kstars quited" );
 						}
 						catch( Throwable t ) {
 							logError( "Failed to start kstars", t );
@@ -777,7 +781,11 @@ public abstract class KStarsCluster extends KStarsState {
 					}).start();
 					new Thread( () -> {
 						try {
-							p.getErrorStream().readAllBytes();
+							int bytesRead = 0;
+							while( p.getErrorStream().read() >= 0 ) {
+								bytesRead++;
+							}
+							logMessage( "Kstars quited" );
 						}
 						catch( Throwable t ) {
 							logError( "Failed to start kstars", t );
@@ -2191,29 +2199,47 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	public boolean stopEkos() {
-		try {
-			this.unsubscribe();
-		}
-		catch( Throwable t ) {
-			//SILENT_CATCH
-		}
+		// Ekos's D-Bus objects (Capture/Mount/Align) disappear the moment stop() is called —
+		// the periodic broadcaster's refreshSequenceQueueStatus/refreshMountCoords/refreshFov
+		// (guarded only by this flag) would otherwise keep hammering those now-gone object paths
+		// and logging an UnknownObject error per refresh per second until torn down below.
+		ekosReady.set( false );
 
-		if( getKStarsRuntime() > 0 ) {
-			logMessage( "Stopping Ekos" );
-			try {
-				this.ekos.methods.stop();
-				sleep( 5000 );
-				return true;
+		try {
+			if( getKStarsRuntime() > 0 ) {
+				logMessage( "Stopping Ekos" );
+				try {
+					this.ekos.methods.stop();
+
+					// Wait for the real ekosStatusChanged signal to report Idle instead of
+					// guessing a fixed delay. This relies on the handler registered in
+					// subscribe() still being live — unsubscribe() (below, in finally) also
+					// tears down the heartbeat handler that the main monitor thread's watchdog
+					// in waitUntilEkosHasStopped() depends on, and unsubscribing before this
+					// wait used to blind that watchdog into thinking KStars had frozen instead
+					// of just recognizing we'd asked Ekos to stop ourselves.
+					boolean stopped = WaitUntil.waitUntil( "Ekos did not report Idle after stop()", 30,
+							() -> ekosStatus.get() == Ekos.CommunicationStatus.Idle );
+					if( !stopped ) {
+						logMessage( "Ekos still hasn't reported Idle 30s after stop(), continuing anyway" );
+					}
+				}
+				catch( Throwable t ) {
+					logError( "Failed to stop ekos", t);
+					return false;
+				}
 			}
-			catch( Throwable t ) {
-				logError( "Failed to stop ekos", t);
-				return false;
-			}
-		}
-		else {
+
 			return true;
 		}
-		
+		finally {
+			try {
+				this.unsubscribe();
+			}
+			catch( Throwable t ) {
+				//SILENT_CATCH
+			}
+		}
 	}
 	public void stopKStars() {
 		stopEkos();

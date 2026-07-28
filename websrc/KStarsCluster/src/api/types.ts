@@ -172,11 +172,17 @@ const KNOWN_STATUS_KEYS = new Set([
   'guideDeltaHistory', 'guideSigma',
 ]);
 
-/** Trains aren't a fixed set on the backend — derive them from whichever per-train maps are present. */
+/** Trains aren't a fixed set on the backend — derive them from whichever per-train maps are
+ * present. Includes images/hfrHistory/sequenceQueue, not just the live captureStatus/focusState
+ * signals, so a train's captured images still show right after an Ekos (re)start, before it has
+ * reported its first live capture/focus status this session. */
 export function getTrains(status: StatusSnapshot): string[] {
   const trains = new Set<string>();
   Object.keys(status.captureStatus ?? {}).forEach((t) => trains.add(t));
   Object.keys(status.focusState ?? {}).forEach((t) => trains.add(t));
+  Object.keys(status.images ?? {}).forEach((t) => trains.add(t));
+  Object.keys(status.hfrHistory ?? {}).forEach((t) => trains.add(t));
+  Object.keys(status.sequenceQueue ?? {}).forEach((t) => trains.add(t));
   return Array.from(trains).sort();
 }
 

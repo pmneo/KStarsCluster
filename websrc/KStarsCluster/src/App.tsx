@@ -15,7 +15,6 @@ import { AllskySection } from './components/AllskySection';
 export function App() {
   const { status, connected } = useStatusSocket();
 
-  const ready = status?.ekosReady === true;
   const trains = status ? getTrains(status) : [];
   const devices = status ? getDevices(status) : [];
 
@@ -39,7 +38,7 @@ export function App() {
           />
         )}
         <AllskySection />
-        {ready && status && (
+        {status && (
           <>
             <CoolingCard />
             <ObservatoryCard roofStatus={status.roofStatus} />
