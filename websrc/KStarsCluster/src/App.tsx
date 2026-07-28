@@ -3,9 +3,8 @@ import { getTrains, getDevices, getLastImageFilename } from './api/types';
 import { ConnectionCard } from './components/ConnectionCard';
 import { TrainCard } from './components/TrainCard';
 import { SchedulerCard } from './components/SchedulerCard';
-import { CoolingCard } from './components/CoolingCard';
+import { CoolingCalibrationCard } from './components/CoolingCalibrationCard';
 import { ObservatoryCard } from './components/ObservatoryCard';
-import { CalibrationCard } from './components/CalibrationCard';
 import { LogPanel } from './components/LogPanel';
 import { DeviceList } from './components/DeviceList';
 import { SkyMapCard } from './components/SkyMapCard';
@@ -40,16 +39,12 @@ export function App() {
         <AllskySection />
         {status && (
           <>
-            <CoolingCard />
             <ObservatoryCard roofStatus={status.roofStatus} />
-            <CalibrationCard />
+            {/* Scheduler and SkyMap are both card--wide (span 2) — placed back to back here, as
+             * the first pair of wide cards after the normal-width ones above, so the grid's
+             * left-to-right auto-flow lands them in the same row instead of pairing each with
+             * whatever wide card happens to be next in the list. */}
             <SchedulerCard schedulerState={status.schedulerState} activeJob={status.activeJob} jobs={status.jobs} />
-            <GuideCard
-              guideStatus={status.guideStatus}
-              ditheringActive={status.ditheringActive}
-              guideSigma={status.guideSigma}
-              guideDeltaHistory={status.guideDeltaHistory ?? []}
-            />
             <SkyMapCard
               mountCoords={status.mountCoords}
               activeJob={status.activeJob}
@@ -70,6 +65,13 @@ export function App() {
                 sequenceQueue={status.sequenceQueue?.[train]}
               />
             ))}
+            <GuideCard
+              guideStatus={status.guideStatus}
+              ditheringActive={status.ditheringActive}
+              guideSigma={status.guideSigma}
+              guideDeltaHistory={status.guideDeltaHistory ?? []}
+            />
+            <CoolingCalibrationCard />
             <DeviceList devices={devices} />
           </>
         )}

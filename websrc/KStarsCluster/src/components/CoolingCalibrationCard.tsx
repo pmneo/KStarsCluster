@@ -1,12 +1,16 @@
 import { useState } from 'react';
 import { actions } from '../api/actions';
 
-export function CalibrationCard() {
+export function CoolingCalibrationCard() {
   const [angles, setAngles] = useState('90,180,270');
 
   return (
     <div className="card">
-      <h3>Calibration</h3>
+      <h3>Cooling &amp; Calibration</h3>
+      <div className="actions">
+        <button onClick={() => actions.cooling.preCool()}>Pre-Cool</button>
+        <button onClick={() => actions.cooling.warmCameras()}>Warm Cameras</button>
+      </div>
       <div className="autoflat">
         <label>
           AutoFlat angles

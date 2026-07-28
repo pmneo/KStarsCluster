@@ -202,6 +202,20 @@ button:disabled {
   min-width: 0;
 }
 
+/* dl + the time chart share a column beside the crosshair, instead of the chart spanning the
+ * full card width below both — keeps the crosshair full-height next to them instead of pushed
+ * below everything else. */
+.guide-top-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.guide-left-col {
+  flex: 1;
+  min-width: 0;
+}
+
 .hfr-chart-label {
   color: var(--muted);
   font-size: 0.75rem;
