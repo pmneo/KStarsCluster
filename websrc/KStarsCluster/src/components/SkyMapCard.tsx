@@ -17,11 +17,13 @@ interface SurveyOption {
 }
 
 /** Custom entries verified against each survey's own HiPS `properties` file (frame/order/tile format).
- * "nsns-sho"/"nsns-hso" aren't real simg.de surveys — simg.de only publishes single-channel
- * Hα/[OIII]/[SII] HiPS and its own fixed-mapping combos (ohs8/hbr8/rgb8), no proper Hubble-style
- * palette. Our own backend (HipsProxyServlet, /hips/{sho,hso}/*) fetches all three single-channel
- * tiles for whatever path Aladin requests and recombines them server-side, where CORS doesn't
- * apply — a client-side remap isn't possible since Aladin fetches tiles directly.
+ * None of the NSNS palette entries are real simg.de surveys — simg.de only publishes single-channel
+ * Hα/[OIII]/[SII] HiPS (starless) and its own fixed-mapping combos (ohs8/hbr8/rgb8, not starless).
+ * Our own backend (HipsProxyServlet, /hips/*) builds the palettes two different ways depending on
+ * which of those two source kinds it starts from — see the servlet's javadoc:
+ *  - "sho"/"hso" re-permute ohs8's own channels, so they keep ohs8's stars.
+ *  - "sho-sl"/"hso-sl"/"ohs-sl" recombine the starless single-channel surveys from scratch, so
+ *    they're starless too (the "-sl" suffix).
  * Every other NSNS entry also goes through our backend (/hips/{survey}/*, straight passthrough)
  * rather than simg.de directly — same HipsProxyServlet, just caching each tile instead of
  * recombining it, so repeat pans/zooms don't keep re-hitting simg.de's server.
@@ -29,6 +31,9 @@ interface SurveyOption {
 const SURVEYS: SurveyOption[] = [
   { id: 'nsns-sho', label: 'NSNS SHO (Hubble palette)', custom: { url: '/hips/sho', frame: 'equatorial', order: 6 } },
   { id: 'nsns-hso', label: 'NSNS HSO (Hα/[SII]/[OIII])', custom: { url: '/hips/hso', frame: 'equatorial', order: 6 } },
+  { id: 'nsns-sho-sl', label: 'NSNS SHO (starless)', custom: { url: '/hips/sho-sl', frame: 'equatorial', order: 6 } },
+  { id: 'nsns-hso-sl', label: 'NSNS HSO (starless)', custom: { url: '/hips/hso-sl', frame: 'equatorial', order: 6 } },
+  { id: 'nsns-ohs-sl', label: 'NSNS OHS (starless)', custom: { url: '/hips/ohs-sl', frame: 'equatorial', order: 6 } },
   { id: 'nsns-ohs8', label: 'NSNS [OIII]+Hα+[SII]', custom: { url: '/hips/ohs8', frame: 'equatorial', order: 6 } },
   { id: 'dss2-color', label: 'DSS2 (color)', builtin: 'P/DSS2/color' },
   { id: 'nsns-rgb8', label: 'NSNS RGB continuum', custom: { url: '/hips/rgb8', frame: 'equatorial', order: 5 } },

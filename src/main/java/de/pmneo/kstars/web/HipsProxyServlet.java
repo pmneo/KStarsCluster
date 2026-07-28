@@ -32,13 +32,30 @@ import jakarta.servlet.http.HttpServletResponse;
  * three single-channel surveys server-side (where CORS doesn't apply at all) and recombines them
  * into one RGB PNG. Same URL/tile addressing convention as the source HiPS trees, so Aladin
  * doesn't need to know it's not talking to a real HiPS service.
+ *
+ * The single-channel surveys (halpha8/oiii8/sii8) are starless; simg.de's own ohs8 combo is not.
+ * That makes two genuinely different products worth keeping, not one obsoleting the other:
+ * "-sl" (starless) palettes recombine the single-channel surveys directly (PALETTES below), while
+ * plain "sho"/"hso" instead re-permute ohs8's own R/G/B (OHS_REMAP) to get the same palettes with
+ * stars intact.
  */
 public class HipsProxyServlet extends HttpServlet {
 
-    /** palette id -> {R survey, G survey, B survey} — all three are the DR0.2 8-bit single-channel HiPS. */
+    /** palette id -> {R survey, G survey, B survey} — all three are the DR0.2 8-bit single-channel
+     *  (starless) HiPS, so every palette built this way is starless too. */
     private static final Map<String, String[]> PALETTES = Map.of(
-        "sho", new String[]{ "sii8", "halpha8", "oiii8" },  // classic Hubble/SHO palette: R=SII, G=Halpha, B=OIII
-        "hso", new String[]{ "halpha8", "sii8", "oiii8" }   // R=Halpha, G=SII, B=OIII
+        "sho-sl", new String[]{ "sii8", "halpha8", "oiii8" },  // classic Hubble/SHO palette: R=SII, G=Halpha, B=OIII
+        "hso-sl", new String[]{ "halpha8", "sii8", "oiii8" },  // R=Halpha, G=SII, B=OIII
+        "ohs-sl", new String[]{ "oiii8", "halpha8", "sii8" }   // R=OIII, G=Halpha, B=SII — starless counterpart of ohs8
+    );
+
+    /** palette id -> permutation of ohs8's own {R=OIII, G=Halpha, B=SII} channels, e.g. sho's
+     *  {2,1,0} reads as "new R = old channel 2 (SII/B), new G = old channel 1 (Halpha/G),
+     *  new B = old channel 0 (OIII/R)". Reusing ohs8's pixels instead of the single-channel
+     *  surveys is what keeps the stars: ohs8 is simg.de's own real (starfull) combo. */
+    private static final Map<String, int[]> OHS_REMAP = Map.of(
+        "sho", new int[]{ 2, 1, 0 },
+        "hso", new int[]{ 1, 2, 0 }
     );
 
     /** simg.de survey folders that we proxy+cache as a straight passthrough (no channel
@@ -73,8 +90,9 @@ public class HipsProxyServlet extends HttpServlet {
         String tilePath = parts[1];
 
         String[] channels = PALETTES.get( palette );
-        boolean raw = channels == null && RAW_SURVEYS.contains( palette );
-        if( channels == null && !raw ) {
+        int[] ohsRemap = OHS_REMAP.get( palette );
+        boolean raw = channels == null && ohsRemap == null && RAW_SURVEYS.contains( palette );
+        if( channels == null && ohsRemap == null && !raw ) {
             resp.sendError( HttpServletResponse.SC_NOT_FOUND );
             return;
         }
@@ -86,8 +104,11 @@ public class HipsProxyServlet extends HttpServlet {
             if( raw ) {
                 serveRawProperties( req, resp, palette );
             }
+            else if( channels != null ) {
+                servePropertiesFile( req, resp, palette, channels, false );
+            }
             else {
-                servePropertiesFile( req, resp, palette );
+                servePropertiesFile( req, resp, palette, remappedChannelOrder( ohsRemap ), true );
             }
             return;
         }
@@ -105,7 +126,15 @@ public class HipsProxyServlet extends HttpServlet {
 
         byte[] tile;
         try {
-            tile = raw ? fetchBytes( BASE_URL + palette + "/" + tilePath ).join() : fetchAndCombine( channels, tilePath );
+            if( raw ) {
+                tile = fetchBytes( BASE_URL + palette + "/" + tilePath ).join();
+            }
+            else if( channels != null ) {
+                tile = fetchAndCombine( channels, tilePath );
+            }
+            else {
+                tile = fetchAndRemap( ohsRemap, tilePath );
+            }
         }
         catch( Exception e ) {
             resp.sendError( HttpServletResponse.SC_BAD_GATEWAY );
@@ -131,19 +160,32 @@ public class HipsProxyServlet extends HttpServlet {
         return survey;
     }
 
+    /** ohs8's own fixed R/G/B order — OHS_REMAP's indices are into this. */
+    private static final String[] OHS8_CHANNEL_SURVEYS = { "oiii8", "halpha8", "sii8" };
+
+    private static String[] remappedChannelOrder( int[] remap ) {
+        return new String[]{ OHS8_CHANNEL_SURVEYS[remap[0]], OHS8_CHANNEL_SURVEYS[remap[1]], OHS8_CHANNEL_SURVEYS[remap[2]] };
+    }
+
     /** Minimal HiPS properties file — same key fields real HiPS trees publish (frame, order,
-     *  tile format/width), just enough for Aladin to accept the survey and start requesting tiles. */
-    private void servePropertiesFile( HttpServletRequest req, HttpServletResponse resp, String palette ) throws IOException {
+     *  tile format/width), just enough for Aladin to accept the survey and start requesting tiles.
+     *  starfull distinguishes the two ways a palette here gets built (see class javadoc): straight
+     *  recombination of the starless single-channel surveys, or a channel re-permutation of
+     *  simg.de's own starfull ohs8 combo — only the description differs, everything else is the
+     *  same synthetic-HiPS boilerplate either way. */
+    private void servePropertiesFile( HttpServletRequest req, HttpServletResponse resp, String palette, String[] channels, boolean starfull ) throws IOException {
         String baseUrl = req.getScheme() + "://" + req.getServerName() + ":" + req.getServerPort()
                 + req.getContextPath() + req.getServletPath() + "/" + palette;
 
-        String[] channels = PALETTES.get( palette );
         String paletteUpper = palette.toUpperCase();
         String channelDesc = "R=" + channelLabel( channels[0] ) + "/G=" + channelLabel( channels[1] ) + "/B=" + channelLabel( channels[2] );
+        String source = starfull
+                ? "re-permuting simg.de's own starfull OIII/Halpha/SII combo (ohs8)"
+                : "combining simg.de's starless single-channel HiPS surveys";
 
         String properties = "obs_collection       = Northern Sky Narrowband Survey (" + paletteUpper + " composite)\n"
-                + "obs_title            = NSNS DR0.2: " + paletteUpper + " composite (proxied)\n"
-                + "obs_description      = Server-side " + channelDesc + " composite of simg.de's single-channel HiPS surveys, combined on the fly by KStarsCluster since simg.de doesn't publish one directly.\n"
+                + "obs_title            = NSNS DR0.2: " + paletteUpper + " composite (proxied, " + (starfull ? "starfull" : "starless") + ")\n"
+                + "obs_description      = Server-side " + channelDesc + " composite, built by " + source + " on the fly, since simg.de doesn't publish this combination directly.\n"
                 + "hips_frame           = equatorial\n"
                 + "hips_order           = 6\n"
                 + "hips_order_min       = 0\n"
@@ -232,6 +274,32 @@ public class HipsProxyServlet extends HttpServlet {
                 int gv = g.getRaster().getSample( x, y, 0 );
                 int bv = b.getRaster().getSample( x, y, 0 );
                 out.setRGB( x, y, (rv << 16) | (gv << 8) | bv );
+            }
+        }
+
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        ImageIO.write( out, "png", bytes );
+        return bytes.toByteArray();
+    }
+
+    /** Fetches one ohs8 tile (already a color PNG, unlike the single-channel surveys above) and
+     *  re-permutes its own R/G/B into a different order — see OHS_REMAP. Keeps ohs8's stars,
+     *  unlike fetchAndCombine's from-scratch recombination of the starless single-channel surveys. */
+    private byte[] fetchAndRemap( int[] remap, String tilePath ) throws Exception {
+        byte[] sourceBytes = fetchBytes( BASE_URL + "ohs8/" + tilePath ).join();
+        if( sourceBytes == null ) {
+            return null;
+        }
+
+        BufferedImage src = ImageIO.read( new ByteArrayInputStream( sourceBytes ) );
+        int w = src.getWidth();
+        int h = src.getHeight();
+        BufferedImage out = new BufferedImage( w, h, BufferedImage.TYPE_INT_RGB );
+        for( int y = 0; y < h; y++ ) {
+            for( int x = 0; x < w; x++ ) {
+                int rgb = src.getRGB( x, y );
+                int[] channelValues = { (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF };
+                out.setRGB( x, y, (channelValues[remap[0]] << 16) | (channelValues[remap[1]] << 8) | channelValues[remap[2]] );
             }
         }
 
