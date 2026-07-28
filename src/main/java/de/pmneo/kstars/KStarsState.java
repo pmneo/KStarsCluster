@@ -96,6 +96,7 @@ public class KStarsState extends WithLogging {
     public static class CapturedImage {
         public final long ts;
         public final String filename;
+        public final String target;
         public final String filter;
         public final double exposure;
         public final double hfr;
@@ -110,6 +111,7 @@ public class KStarsState extends WithLogging {
         public CapturedImage( long ts, Map<String,Object> m ) {
             this.ts = ts;
             this.filename = str( m, "filename" );
+            this.target = inferTarget( this.filename );
             this.filter = str( m, "filter" );
             this.exposure = num( m, "exposure" );
             this.hfr = num( m, "hfr" );
@@ -120,6 +122,25 @@ public class KStarsState extends WithLogging {
             this.width = (int) num( m, "width" );
             this.height = (int) num( m, "height" );
             this.type = (int) num( m, "type" );
+        }
+
+        /** Neither the live captureComplete signal nor the analyze log carry the target/object
+         *  name directly — KStars' own default capture layout always puts it in the path
+         *  (.../&lt;Target&gt;/&lt;Type&gt;/&lt;Filter&gt;/file), one level above the frame-type
+         *  folder, so infer it the same way EkosAnalyzeLog.inferFrameType() infers the type. */
+        private static String inferTarget( String filename ) {
+            if( filename == null ) {
+                return null;
+            }
+
+            String[] segments = filename.replace( '\\', '/' ).split( "/" );
+            for( int i = segments.length - 1; i >= 1; i-- ) {
+                String seg = segments[i].toLowerCase();
+                if( seg.equals( "light" ) || seg.equals( "dark" ) || seg.equals( "bias" ) || seg.equals( "flat" ) ) {
+                    return segments[i - 1];
+                }
+            }
+            return null;
         }
 
         private static String str( Map<String,Object> m, String key ) {

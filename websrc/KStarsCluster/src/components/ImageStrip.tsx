@@ -56,6 +56,7 @@ function Thumb({ img, stretch, isEditing, onVisible, onEditToggle }: ThumbProps)
         <div className="image-thumb-placeholder" />
       )}
       <span className="image-caption">
+        {img.target && <>{img.target} · </>}
         {getFrameTypeLabel(img.type)} {img.filter} {img.exposure}s
         {img.hfr >= 0 && <> · HFR {img.hfr.toFixed(2)}</>}
       </span>

@@ -2293,6 +2293,7 @@ public abstract class KStarsCluster extends KStarsState {
 			Map<String,Object> entry = new LinkedHashMap<>();
 			entry.put( "ts", img.ts );
 			entry.put( "filename", img.filename );
+			entry.put( "target", img.target );
 			entry.put( "filter", img.filter );
 			entry.put( "exposure", img.exposure );
 			entry.put( "hfr", img.hfr );

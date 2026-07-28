@@ -45,6 +45,9 @@ export function getJobStateLabel(state: number): string {
 export interface CapturedImage {
   ts: number;
   filename: string;
+  /** Inferred from the capture path (.../<Target>/<Type>/<Filter>/file) — absent if that
+   * convention couldn't be matched (e.g. a non-default capture directory layout). */
+  target?: string;
   filter: string;
   exposure: number;
   hfr: number;
