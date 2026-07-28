@@ -446,12 +446,19 @@ table td:first-child {
   border-radius: 4px;
 }
 
-/* Pinned to the bottom instead of taking up flow space, with a dark gradient behind it so the
- * chart stays readable over whatever brightness the photo underneath happens to be. */
+/* Pinned to the bottom instead of taking up flow space. No background box behind it (previously
+ * a dark gradient fade) — the line itself carries a dark outline (see AllskyChart) and the axis
+ * text gets a matching stroke below, so both stay legible straight over the photo instead of
+ * hiding a chunk of it behind a tinted panel. */
 .allsky-chart-wrap {
   margin-top: auto;
-  background: linear-gradient(to top, rgba(10, 12, 18, 0.92) 40%, rgba(10, 12, 18, 0));
-  padding-top: 40px;
+}
+
+.allsky-chart-wrap .recharts-text {
+  paint-order: stroke;
+  stroke: #000;
+  stroke-width: 3px;
+  stroke-linejoin: round;
 }
 
 .log-panel {

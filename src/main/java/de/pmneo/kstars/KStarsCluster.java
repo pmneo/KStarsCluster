@@ -2410,6 +2410,7 @@ public abstract class KStarsCluster extends KStarsState {
 				Map<String,Object> point = new LinkedHashMap<>();
 				point.put( "ts", secondsToMillis( img.get( "timestamp" ) ) );
 				point.put( "stars", img.get( "stars" ) );
+				point.put( "url", img.get( "url" ) );
 				points.add( point );
 			}
 		}

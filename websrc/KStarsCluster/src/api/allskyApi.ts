@@ -9,6 +9,8 @@ export interface AllskyLatest {
 export interface AllskyPoint {
   ts: number;
   stars: number;
+  /** Relative to the indi-allsky web root, same as AllskyLatest.url — pass to allskyImageUrl(). */
+  url?: string;
 }
 
 export interface AllskyCameraInfo {

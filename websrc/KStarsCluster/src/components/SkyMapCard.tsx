@@ -163,12 +163,22 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   // The FOV rectangle (sky-registered polygon) and the last-image screen overlay (plain CSS,
   // since Aladin's image layers need real WCS — our capture previews have none) share the same
   // corner math, recomputed whenever the mount moves, the FOV changes, or the view pans/zooms.
-  useEffect(() => {
-    if (!ready) return;
-    const aladin = aladinRef.current;
-    const overlay = fovOverlayRef.current;
+  // redrawRef always holds the latest closure over current props; the effect below that actually
+  // registers Aladin's positionChanged/zoomChanged listeners only depends on `ready`, so it runs
+  // exactly once per mount instead of re-adding a listener pair on every mountCoords/fov update
+  // (roughly once a second while Ekos runs). Aladin Lite v3 has no .on() counterpart to remove a
+  // listener, so re-registering on every update used to leak one more pair forever — over a
+  // multi-hour session that accumulated thousands of stale callbacks on the same long-lived Aladin
+  // instance, and the next positionChanged/zoomChanged (e.g. one last mount update as Ekos stops)
+  // fired all of them synchronously, which was enough to freeze the tab or lose the WebGL context.
+  const redrawRef = useRef<() => void>(() => {});
 
-    function redraw() {
+  useEffect(() => {
+    redrawRef.current = function redraw() {
+      const aladin = aladinRef.current;
+      const overlay = fovOverlayRef.current;
+      if (!aladin || !overlay) return;
+
       overlay.removeAll();
       if (!mountCoords || !fov) {
         if (overlayImgRef.current) overlayImgRef.current.style.display = 'none';
@@ -199,16 +209,18 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       } else if (overlayImgRef.current) {
         overlayImgRef.current.style.display = 'none';
       }
-    }
-
-    redraw();
-    aladin.on('positionChanged', redraw);
-    aladin.on('zoomChanged', redraw);
-    return () => {
-      // Aladin Lite v3 has no off(); harmless to leave stale listeners on an instance that's
-      // being torn down along with its container.
     };
-  }, [ready, mountCoords?.ra, mountCoords?.dec, fov?.widthArcmin, fov?.heightArcmin, pa, showLastImage, lastImageFilename]);
+
+    redrawRef.current();
+  }, [mountCoords?.ra, mountCoords?.dec, fov?.widthArcmin, fov?.heightArcmin, pa, showLastImage, lastImageFilename]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const aladin = aladinRef.current;
+    const onChange = () => redrawRef.current();
+    aladin.on('positionChanged', onChange);
+    aladin.on('zoomChanged', onChange);
+  }, [ready]);
 
   // Keeps the view centered on the mount as it moves, instead of a one-shot "center now" click.
   useEffect(() => {
