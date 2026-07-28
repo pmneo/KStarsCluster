@@ -2294,12 +2294,18 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 
-	/** Recent captures for one train, newest first — sourced from Capture.captureComplete, not filesystem scanning. */
+	/** Recent captures for one train, newest first — sourced from Capture.captureComplete, not
+	 *  filesystem scanning. Skips any entry whose file is gone for good (see
+	 *  {@link #resolveRenamedCapture}) — no point showing a preview that 404s. */
 	public List<Map<String,Object>> listRecentImages( String train ) {
 		Deque<CapturedImage> history = capturedImages.getOrDefault( train, new ConcurrentLinkedDeque<>() );
 
 		List<Map<String,Object>> res = new ArrayList<>();
 		for( CapturedImage img : history ) {
+			if( resolveRenamedCapture( img.filename ) == null ) {
+				continue;
+			}
+
 			Map<String,Object> entry = new LinkedHashMap<>();
 			entry.put( "ts", img.ts );
 			entry.put( "filename", img.filename );
@@ -2476,18 +2482,57 @@ public abstract class KStarsCluster extends KStarsState {
 	/**
 	 * Refuses to render anything that wasn't actually reported by a captureComplete signal —
 	 * the "file" query param on the thumb action is client-supplied, so this is the only thing
-	 * standing between it and an arbitrary local file read.
+	 * standing between it and an arbitrary local file read. The identity check is always against
+	 * the original recorded filename (img.filename), matching what listRecentImages() hands the
+	 * client; resolveRenamedCapture then finds wherever that file actually lives now.
 	 */
 	public File resolveKnownCapturedFile( String filename ) {
 		for( Deque<CapturedImage> history : capturedImages.values() ) {
 			for( CapturedImage img : history ) {
 				if( filename.equals( img.filename ) ) {
-					File f = new File( filename );
-					return f.isFile() ? f : null;
+					return resolveRenamedCapture( img.filename );
 				}
 			}
 		}
 		return null;
+	}
+
+	/** Some external process renames capture files after the fact, tagging them with the imaging
+	 *  train and rotator angle they were captured at — e.g.
+	 *  ".../NGC_1333_Light_L_180_secs__005.fits" becomes "..._005_T-ED100B2_ROT_160.0.fits"
+	 *  (confirmed against real files on disk: renamed and still-plain files coexist in the same
+	 *  folder, so this evidently runs as a periodic batch job, not immediately after capture).
+	 *  Without this, every renamed file would silently 404 forever — captureComplete/the analyze
+	 *  log only ever recorded the original name.
+	 *
+	 *  Only the not-found fallback (a directory listing) is cached, keyed by the original
+	 *  filename: the exact-path case is a cheap stat, freshly re-checked every call, so a file
+	 *  that's still plain today keeps resolving correctly right up until it actually gets
+	 *  renamed. Once that happens the answer is stable forever (files don't get un-renamed),
+	 *  which is what makes caching *that* case safe — otherwise every second's status broadcast
+	 *  would re-list the directory for every renamed-away image, forever. */
+	private final Map<String, Optional<File>> renamedCaptureCache = new ConcurrentHashMap<>();
+
+	private File resolveRenamedCapture( String originalFilename ) {
+		File original = new File( originalFilename );
+		if( original.isFile() ) {
+			return original;
+		}
+
+		return renamedCaptureCache.computeIfAbsent( originalFilename, f -> {
+			File dir = original.getParentFile();
+			if( dir == null ) {
+				return Optional.empty();
+			}
+
+			String name = original.getName();
+			int dot = name.lastIndexOf( '.' );
+			String stem = dot >= 0 ? name.substring( 0, dot ) : name;
+			String ext = dot >= 0 ? name.substring( dot ) : "";
+
+			File[] renamed = dir.listFiles( ( d, n ) -> n.startsWith( stem + "_T-" ) && n.endsWith( ext ) );
+			return renamed != null && renamed.length > 0 ? Optional.of( renamed[0] ) : Optional.empty();
+		} ).orElse( null );
 	}
 
 	/** Keyed by path+mtime+strong. Reading the whole FITS file to sample median/MAD is the
