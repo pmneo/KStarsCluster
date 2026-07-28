@@ -147,20 +147,24 @@ public class EkosAnalyzeLog {
     }
 
     private static void parseAutofocusComplete( ParsedHistory result, long ts, String[] parts ) {
-        // AutofocusComplete,<offsetSec>,<filter>,<pos1>|<hfr1>|<pos2>|<hfr2>|...
-        if( parts.length < 4 ) {
+        // AutofocusComplete,<offsetSec>,<temperature>,<pointCount>,<?>,<filter>,<pos>|<hfr>|<weight>|<flag>|...
+        // Confirmed against a real KStars 3.8.4 analyze log (Analyze log version 1.0) — the
+        // points list is index 6, not 3, and each sample is a 4-tuple, not a pair (position,
+        // HFR, weight, flag). Getting either wrong used to silently yield zero HFR samples,
+        // since parts[3] alone (just the point count, e.g. "9") has nothing to pair up.
+        if( parts.length < 7 ) {
             return;
         }
 
-        String[] points = parts[3].split( "\\|" );
-        for( int i = 0; i + 1 < points.length; i += 2 ) {
+        String[] points = parts[6].split( "\\|" );
+        for( int i = 0; i + 1 < points.length; i += 4 ) {
             try {
                 int position = (int) Double.parseDouble( points[i] );
                 double hfr = Double.parseDouble( points[i + 1] );
                 result.hfrSamples.add( new HfrSample( ts, hfr, position ) );
             }
             catch( NumberFormatException e ) {
-                //skip malformed pair
+                //skip malformed quadruple
             }
         }
     }

@@ -192,6 +192,22 @@ button:disabled {
   padding: 12px 0;
 }
 
+.hfr-chart-row {
+  display: flex;
+  gap: 12px;
+}
+
+.hfr-chart-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.hfr-chart-label {
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin-bottom: 2px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
