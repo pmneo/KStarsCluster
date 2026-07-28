@@ -222,23 +222,33 @@ public abstract class KStarsCluster extends KStarsState {
 			// this walks backward through up to 10 files merging history until met.
 			EkosAnalyzeLog.ParsedHistory history = EkosAnalyzeLog.parseRecent( analyzeDir, 50, 300, 300, 10 );
 
-			for( KStarsState.CapturedImage img : history.images ) {
-				Map<String,Object> m = new LinkedHashMap<>();
-				m.put( "filename", img.filename );
-				m.put( "filter", img.filter );
-				m.put( "exposure", img.exposure );
-				m.put( "hfr", img.hfr );
-				m.put( "type", img.type );
-				recordCapturedImage( PRIMARY_TRAIN, img.ts, m );
+			// Recent KStars versions tag CaptureComplete/AutofocusComplete rows with the train
+			// they belong to; older rows (and thus older log files) come back keyed under
+			// EkosAnalyzeLog's DEFAULT_TRAIN ("Primary") — same train every such row was
+			// attributed to before this per-train restore existed.
+			for( var entry : history.images.entrySet() ) {
+				String train = entry.getKey();
+				for( KStarsState.CapturedImage img : entry.getValue() ) {
+					Map<String,Object> m = new LinkedHashMap<>();
+					m.put( "filename", img.filename );
+					m.put( "filter", img.filter );
+					m.put( "exposure", img.exposure );
+					m.put( "hfr", img.hfr );
+					m.put( "type", img.type );
+					recordCapturedImage( train, img.ts, m );
+				}
 			}
-			for( KStarsState.HfrSample s : history.hfrSamples ) {
-				recordHfr( PRIMARY_TRAIN, s.ts, s.hfr, s.position );
+			for( var entry : history.hfrSamples.entrySet() ) {
+				String train = entry.getKey();
+				for( KStarsState.HfrSample s : entry.getValue() ) {
+					recordHfr( train, s.ts, s.hfr, s.position );
+				}
 			}
 			for( KStarsState.GuideDeltaSample s : history.guideSamples ) {
 				recordGuideDelta( s.ts, s.ra, s.de );
 			}
 
-			logMessage( "Restored " + history.images.size() + " images, " + history.hfrSamples.size()
+			logMessage( "Restored " + history.totalImages() + " images, " + history.totalHfrSamples()
 					+ " HFR samples, " + history.guideSamples.size() + " guide samples from the Ekos analyze log" );
 		}
 		catch( Throwable t ) {

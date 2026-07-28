@@ -32,10 +32,42 @@ public class EkosAnalyzeLog {
 
     private static final DateTimeFormatter START_TIME_FORMAT = DateTimeFormatter.ofPattern( "yyyy-MM-dd HH:mm:ss.SSS" );
 
+    /** Must match KStarsCluster.PRIMARY_TRAIN — kept as a separate literal instead of importing it
+     *  to avoid a de.pmneo.kstars.utils -> de.pmneo.kstars -> de.pmneo.kstars.utils dependency
+     *  cycle. Used whenever a row has no train field at all (see CaptureComplete/AutofocusComplete
+     *  below) — every KStarsCluster session before this log format change recorded everything
+     *  under "Primary" anyway, so this is exactly the behavior those old rows already had. */
+    private static final String DEFAULT_TRAIN = "Primary";
+
     public static class ParsedHistory {
-        public final List<CapturedImage> images = new ArrayList<>();
-        public final List<HfrSample> hfrSamples = new ArrayList<>();
+        public final Map<String, List<CapturedImage>> images = new LinkedHashMap<>();
+        public final Map<String, List<HfrSample>> hfrSamples = new LinkedHashMap<>();
         public final List<GuideDeltaSample> guideSamples = new ArrayList<>();
+
+        private void addImage( String train, CapturedImage img ) {
+            images.computeIfAbsent( train, t -> new ArrayList<>() ).add( img );
+        }
+
+        private void addHfrSample( String train, HfrSample sample ) {
+            hfrSamples.computeIfAbsent( train, t -> new ArrayList<>() ).add( sample );
+        }
+
+        public int totalImages() {
+            return images.values().stream().mapToInt( List::size ).sum();
+        }
+
+        public int totalHfrSamples() {
+            return hfrSamples.values().stream().mapToInt( List::size ).sum();
+        }
+
+        /** Prepends an older file's per-train lists onto this (newer-first-then-merged-backwards)
+         *  result, keeping each train's own samples chronological — same merge order parseRecent
+         *  already used for the flat lists before this became per-train. */
+        private void prependAll( ParsedHistory older ) {
+            older.images.forEach( ( train, imgs ) -> images.computeIfAbsent( train, t -> new ArrayList<>() ).addAll( 0, imgs ) );
+            older.hfrSamples.forEach( ( train, samples ) -> hfrSamples.computeIfAbsent( train, t -> new ArrayList<>() ).addAll( 0, samples ) );
+            guideSamples.addAll( 0, older.guideSamples );
+        }
     }
 
     /**
@@ -56,12 +88,9 @@ public class EkosAnalyzeLog {
 
         for( int i = 0; i < files.length && i < maxFiles; i++ ) {
             ParsedHistory fromFile = parse( files[i] );
+            result.prependAll( fromFile );
 
-            result.images.addAll( 0, fromFile.images );
-            result.hfrSamples.addAll( 0, fromFile.hfrSamples );
-            result.guideSamples.addAll( 0, fromFile.guideSamples );
-
-            if( result.images.size() >= minImages && result.hfrSamples.size() >= minHfr && result.guideSamples.size() >= minGuide ) {
+            if( result.totalImages() >= minImages && result.totalHfrSamples() >= minHfr && result.guideSamples.size() >= minGuide ) {
                 break;
             }
         }
@@ -125,13 +154,21 @@ public class EkosAnalyzeLog {
         return result;
     }
 
+    /** Old rows have exactly 9 fields (0-8, ending at eccentricity); a train name got appended
+     *  as a 10th field afterwards. Reading it off the end (rather than assuming a fixed total
+     *  width) means old rows without it still parse the same as always, train just falls back to
+     *  DEFAULT_TRAIN — same for parseAutofocusComplete's 10-vs-11 check below. */
+    private static final int CAPTURE_COMPLETE_FIELDS_BEFORE_TRAIN = 9;
+    private static final int AUTOFOCUS_COMPLETE_FIELDS_BEFORE_TRAIN = 10;
+
     private static void parseCaptureComplete( ParsedHistory result, long ts, String[] parts ) {
-        // CaptureComplete,<offsetSec>,<exposure>,<filter>,<hfr>,<filepath>,...
+        // CaptureComplete,<offsetSec>,<exposure>,<filter>,<hfr>,<filepath>,<binx>,<biny>,<eccentricity>[,<train>]
         if( parts.length < 6 || parts[5].isBlank() ) {
             return; //no file was actually saved (e.g. an aborted/preview capture)
         }
 
         String filepath = parts[5];
+        String train = parts.length > CAPTURE_COMPLETE_FIELDS_BEFORE_TRAIN ? parts[parts.length - 1] : DEFAULT_TRAIN;
 
         Map<String,Object> m = new LinkedHashMap<>();
         // CapturedImage.filename is actually the full path by convention (same as the real
@@ -143,11 +180,11 @@ public class EkosAnalyzeLog {
         m.put( "hfr", parseD( parts[4] ) );
         m.put( "type", inferFrameType( filepath ) );
 
-        result.images.add( new CapturedImage( ts, m ) );
+        result.addImage( train, new CapturedImage( ts, m ) );
     }
 
     private static void parseAutofocusComplete( ParsedHistory result, long ts, String[] parts ) {
-        // AutofocusComplete,<offsetSec>,<temperature>,<pointCount>,<?>,<filter>,<pos>|<hfr>|<weight>|<flag>|...
+        // AutofocusComplete,<offsetSec>,<temperature>,<pointCount>,<?>,<filter>,<pos>|<hfr>|<weight>|<flag>|...,...,<solutionDescription>[,<train>]
         // Confirmed against a real KStars 3.8.4 analyze log (Analyze log version 1.0) — the
         // points list is index 6, not 3, and each sample is a 4-tuple, not a pair (position,
         // HFR, weight, flag). Getting either wrong used to silently yield zero HFR samples,
@@ -156,12 +193,14 @@ public class EkosAnalyzeLog {
             return;
         }
 
+        String train = parts.length > AUTOFOCUS_COMPLETE_FIELDS_BEFORE_TRAIN ? parts[parts.length - 1] : DEFAULT_TRAIN;
+
         String[] points = parts[6].split( "\\|" );
         for( int i = 0; i + 1 < points.length; i += 4 ) {
             try {
                 int position = (int) Double.parseDouble( points[i] );
                 double hfr = Double.parseDouble( points[i + 1] );
-                result.hfrSamples.add( new HfrSample( ts, hfr, position ) );
+                result.addHfrSample( train, new HfrSample( ts, hfr, position ) );
             }
             catch( NumberFormatException e ) {
                 //skip malformed quadruple
@@ -170,7 +209,8 @@ public class EkosAnalyzeLog {
     }
 
     private static void parseGuideStats( ParsedHistory result, long ts, String[] parts ) {
-        // GuideStats,<offsetSec>,<raError>,<decError>,...
+        // GuideStats,<offsetSec>,<raError>,<decError>,... — no train field; guiding is tracked
+        // app-wide regardless of which train is currently capturing (see KStarsState.guideDeltaHistory).
         if( parts.length < 4 ) {
             return;
         }
