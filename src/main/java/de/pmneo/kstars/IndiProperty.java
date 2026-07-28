@@ -21,6 +21,10 @@ public class IndiProperty {
     public final String name;
     public IpsState state;
 
+    /** When this value was received — either from watchProperty()'s synchronous read or a
+     *  propertyValueChanged push. Lets callers notice a property that stopped updating. */
+    public final long receivedAt = System.currentTimeMillis();
+
     private final Map<String, Double> numbers = new LinkedHashMap<>();
     private final Map<String, Boolean> switches = new LinkedHashMap<>();
     private final Map<String, String> texts = new LinkedHashMap<>();

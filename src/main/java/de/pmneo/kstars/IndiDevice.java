@@ -5,6 +5,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 
@@ -93,10 +94,37 @@ public class IndiDevice extends WithLogging {
 		}
 	}
 
+	/** Properties older than this get re-watched by {@link #refreshWatches()} — a successful
+	 *  re-watch always resets receivedAt, so a property reaching this age means it has neither
+	 *  received a propertyValueChanged push nor been re-watched in that long. */
+	private static final long REWATCH_AGE_MS = TimeUnit.MINUTES.toMillis( 5 );
+
+	/**
+	 * Re-issues watchProperty for every currently cached property older than {@link #REWATCH_AGE_MS}.
+	 * KStars can silently drop a client's watch registration for a device/property (e.g. after an
+	 * INDI driver restart) without any connection-level error — ekosStatus and the heartbeat stay
+	 * fine, so nothing else notices. The cache then freezes forever since we otherwise only ever
+	 * refresh it via the pushed propertyValueChanged signal. Call this frequently (e.g. every
+	 * minute) as a cheap self-healing check; watchProperty itself only runs for properties that
+	 * actually turn out to be stale.
+	 */
+	public void refreshWatches() {
+		long now = System.currentTimeMillis();
+		for( var entry : properties.entrySet() ) {
+			long age = now - entry.getValue().receivedAt;
+			if( age >= REWATCH_AGE_MS ) {
+				logMessage( "Property " + entry.getKey() + " is " + TimeUnit.MILLISECONDS.toMinutes( age )
+						+ " minutes old, re-watching" );
+				watch( entry.getKey() );
+			}
+		}
+	}
+
 	/** Called by KStarsCluster's INDI.propertyValueChanged handler when a watched property of this device changes. */
 	public void onPropertyChanged( String propertyName, String json ) {
 		IndiProperty p = IndiProperty.parse( json );
 		if( p != null ) {
+			logMessage( "onPropertyChanged(" + json + ")");
 			properties.put( propertyName, p );
 		}
 		else {

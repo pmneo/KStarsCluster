@@ -191,6 +191,7 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 
 		schedulerService.scheduleWithFixedDelay( this::broadcastStatusIfChanged, 1, 1, TimeUnit.SECONDS );
+		schedulerService.scheduleWithFixedDelay( this::refreshIndiWatches, 1, 1, TimeUnit.MINUTES );
 
 		restoreHistoryFromAnalyzeLog();
 	}
@@ -321,6 +322,27 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 		catch( Throwable t ) {
 			logDebug( "Failed to refresh FOV: " + t );
+		}
+	}
+
+	/**
+	 * Checks every minute for silently dropped INDI property watches (see
+	 * {@link IndiDevice#refreshWatches()}), which only actually re-watches properties that
+	 * have gone stale for 5+ minutes. Cheap either way, since a clean minute is just a cache
+	 * scan with no D-Bus calls.
+	 */
+	private void refreshIndiWatches() {
+		if( !ekosReady.get() ) {
+			return;
+		}
+
+		try {
+			indiDevices.values().stream()
+					.flatMap( List::stream )
+					.forEach( IndiDevice::refreshWatches );
+		}
+		catch( Throwable t ) {
+			logError( "Failed to refresh INDI property watches", t );
 		}
 	}
 
@@ -561,7 +583,7 @@ public abstract class KStarsCluster extends KStarsState {
 		if( ekosStoppedAt == 0 ) {
 			ekosStoppedAt = System.currentTimeMillis();
 		}
-		else if( ( System.currentTimeMillis() - ekosStoppedAt ) >= TimeUnit.MINUTES.toMillis( 5 ) ) {
+		else if( ( System.currentTimeMillis() - ekosStoppedAt ) >= TimeUnit.MINUTES.toMillis( 30 ) ) {
 			logMessageOnce( "Check if usb is off, because ekos has stopped" );
 			stopUsbDevices();
 			ekosStoppedAt = Long.MAX_VALUE;
@@ -976,7 +998,6 @@ public abstract class KStarsCluster extends KStarsState {
 		if( !stopEkos() ) {
 			stopKStars();
 		}
-		stopUsbDevices();
 
 		return true;
 	}
@@ -1640,10 +1661,12 @@ public abstract class KStarsCluster extends KStarsState {
 		res.put( "manualStartRequested", manualStartRequested.get() );
 		res.put( "automationSuspended", this.automationSuspended.get() );
 
-		if( !ekosReady.get() ) {
-			return res;
-		}
-
+		// Everything below only ever reads cached state (device maps are empty and the
+		// history/last-known caches just hold whatever they were last set to while ekos
+		// wasn't ready) — no live D-Bus calls happen here, so there's no need to cut this
+		// short while ekos is down. The UI gets a consistently full status either way and
+		// can still show last night's images/HFR/guide history after ekos has stopped —
+		// it only needs to check ekosReady itself to know everything else is stale.
 		for( IndiFilterWheel filterDevice : filterDevices.values() ) {
 			Map<String,Object> device = new LinkedHashMap<>();
 			List<String> filters = filterDevice.getFilters() ;
