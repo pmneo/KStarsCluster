@@ -990,6 +990,12 @@ public abstract class KStarsCluster extends KStarsState {
 							.filter(train -> capture.methods.findCameraPosition( train, false ) >= 0 )
 							.collect( Collectors.toMap( k->k, v -> "/home/philip/ASI2600/OnEkosStop.esq") );
 			captureAndWait( trains );
+			var tmpDarks = new File( "/tmp/ekosStop/Dark" );
+			if( tmpDarks.isDirectory() ) {
+				for (var f : tmpDarks.listFiles()) {
+					f.delete();
+				}
+			}
 			logMessage( "Caputure one focus offeset image done" );
 		}
 		catch( Throwable t ) {

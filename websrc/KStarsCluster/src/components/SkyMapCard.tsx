@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SchedulerJob } from '../api/types';
-import { imageUrl, DEFAULT_STRETCH } from '../api/imageApi';
+import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
 
 // Aladin Lite v3 is loaded via <script> in index.html, not bundled — it ships no official types.
 declare global {
@@ -65,6 +65,66 @@ function fovCorners(centerRa: number, centerDec: number, widthDeg: number, heigh
   });
 }
 
+const FOLLOW_MOUNT_KEY = 'skymap.followMount';
+const SHOW_LAST_IMAGE_KEY = 'skymap.showLastImage';
+const VIEW_KEY = 'skymap.view';
+const DEFAULT_FOV_DEG = 10;
+
+function readStoredBoolean(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === 'true';
+  }
+  catch {
+    return false;
+  }
+}
+
+function writeStoredBoolean(key: string, value: boolean) {
+  try {
+    localStorage.setItem(key, String(value));
+  }
+  catch {
+    // storage unavailable (private browsing, quota, ...) — just don't persist
+  }
+}
+
+interface StoredView {
+  ra: number;
+  dec: number;
+  fovDeg: number;
+}
+
+function readStoredView(): StoredView | null {
+  try {
+    const raw = localStorage.getItem(VIEW_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.ra === 'number' && typeof parsed.dec === 'number' && typeof parsed.fovDeg === 'number') {
+      return parsed;
+    }
+    return null;
+  }
+  catch {
+    return null;
+  }
+}
+
+/** Called from the same positionChanged/zoomChanged listener that already drives the FOV-overlay
+ * redraw — so panning/zooming the map (or "Follow mount" moving it) keeps this up to date without
+ * a separate polling loop, and reloading the page resumes exactly where it was left instead of
+ * always resetting to a fixed target. */
+function saveCurrentView(aladin: any) {
+  try {
+    const [ra, dec] = aladin.getRaDec();
+    const [fovDeg] = aladin.getFov();
+    const view: StoredView = { ra, dec, fovDeg };
+    localStorage.setItem(VIEW_KEY, JSON.stringify(view));
+  }
+  catch {
+    // storage unavailable, or aladin not fully initialized yet — skip this save
+  }
+}
+
 /** Builds the Aladin image-survey object for a SURVEYS entry. Used both for the initial aladin()
  * call and for later switches, so the default survey never has to be swapped in after an initial
  * builtin one — that would otherwise briefly hit alasky/CDS for properties/MocServer/tiles before
@@ -95,17 +155,21 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const appliedSurveyIdRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
   const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
-  const [showLastImage, setShowLastImage] = useState(false);
-  const [followMount, setFollowMount] = useState(false);
+  // Persisted across reloads (see FOLLOW_MOUNT_KEY/SHOW_LAST_IMAGE_KEY) — both are "set once,
+  // forget about it" toggles, so a reload silently reverting them is more surprising than useful.
+  const [showLastImage, setShowLastImage] = useState(() => readStoredBoolean(SHOW_LAST_IMAGE_KEY));
+  const [followMount, setFollowMount] = useState(() => readStoredBoolean(FOLLOW_MOUNT_KEY));
+  const [lastImageStretch, setLastImageStretch] = useState<StretchSettings>(DEFAULT_STRETCH);
 
   useEffect(() => {
     if (!window.A || !containerRef.current) return;
     window.A.init.then(() => {
       const defaultSurvey = SURVEYS[0];
+      const savedView = readStoredView();
       const aladin = window.A.aladin(containerRef.current, {
         survey: buildImageSurvey(defaultSurvey),
-        fov: 60,
-        target: '0 +0',
+        fov: savedView?.fovDeg ?? DEFAULT_FOV_DEG,
+        target: savedView ? `${savedView.ra} ${savedView.dec}` : '0 +0',
         cooFrame: 'equatorial',
         showFullscreenControl: false,
         log: false,
@@ -195,7 +259,10 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         const cy = (px[0][1] + px[2][1]) / 2;
         const topW = Math.hypot(px[1][0] - px[0][0], px[1][1] - px[0][1]);
         const rightH = Math.hypot(px[2][0] - px[1][0], px[2][1] - px[1][1]);
-        const angle = (Math.atan2(px[1][1] - px[0][1], px[1][0] - px[0][0]) * 180) / Math.PI;
+        // +180: the FOV rectangle itself is 180°-symmetric so this never showed up there, but
+        // the actual photo is not — verified empirically that it renders upside down without
+        // this correction.
+        const angle = (Math.atan2(px[1][1] - px[0][1], px[1][0] - px[0][0]) * 180) / Math.PI + 180;
 
         const img = overlayImgRef.current;
         img.style.display = 'block';
@@ -217,7 +284,10 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   useEffect(() => {
     if (!ready) return;
     const aladin = aladinRef.current;
-    const onChange = () => redrawRef.current();
+    const onChange = () => {
+      redrawRef.current();
+      saveCurrentView(aladin);
+    };
     aladin.on('positionChanged', onChange);
     aladin.on('zoomChanged', onChange);
   }, [ready]);
@@ -227,6 +297,27 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     if (!ready || !followMount || !mountCoords || !aladinRef.current) return;
     aladinRef.current.gotoRaDec(mountCoords.ra * 15, mountCoords.dec);
   }, [ready, followMount, mountCoords?.ra, mountCoords?.dec]);
+
+  useEffect(() => {
+    writeStoredBoolean(FOLLOW_MOUNT_KEY, followMount);
+  }, [followMount]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_LAST_IMAGE_KEY, showLastImage);
+  }, [showLastImage]);
+
+  // The overlay used DEFAULT_STRETCH (a no-op linear passthrough) unconditionally, so "last
+  // image" always rendered essentially unstretched instead of matching what the image strip
+  // shows for the same file. Cached per filename like ImageStrip's own requests — a 404 (e.g. a
+  // since-deleted file) must never be retried on every status push.
+  const requestedStretchFile = useRef<string | null>(null);
+  useEffect(() => {
+    if (!lastImageFilename || requestedStretchFile.current === lastImageFilename) return;
+    requestedStretchFile.current = lastImageFilename;
+    fetchAutoStretch(lastImageFilename, false)
+      .then(setLastImageStretch)
+      .catch(() => { /* leave the previous stretch in place, no retry */ });
+  }, [lastImageFilename]);
 
   return (
     <div className="card card--wide">
@@ -262,7 +353,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         {lastImageFilename && (
           <img
             ref={overlayImgRef}
-            src={imageUrl(lastImageFilename, 600, DEFAULT_STRETCH)}
+            src={imageUrl(lastImageFilename, 600, lastImageStretch)}
             alt="Last capture"
             className="sky-map-last-image"
           />
