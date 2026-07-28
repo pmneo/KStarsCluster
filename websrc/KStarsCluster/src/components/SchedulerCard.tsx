@@ -42,7 +42,12 @@ export function SchedulerCard({ schedulerState, activeJob, jobs }: Props) {
                 <tr key={job.name} className={job.name === activeJob?.name ? 'active-job' : ''}>
                   <td>{job.name}</td>
                   <td>{getJobStateLabel(job.state).replace(/^JOB_/, '')}</td>
-                  <td>{job.completedCount} / {job.repeatsRequired || job.sequenceCount}</td>
+                  {/* sequenceCount is already the job's total planned frame count (confirmed
+                   * against live status: 960 for a job with 80 repeatsRequired) — repeatsRequired
+                   * is a separate, unrelated number (how many times the sequence repeats), not a
+                   * frame count, so pairing it with completedCount here was comparing unlike
+                   * units (e.g. showed "692 / 80" when the real target was "692 / 960"). */}
+                  <td>{job.completedCount} / {job.sequenceCount}</td>
                   <td>{job.altitude.toFixed(1)}°</td>
                   <td>{formatTime(job.startupTime)}</td>
                 </tr>
