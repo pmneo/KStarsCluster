@@ -500,6 +500,99 @@ table td:first-child {
   padding: 2px 6px;
 }
 
+.sky-map-fov-results-anchor {
+  position: relative;
+  display: flex;
+}
+
+.sky-map-fov-results-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.sky-map-fov-objects-empty {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.sky-map-fov-objects {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.sky-map-fov-objects li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sky-map-fov-object-goto {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+  text-align: left;
+  background: #10121a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.sky-map-fov-object-name {
+  font-size: 0.8rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sky-map-fov-object-type {
+  flex: 1;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.sky-map-fov-object-size {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.sky-map-fov-object-astrobin {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.sky-map-fov-object-astrobin button {
+  font-size: 0.72rem;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
 .sky-map {
   position: relative;
   width: 100%;

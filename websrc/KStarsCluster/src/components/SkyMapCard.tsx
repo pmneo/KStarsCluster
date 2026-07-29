@@ -167,6 +167,134 @@ function buildBoundaryOverlay(aladin: any, cat: any, sizeField: string, color: s
   return overlay;
 }
 
+/** Inverse of fovCorners' rotation: given a point's world RA/DEC, is it inside the
+ * centerRa/centerDec-centered, widthDeg x heightDeg rectangle rotated by paDeg? Used to turn a
+ * SIMBAD cone search (necessarily circular) into an accurate "inside this rectangle" test. */
+function isInsideFov(
+  centerRa: number, centerDec: number, objRa: number, objDec: number,
+  widthDeg: number, heightDeg: number, paDeg: number,
+): boolean {
+  const paRad = (paDeg * Math.PI) / 180;
+  const cosDec = Math.max(0.01, Math.cos((centerDec * Math.PI) / 180));
+  const rx = (objRa - centerRa) * cosDec;
+  const ry = objDec - centerDec;
+  const dx = rx * Math.cos(paRad) + ry * Math.sin(paRad);
+  const dy = -rx * Math.sin(paRad) + ry * Math.cos(paRad);
+  return Math.abs(dx) <= widthDeg / 2 && Math.abs(dy) <= heightDeg / 2;
+}
+
+/** SIMBAD's own object-type taxonomy (https://simbad.cds.unistra.fr/guide/otypes.htx) files
+ * planetary nebulae and Herbig-Haro objects under "stars" and puts star clusters in their own
+ * "sets of stars" branch — neither reads as "a star" or "a galaxy" to an imager, so this is a
+ * hand-picked allowlist of `otype` label values (not a blanket category exclusion) covering
+ * every nebula/cloud/remnant/cluster type plus their named sub-regions, and nothing else.
+ * Maps each to a short human-readable label for display, since the raw otype strings are terse
+ * SIMBAD internal labels (e.g. "SNRemnant", "PoC"). */
+const INTERESTING_OTYPES: Record<string, string> = {
+  HIIReg: 'HII region',
+  PlanetaryNeb: 'Planetary nebula',
+  GalNeb: 'Nebula',
+  DarkNeb: 'Dark nebula',
+  RefNeb: 'Reflection nebula',
+  SNRemnant: 'Supernova remnant',
+  MolCld: 'Molecular cloud',
+  Cloud: 'Cloud',
+  StarFormingReg: 'Star forming region',
+  ISM: 'Interstellar medium',
+  ComGlob: 'Cometary globule',
+  HVCld: 'High-velocity cloud',
+  Bubble: 'Bubble',
+  denseCore: 'Dense core',
+  Filament: 'Filament',
+  Globule: 'Globule',
+  HIshell: 'Shell',
+  HerbigHaroObj: 'Herbig-Haro object',
+  'Cluster*': 'Star cluster',
+  OpenCluster: 'Open cluster',
+  GlobCluster: 'Globular cluster',
+  Association: 'Association of stars',
+  PartofCloud: 'Part of cloud/nebula',
+  Region: 'Region',
+};
+
+/** SIMBAD conesearch results ("distance" is degrees from the search center) filtered to
+ * INTERESTING_OTYPES and to the true rotated rectangle (the conesearch itself is a circle sized
+ * to comfortably cover the rectangle's corners, so it over-fetches at the edges), then sorted by
+ * distance from the FOV center so the most relevant hits are first. */
+function findFovObjects(
+  sources: any[], centerRa: number, centerDec: number, widthDeg: number, heightDeg: number, paDeg: number,
+): SimbadFovObject[] {
+  return sources
+    .map((s) => s.data)
+    .filter((d) => d.otype in INTERESTING_OTYPES)
+    .filter((d) => isInsideFov(centerRa, centerDec, parseFloat(d.ra), parseFloat(d.dec), widthDeg, heightDeg, paDeg))
+    .map((d) => ({
+      // SIMBAD prefixes proper/common names with "NAME " to mark the identifier type — real for
+      // its own catalog but just noise for display or for searching other sites by name.
+      name: String(d.main_id).replace(/\s+/g, ' ').trim().replace(/^NAME\s+/, ''),
+      typeLabel: INTERESTING_OTYPES[d.otype],
+      ra: parseFloat(d.ra),
+      dec: parseFloat(d.dec),
+      sizeArcmin: parseFloat(d.galdim_majaxis),
+      distanceArcmin: parseFloat(d.distance) * 60,
+    }))
+    .sort((a, b) => a.distanceArcmin - b.distanceArcmin);
+}
+
+interface SimbadFovObject {
+  name: string;
+  typeLabel: string;
+  ra: number;
+  dec: number;
+  sizeArcmin: number;
+  distanceArcmin: number;
+}
+
+function astrobinSearchUrl(name: string): string {
+  return `https://www.astrobin.com/search/?q=${encodeURIComponent(name)}`;
+}
+
+/** AstroBin's coordinate search (RA/Dec-Koordinaten, an AstroBin Ultimate feature) encodes its
+ * filter state in the `p` URL param, reverse engineered (with real Ultimate-account search URLs
+ * as ground truth, and confirmed against AstroBin's own bundled JS) as:
+ *   1. Build a query string via their own `toQueryString`-equivalent — each filter's value is
+ *      `encodeURIComponent(JSON.stringify(...))`. RA is in *minutes of RA* (hours×60, i.e.
+ *      degrees×4 — see astroUtilsService.raDegreesToMinutes: `4*l`), everything else plain degrees.
+ *   2. That string is itself MessagePack-encoded as a single string value — msgpack's "str 8"
+ *      format is a 0xD9 byte, a 1-byte length, then the raw UTF-8 bytes (confirmed byte-for-byte:
+ *      captured URLs decompress to exactly length-N text prefixed by 0xD9,N). This step is easy to
+ *      miss since it's invisible unless you inflate a real captured URL and notice the leading two
+ *      "garbage" bytes are actually N and the string is exactly N bytes long.
+ *   3. Deflate that (CompressionStream('deflate') produces the same zlib-wrapped stream pako.deflate
+ *      does) and base64 the result.
+ * Anyone without Ultimate can still open the resulting link — AstroBin just won't apply the filter
+ * for them, same as manually clicking the locked option in their own UI. */
+function msgpackEncodeString(str: string): Uint8Array {
+  const utf8Bytes = new TextEncoder().encode(str);
+  const len = utf8Bytes.length;
+  let header: Uint8Array;
+  if (len <= 0x1f) header = new Uint8Array([0xa0 | len]);
+  else if (len <= 0xff) header = new Uint8Array([0xd9, len]);
+  else if (len <= 0xffff) header = new Uint8Array([0xda, (len >> 8) & 0xff, len & 0xff]);
+  else header = new Uint8Array([0xdb, (len >>> 24) & 0xff, (len >>> 16) & 0xff, (len >>> 8) & 0xff, len & 0xff]);
+  const result = new Uint8Array(header.length + utf8Bytes.length);
+  result.set(header, 0);
+  result.set(utf8Bytes, header.length);
+  return result;
+}
+
+async function astrobinCoordsSearchUrl(raDeg: number, decDeg: number, radiusDeg: number): Promise<string> {
+  const textFilter = { value: '', matchType: 'ALL', onlySearchInTitlesAndDescriptions: false };
+  const coords = { raCenter: raDeg * 4, decCenter: decDeg, radius: radiusDeg };
+  const query = `text=${encodeURIComponent(JSON.stringify(textFilter))}`
+    + `&coords=${encodeURIComponent(JSON.stringify(coords))}&page=1&pageSize=100`;
+  const stream = new Blob([msgpackEncodeString(query) as BlobPart]).stream().pipeThrough(new CompressionStream('deflate'));
+  const buffer = await new Response(stream).arrayBuffer();
+  let binary = '';
+  new Uint8Array(buffer).forEach((b) => { binary += String.fromCharCode(b); });
+  return `https://app.astrobin.com/search?p=${encodeURIComponent(btoa(binary))}`;
+}
+
 function readStoredBoolean(key: string): boolean {
   try {
     return localStorage.getItem(key) === 'true';
@@ -303,6 +431,74 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const sensorConfigRef = useRef<HTMLDivElement>(null);
   const planningFovWidthArcmin = sensorFovArcmin(sensorWidthPx, pixelSizeUm, focalLengthMm);
   const planningFovHeightArcmin = sensorFovArcmin(sensorHeightPx, pixelSizeUm, focalLengthMm);
+  // On-demand (not re-queried on every pan/zoom, unlike the FOV rectangles) — a SIMBAD conesearch
+  // is a real network round-trip, and "what's in this exact framing" is naturally a "I've settled
+  // on a spot, now check it" action rather than something to hammer continuously while dragging.
+  const [fovObjects, setFovObjects] = useState<SimbadFovObject[] | null>(null);
+  const [fovObjectsLoading, setFovObjectsLoading] = useState(false);
+  const [fovObjectsError, setFovObjectsError] = useState(false);
+  const [fovResultsOpen, setFovResultsOpen] = useState(false);
+  const fovResultsRef = useRef<HTMLDivElement>(null);
+
+  // Same click-outside/Escape convention as the sensor-settings popup above.
+  useEffect(() => {
+    if (!fovResultsOpen) return undefined;
+    function onPointerDown(e: PointerEvent) {
+      if (fovResultsRef.current && !fovResultsRef.current.contains(e.target as Node)) {
+        setFovResultsOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setFovResultsOpen(false);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [fovResultsOpen]);
+
+  function searchFovObjects() {
+    const aladin = aladinRef.current;
+    if (!aladin) return;
+    setFovResultsOpen(true);
+    setFovObjectsLoading(true);
+    setFovObjectsError(false);
+    setFovObjects(null);
+    const [centerRa, centerDec] = aladin.getRaDec();
+    const widthDeg = planningFovWidthArcmin / 60;
+    const heightDeg = planningFovHeightArcmin / 60;
+    const radiusDeg = Math.hypot(widthDeg, heightDeg) / 2;
+    window.A.catalogFromSimbad(
+      { ra: centerRa, dec: centerDec },
+      radiusDeg,
+      { limit: 500 },
+      (cat: any) => {
+        setFovObjects(findFovObjects(cat.getSources(), centerRa, centerDec, widthDeg, heightDeg, planningFovRotationDeg));
+        setFovObjectsLoading(false);
+      },
+      () => {
+        setFovObjectsError(true);
+        setFovObjectsLoading(false);
+      },
+    );
+  }
+
+  function goToFovObject(obj: SimbadFovObject) {
+    aladinRef.current?.gotoRaDec(obj.ra, obj.dec);
+  }
+
+  // Opens the tab synchronously (within the click's own call stack) and points it once the URL
+  // is ready — CompressionStream is async, and popup blockers kill window.open() calls made after
+  // an await since they no longer look like a direct response to the user's gesture.
+  function openAstrobinCoordsSearch(obj: SimbadFovObject) {
+    const win = window.open('', '_blank');
+    const radiusDeg = Math.max(0.25, Number.isFinite(obj.sizeArcmin) ? obj.sizeArcmin / 60 / 2 : 0.25);
+    astrobinCoordsSearchUrl(obj.ra, obj.dec, radiusDeg).then((url) => {
+      if (win) win.location.href = url;
+    });
+  }
 
   // Closes on an outside click or Escape — there's no existing popover convention elsewhere in
   // this app to match, so this is the plain/standard version of that pattern.
@@ -719,6 +915,43 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             → {planningFovWidthArcmin.toFixed(1)}&apos; × {planningFovHeightArcmin.toFixed(1)}&apos;
             {' '}({(planningFovWidthArcmin / 60).toFixed(2)}° × {(planningFovHeightArcmin / 60).toFixed(2)}°)
           </span>
+          <div className="sky-map-fov-results-anchor" ref={fovResultsRef}>
+            <button type="button" onClick={searchFovObjects} disabled={fovObjectsLoading}>
+              {fovObjectsLoading ? 'Searching…' : 'Find objects in FOV'}
+            </button>
+            {fovResultsOpen && (
+              <div className="sky-map-fov-results-popup">
+                {fovObjectsError && <div className="sky-map-fov-objects-empty">SIMBAD search failed — try again</div>}
+                {fovObjectsLoading && <div className="sky-map-fov-objects-empty">Searching SIMBAD…</div>}
+                {fovObjects && (
+                  fovObjects.length === 0 ? (
+                    <div className="sky-map-fov-objects-empty">No nebulae, remnants, or clusters found in this frame</div>
+                  ) : (
+                    <ul className="sky-map-fov-objects">
+                      {fovObjects.map((obj) => (
+                        <li key={obj.name}>
+                          <button type="button" className="sky-map-fov-object-goto" onClick={() => goToFovObject(obj)} title="Center on this object">
+                            <span className="sky-map-fov-object-name">{obj.name}</span>
+                            <span className="sky-map-fov-object-type">{obj.typeLabel}</span>
+                            {Number.isFinite(obj.sizeArcmin) && (
+                              <span className="sky-map-fov-object-size">{obj.sizeArcmin.toFixed(0)}&apos;</span>
+                            )}
+                          </button>
+                          <span className="sky-map-fov-object-astrobin">
+                            AstroBin:
+                            <a href={astrobinSearchUrl(obj.name)} target="_blank" rel="noreferrer">Name</a>
+                            <button type="button" onClick={() => openAstrobinCoordsSearch(obj)} title="AstroBin search by coordinates (requires AstroBin Ultimate)">
+                              Coords
+                            </button>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
       <div ref={containerRef} className="sky-map">
