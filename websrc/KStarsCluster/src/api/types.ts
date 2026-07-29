@@ -68,6 +68,16 @@ export interface CapturedImage {
   type: number;
 }
 
+/** Minimal shape ImageViewer needs — anything showing an image (ImageStrip, SessionTimeline, ...)
+ * builds one of these from whatever richer type it already has (CapturedImage, a timeline
+ * segment, ...) so the viewer itself doesn't need to know where an image came from. */
+export interface ViewerImage {
+  filename: string;
+  target?: string;
+  filter?: string;
+  exposure?: number;
+}
+
 /** INDI CCDChip::CCDFrameType order — confirmed against a real captureComplete signal (Flat frame -> type 3). */
 const FRAME_TYPE_LABELS = ['Light', 'Bias', 'Dark', 'Flat'];
 

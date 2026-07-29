@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { useStatusSocket } from './api/useStatusSocket';
-import { getTrains, getDevices, getLastImageFilename } from './api/types';
+import { getTrains, getDevices, getLastImageFilename, type ViewerImage } from './api/types';
 import { ConnectionCard } from './components/ConnectionCard';
 import { TrainCard } from './components/TrainCard';
 import { SchedulerCard } from './components/SchedulerCard';
@@ -11,9 +12,13 @@ import { SkyMapCard } from './components/SkyMapCard';
 import { GuideCard } from './components/GuideCard';
 import { AllskySection } from './components/AllskySection';
 import { SessionTimeline } from './components/SessionTimeline';
+import { ImageViewer } from './components/ImageViewer';
 
 export function App() {
   const { status, connected } = useStatusSocket();
+  // Lifted to App instead of living in ImageStrip/SessionTimeline — it's a single full-screen
+  // overlay regardless of which card's image opened it, so it only makes sense to render once.
+  const [viewerImage, setViewerImage] = useState<ViewerImage | null>(null);
 
   const trains = status ? getTrains(status) : [];
   const devices = status ? getDevices(status) : [];
@@ -64,6 +69,7 @@ export function App() {
                 hfrHistory={status.hfrHistory?.[train] ?? []}
                 images={status.images?.[train] ?? []}
                 sequenceQueue={status.sequenceQueue?.[train]}
+                onOpenImage={setViewerImage}
               />
             ))}
             <GuideCard
@@ -77,6 +83,7 @@ export function App() {
               hfrHistory={status.hfrHistory ?? {}}
               guideDeltaHistory={status.guideDeltaHistory ?? []}
               timelineEvents={status.timelineEvents ?? []}
+              onOpenImage={setViewerImage}
             />
             <CoolingCalibrationCard />
             <DeviceList devices={devices} />
@@ -85,6 +92,7 @@ export function App() {
       </div>
 
       <LogPanel />
+      <ImageViewer image={viewerImage} onClose={() => setViewerImage(null)} />
     </div>
   );
 }

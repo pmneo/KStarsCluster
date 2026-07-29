@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import type { CapturedImage, GuideDeltaSample, HfrSample, TimelineEvent } from '../api/types';
+import type { CapturedImage, GuideDeltaSample, HfrSample, TimelineEvent, ViewerImage } from '../api/types';
 import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
 
 interface Props {
@@ -7,6 +7,7 @@ interface Props {
   hfrHistory: Record<string, HfrSample[]>;
   guideDeltaHistory: GuideDeltaSample[];
   timelineEvents: TimelineEvent[];
+  onOpenImage: (image: ViewerImage) => void;
 }
 
 /** Validated (node scripts/validate_palette.js, dark mode, surface #1c1f28 — this app's --panel)
@@ -58,8 +59,9 @@ interface Segment {
   color: string;
   opacity: number;
   title: string;
-  /** Only set for Capture segments — lets the hover tooltip show the actual frame. */
-  thumbnail?: string;
+  /** Only set for Capture segments — lets the hover tooltip show the actual frame, and a click
+   * open it in the full ImageViewer. */
+  viewerImage?: ViewerImage;
 }
 
 /** Turns one lane's state-change events into contiguous segments: each event normally lasts
@@ -133,7 +135,7 @@ function captureSegments( imgs: CapturedImage[], dynamicSeen: Map<string, string
     color: filterColor(img.filter, dynamicSeen, legend),
     opacity: 1,
     title: `${img.filter} ${img.exposure}s${img.target ? ` · ${img.target}` : ''}  (${new Date(img.ts).toLocaleTimeString()})`,
-    thumbnail: img.filename,
+    viewerImage: { filename: img.filename, target: img.target, filter: img.filter, exposure: img.exposure },
   }));
 }
 
@@ -263,7 +265,7 @@ function TimelineScrollbar({ fullStart, fullEnd, viewStart, viewEnd, onChange }:
   );
 }
 
-export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelineEvents }: Props) {
+export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelineEvents, onOpenImage }: Props) {
   // null = "follow now", i.e. the default last-24h view whose right edge keeps up with live
   // data. Set once the user drags a handle, at which point the view holds still at that exact
   // range instead of continuing to track "now" — matches how scrubbing a Premiere timeline
@@ -307,11 +309,11 @@ export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelin
   }
 
   function handleSegmentHover(e: React.MouseEvent, seg: Segment) {
-    hoveredThumbnailRef.current = seg.thumbnail;
-    setHover({ x: e.clientX, y: e.clientY, title: seg.title, thumbnail: seg.thumbnail });
-    if (!seg.thumbnail) return;
+    const filename = seg.viewerImage?.filename;
+    hoveredThumbnailRef.current = filename;
+    setHover({ x: e.clientX, y: e.clientY, title: seg.title, thumbnail: filename });
+    if (!filename) return;
 
-    const filename = seg.thumbnail;
     const cached = stretchCache.current.get(filename);
     if (cached) {
       setThumbStretch(cached);
@@ -337,6 +339,12 @@ export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelin
   function handleSegmentLeave() {
     hoveredThumbnailRef.current = undefined;
     setHover(null);
+  }
+
+  function handleSegmentClick(seg: Segment) {
+    if (seg.viewerImage) {
+      onOpenImage(seg.viewerImage);
+    }
   }
 
   const fullStart = Math.min(...allTs);
@@ -399,9 +407,11 @@ export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelin
                     height={ROW_HEIGHT}
                     fill={seg.color}
                     opacity={seg.opacity}
+                    style={seg.viewerImage ? { cursor: 'pointer' } : undefined}
                     onMouseEnter={(e) => handleSegmentHover(e, seg)}
                     onMouseMove={handleSegmentMove}
                     onMouseLeave={handleSegmentLeave}
+                    onClick={() => handleSegmentClick(seg)}
                   />
                 );
               })}
