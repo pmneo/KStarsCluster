@@ -46,6 +46,13 @@ export function App() {
         {status && (
           <>
             <ObservatoryCard roofStatus={status.roofStatus} />
+            <SessionTimeline
+              images={status.images ?? {}}
+              hfrHistory={status.hfrHistory ?? {}}
+              guideDeltaHistory={status.guideDeltaHistory ?? []}
+              timelineEvents={status.timelineEvents ?? []}
+              onOpenImage={setViewerImage}
+            />
             {/* Scheduler and SkyMap are both card--wide (span 2) — placed back to back here, as
              * the first pair of wide cards after the normal-width ones above, so the grid's
              * left-to-right auto-flow lands them in the same row instead of pairing each with
@@ -77,13 +84,6 @@ export function App() {
               ditheringActive={status.ditheringActive}
               guideSigma={status.guideSigma}
               guideDeltaHistory={status.guideDeltaHistory ?? []}
-            />
-            <SessionTimeline
-              images={status.images ?? {}}
-              hfrHistory={status.hfrHistory ?? {}}
-              guideDeltaHistory={status.guideDeltaHistory ?? []}
-              timelineEvents={status.timelineEvents ?? []}
-              onOpenImage={setViewerImage}
             />
             <CoolingCalibrationCard />
             <DeviceList devices={devices} />

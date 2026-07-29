@@ -9,8 +9,10 @@ const CHART_LIMIT_S = 15_000;
 interface Props {
   cam: string;
   label: string;
-  /** false for a camera pointed at the dome interior rather than the sky — skips the star
-   * count overlay and history chart (and doesn't even fetch the chart) entirely. */
+  /** false for a camera pointed at the dome interior rather than the sky — the star count is
+   * meaningless there, so this only skips that overlay. The history chart still fetches and
+   * renders regardless (its hover-to-preview is useful for browsing past captures on any
+   * camera, dome-facing or not — only its "stars" trace happens to read as flat/noise there). */
   showDetails: boolean;
 }
 
@@ -44,7 +46,6 @@ export function AllskyCard({ cam, label, showDetails }: Props) {
   }, [cam]);
 
   useEffect(() => {
-    if (!showDetails) return undefined;
     let cancelled = false;
 
     function pollChart() {
@@ -56,7 +57,7 @@ export function AllskyCard({ cam, label, showDetails }: Props) {
     pollChart();
     const interval = setInterval(pollChart, CHART_POLL_MS);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [cam, showDetails]);
+  }, [cam]);
 
   const backgroundPath = hoveredUrl ?? latest?.url;
   const imgUrl = backgroundPath ? allskyImageUrl(cam, backgroundPath) : undefined;
@@ -85,11 +86,9 @@ export function AllskyCard({ cam, label, showDetails }: Props) {
           </span>
         )}
       </a>
-      {showDetails && (
-        <div className="allsky-chart-wrap">
-          <AllskyChart points={points} onHover={setHoveredUrl} />
-        </div>
-      )}
+      <div className="allsky-chart-wrap">
+        <AllskyChart points={points} onHover={setHoveredUrl} />
+      </div>
     </div>
   );
 }
