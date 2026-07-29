@@ -14,8 +14,9 @@ interface ThumbProps {
 }
 
 /** Only requests its auto-stretch (and only renders the actual <img>, so nothing is fetched at
- * all) once it's actually scrolled near the viewport — with up to 50 images in the ring buffer,
- * fetching every single one's auto-stretch on mount regardless of visibility was wasteful. */
+ * all) once it's actually scrolled near the viewport — with up to 2000 images in the ring buffer
+ * (a full night across several targets/filters), fetching every single one's auto-stretch on
+ * mount regardless of visibility was wasteful. */
 function Thumb({ img, stretch, isEditing, onVisible, onEditToggle }: ThumbProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);

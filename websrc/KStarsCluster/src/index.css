@@ -74,6 +74,13 @@ header h1 {
   grid-column: span 2;
 }
 
+/* The session timeline reads better the wider it is (more of the night visible at once without
+ * the row labels eating a big fraction of a narrow card) — spans the whole grid regardless of
+ * how many columns fit, unlike card--wide's fixed span 2. */
+.card--full {
+  grid-column: 1 / -1;
+}
+
 /* Below this, auto-fit only actually fits one 280px column — grid-column: span 2 would still
    force a phantom second column into existence, squeezing the wide cards' real content into a
    sliver and pushing anything that doesn't wrap (buttons, table cells) out past the edge. */
@@ -214,6 +221,96 @@ button:disabled {
 .guide-left-col {
   flex: 1;
   min-width: 0;
+}
+
+.timeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.timeline-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.timeline-legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.timeline-scrollbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.timeline-zoom-btn {
+  padding: 3px 10px;
+  font-size: 0.75rem;
+  flex: 0 0 auto;
+}
+
+/* The Premiere-style scrollbar: a full-width track, a highlighted band for the current view, and
+ * two draggable handles at the band's ends. Plain divs + pointer events (see
+ * SessionTimeline.tsx's TimelineScrollbar) rather than range inputs — the band itself needs to be
+ * both visible and draggable (pan without resizing), which a pair of independent <input
+ * type="range"> thumbs can't express. */
+.timeline-scrollbar {
+  position: relative;
+  flex: 1;
+  height: 14px;
+  background: #14161c;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.timeline-scrollbar-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(77, 171, 247, 0.35);
+  cursor: grab;
+}
+
+.timeline-scrollbar-handle {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 10px;
+  margin-left: -5px;
+  background: var(--accent);
+  border-radius: 3px;
+  cursor: ew-resize;
+}
+
+.timeline-tooltip {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 0.75rem;
+  color: var(--text);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  max-width: 220px;
+}
+
+.timeline-tooltip-thumb {
+  display: block;
+  width: 160px;
+  height: auto;
+  border-radius: 4px;
+  margin-bottom: 4px;
 }
 
 .hfr-chart-label {

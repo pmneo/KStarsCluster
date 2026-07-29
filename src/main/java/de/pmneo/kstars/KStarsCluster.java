@@ -247,9 +247,13 @@ public abstract class KStarsCluster extends KStarsState {
 			for( KStarsState.GuideDeltaSample s : history.guideSamples ) {
 				recordGuideDelta( s.ts, s.ra, s.de );
 			}
+			for( KStarsState.TimelineEvent e : history.timelineEvents ) {
+				recordTimelineEvent( e.ts, e.lane, e.label );
+			}
 
 			logMessage( "Restored " + history.totalImages() + " images, " + history.totalHfrSamples()
-					+ " HFR samples, " + history.guideSamples.size() + " guide samples from the Ekos analyze log" );
+					+ " HFR samples, " + history.guideSamples.size() + " guide samples, "
+					+ history.timelineEvents.size() + " timeline events from the Ekos analyze log" );
 		}
 		catch( Throwable t ) {
 			logError( "Failed to restore history from analyze log", t );
@@ -440,6 +444,7 @@ public abstract class KStarsCluster extends KStarsState {
 		subscriptions.add( this.capture.addSigHandler( Capture.captureComplete.class, sig -> {
 			logMessage( "Captured " + sig.getMetadata().get( "filename" ) + " (" + sig.getTrain() + ")" );
 			recordCapturedImage( sig.getTrain(), sig.getMetadata() );
+			incrementActiveSchedulerJobCompletedCount();
 		} ) );
 		subscriptions.add( this.mount.addNewStatusHandler( Mount.newStatus.class, status -> {
 			this.handleMountStatus( status.getStatus() );
@@ -1795,6 +1800,7 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 
 		res.put( "guideDeltaHistory", guideDeltaHistory );
+		res.put( "timelineEvents", timelineEvents );
 
 		double[] sigma = guideSigma.get();
 		if( sigma != null ) {
@@ -2077,9 +2083,32 @@ public abstract class KStarsCluster extends KStarsState {
 
 				this.schedulerActiveJob.set( job );
 			}
+
+			SchedulerJob active = this.schedulerActiveJob.get();
+			recordTimelineEvent( "scheduler", active == null ? "idle" : active.name + " (" + active.getState() + ")" );
 		}
 		catch( Throwable t ) {
 			logError( "Failed to update scheduler active job", t );
+		}
+	}
+
+	/** allSchedulerJobs (and so the web UI's per-job progress column) is only refetched from
+	 *  D-Bus on job start/end (see updateSchedulerActiveJob) — captures happen far more often
+	 *  than that while a job runs, and a synchronous full-job-list D-Bus read on every single one
+	 *  just to bump a counter would be needlessly expensive. Bumping the cached job's own
+	 *  completedCount in place instead keeps the displayed progress live with zero extra D-Bus
+	 *  traffic; the next start/end event overwrites the whole list from D-Bus anyway, which
+	 *  self-corrects for anything this simple increment gets wrong. */
+	private void incrementActiveSchedulerJobCompletedCount() {
+		SchedulerJob active = schedulerActiveJob.get();
+		if( active == null ) {
+			return;
+		}
+		for( SchedulerJob job : allSchedulerJobs.get() ) {
+			if( active.name.equals( job.name ) ) {
+				job.completedCount++;
+				break;
+			}
 		}
 	}
 

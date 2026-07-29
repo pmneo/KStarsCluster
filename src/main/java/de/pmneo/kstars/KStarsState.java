@@ -38,7 +38,11 @@ public class KStarsState extends WithLogging {
         }
     }
 
-    private static final int HFR_HISTORY_CAP = 300;
+    // Bumped from 300 — a full night's worth of autofocus runs (dozens of runs, ~10 points each)
+    // easily exceeds that, truncating the session timeline's Focus lane to only the last few
+    // hours. HfrSample is a handful of primitives (~24 bytes); even this cap is a trivial amount
+    // of memory.
+    private static final int HFR_HISTORY_CAP = 2000;
     public final ConcurrentHashMap<String, Deque<HfrSample>> hfrHistory = new ConcurrentHashMap<>();
 
     public void recordHfr( String train, double hfr, int position ) {
@@ -68,7 +72,10 @@ public class KStarsState extends WithLogging {
         }
     }
 
-    private static final int GUIDE_HISTORY_CAP = 300;
+    // Bumped from 300 — guiding samples land every few seconds while active, so a single night
+    // easily produces thousands (one real analyze log had 5544). 300 only ever showed the last
+    // few minutes. GuideDeltaSample is ~24 bytes; even 20000 of them is under 500KB.
+    private static final int GUIDE_HISTORY_CAP = 20_000;
     /** Guiding is one mount/one guide camera — unlike HFR/capture, never per-train. */
     public final Deque<GuideDeltaSample> guideDeltaHistory = new ConcurrentLinkedDeque<>();
     public final AtomicReference<double[]> guideSigma = new AtomicReference<>();
@@ -87,6 +94,49 @@ public class KStarsState extends WithLogging {
 
     public void recordGuideSigma( double ra, double de ) {
         guideSigma.set( new double[]{ ra, de } );
+    }
+
+    /** One entry per state change on a "lane" (guide/mount/align/scheduler) — the web UI's
+     *  session timeline draws each lane as contiguous colored segments between consecutive
+     *  same-lane events, so this only needs a row when something actually changed, not a sample
+     *  every tick. */
+    public static class TimelineEvent {
+        public final long ts;
+        public final String lane;
+        public final String label;
+
+        public TimelineEvent( long ts, String lane, String label ) {
+            this.ts = ts;
+            this.lane = lane;
+            this.label = label;
+        }
+    }
+
+    // Bumped from 1000 for the same reason as the other history caps below — one full night
+    // across guide/mount/align/scheduler state changes can add up, and TimelineEvent is cheap.
+    private static final int TIMELINE_CAP = 5000;
+    public final Deque<TimelineEvent> timelineEvents = new ConcurrentLinkedDeque<>();
+    /** Last recorded label per lane — recordTimelineEvent no-ops on a repeat of the same label
+     *  (some Ekos status signals refire with an unchanged value) so the timeline doesn't fill up
+     *  with zero-duration segments. */
+    private final Map<String,String> lastTimelineLabel = new ConcurrentHashMap<>();
+
+    public void recordTimelineEvent( String lane, String label ) {
+        recordTimelineEvent( System.currentTimeMillis(), lane, label );
+    }
+
+    /** ts-taking overload — see recordHfr(train, ts, hfr, position). Used for live signals (with
+     *  the current time) and for replaying events out of the Ekos analyze log at startup (with
+     *  the event's own recorded time) alike. */
+    public void recordTimelineEvent( long ts, String lane, String label ) {
+        if( label == null || label.equals( lastTimelineLabel.put( lane, label ) ) ) {
+            return;
+        }
+
+        timelineEvents.addLast( new TimelineEvent( ts, lane, label ) );
+        while( timelineEvents.size() > TIMELINE_CAP ) {
+            timelineEvents.pollFirst();
+        }
     }
 
     /**
@@ -162,7 +212,13 @@ public class KStarsState extends WithLogging {
         }
     }
 
-    private static final int CAPTURED_IMAGES_CAP = 50;
+    // Bumped from 50 — a full night across several targets/filters (e.g. the 960-frame job seen
+    // in one real session) blew straight through that, which is exactly why the image strip and
+    // session timeline's Capture lane only ever showed frames from around midnight onward: the
+    // ring buffer had already evicted everything captured earlier that evening. CapturedImage is
+    // a handful of primitives plus a few short strings; even 2000 of them is a trivial amount of
+    // memory.
+    private static final int CAPTURED_IMAGES_CAP = 2000;
     public final ConcurrentHashMap<String, Deque<CapturedImage>> capturedImages = new ConcurrentHashMap<>();
 
     public void recordCapturedImage( String train, Map<String,Object> metadata ) {
@@ -221,6 +277,7 @@ public class KStarsState extends WithLogging {
 
         logMessage( "handleGuideStatus(" + state + ")" );
         state = guideStatus.get( );
+        recordTimelineEvent( "guide", state.name() );
 
         switch( state ) {
             case GUIDE_ABORTED:
@@ -262,6 +319,7 @@ public class KStarsState extends WithLogging {
 
         logMessage( "handleMountStatus(" + state + ")" );
         state = mountStatus.get( );
+        recordTimelineEvent( "mount", state.name() );
 
         switch( state ) {
             case MOUNT_ERROR:
@@ -300,6 +358,7 @@ public class KStarsState extends WithLogging {
 
         logMessage( "handleAlignStatus(" + state + ")" );
         state = alignStatus.get();
+        recordTimelineEvent( "align", state.name() );
         return state;
     }
 

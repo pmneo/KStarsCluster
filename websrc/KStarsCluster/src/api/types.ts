@@ -11,6 +11,15 @@ export interface GuideDeltaSample {
   de: number;
 }
 
+/** One state change on a "lane" (guide/mount/align/scheduler) — the session timeline draws each
+ * lane as contiguous segments between consecutive same-lane events, so there's one row here per
+ * actual change, not a sample every tick. */
+export interface TimelineEvent {
+  ts: number;
+  lane: string;
+  label: string;
+}
+
 export interface SchedulerJob {
   name: string;
   altitude: number;
@@ -162,6 +171,7 @@ export interface StatusSnapshot {
   guideDeltaHistory: GuideDeltaSample[];
   /** Guide.newAxisSigma — latest RA/DEC guiding RMS, in arcsec. Absent until the first signal arrives. */
   guideSigma?: { ra: number; de: number };
+  timelineEvents: TimelineEvent[];
   [key: string]: unknown;
 }
 
@@ -172,7 +182,7 @@ const KNOWN_STATUS_KEYS = new Set([
   'schedulerState', 'captureStatus', 'focusState', 'guideStatus',
   'activeJob', 'jobs', 'alignment', 'roofStatus', 'serverInfo',
   'hfrHistory', 'images', 'sequenceQueue', 'mountCoords', 'fov',
-  'guideDeltaHistory', 'guideSigma',
+  'guideDeltaHistory', 'guideSigma', 'timelineEvents',
 ]);
 
 /** Trains aren't a fixed set on the backend — derive them from whichever per-train maps are

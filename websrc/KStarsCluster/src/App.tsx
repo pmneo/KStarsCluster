@@ -10,6 +10,7 @@ import { DeviceList } from './components/DeviceList';
 import { SkyMapCard } from './components/SkyMapCard';
 import { GuideCard } from './components/GuideCard';
 import { AllskySection } from './components/AllskySection';
+import { SessionTimeline } from './components/SessionTimeline';
 
 export function App() {
   const { status, connected } = useStatusSocket();
@@ -70,6 +71,12 @@ export function App() {
               ditheringActive={status.ditheringActive}
               guideSigma={status.guideSigma}
               guideDeltaHistory={status.guideDeltaHistory ?? []}
+            />
+            <SessionTimeline
+              images={status.images ?? {}}
+              hfrHistory={status.hfrHistory ?? {}}
+              guideDeltaHistory={status.guideDeltaHistory ?? []}
+              timelineEvents={status.timelineEvents ?? []}
             />
             <CoolingCalibrationCard />
             <DeviceList devices={devices} />

@@ -17,6 +17,7 @@ import java.util.Map;
 import de.pmneo.kstars.KStarsState.CapturedImage;
 import de.pmneo.kstars.KStarsState.GuideDeltaSample;
 import de.pmneo.kstars.KStarsState.HfrSample;
+import de.pmneo.kstars.KStarsState.TimelineEvent;
 
 /**
  * Parses Ekos's own "Analyze" session log (~/.local/share/kstars/analyze/ekos-*.analyze) to
@@ -43,6 +44,12 @@ public class EkosAnalyzeLog {
         public final Map<String, List<CapturedImage>> images = new LinkedHashMap<>();
         public final Map<String, List<HfrSample>> hfrSamples = new LinkedHashMap<>();
         public final List<GuideDeltaSample> guideSamples = new ArrayList<>();
+        /** guide/mount/align/scheduler lane events — see AlignState/GuideState/MountState/
+         *  SchedulerJobStart/SchedulerJobEnd parsing below. Lets the session timeline show a
+         *  session's full guide/mount/align/scheduler history right after a restart, the same way
+         *  images/hfrSamples/guideSamples already do, instead of only starting to fill in from
+         *  whenever live D-Bus signals resume. */
+        public final List<TimelineEvent> timelineEvents = new ArrayList<>();
 
         private void addImage( String train, CapturedImage img ) {
             images.computeIfAbsent( train, t -> new ArrayList<>() ).add( img );
@@ -50,6 +57,10 @@ public class EkosAnalyzeLog {
 
         private void addHfrSample( String train, HfrSample sample ) {
             hfrSamples.computeIfAbsent( train, t -> new ArrayList<>() ).add( sample );
+        }
+
+        private void addTimelineEvent( long ts, String lane, String label ) {
+            timelineEvents.add( new TimelineEvent( ts, lane, label ) );
         }
 
         public int totalImages() {
@@ -67,6 +78,7 @@ public class EkosAnalyzeLog {
             older.images.forEach( ( train, imgs ) -> images.computeIfAbsent( train, t -> new ArrayList<>() ).addAll( 0, imgs ) );
             older.hfrSamples.forEach( ( train, samples ) -> hfrSamples.computeIfAbsent( train, t -> new ArrayList<>() ).addAll( 0, samples ) );
             guideSamples.addAll( 0, older.guideSamples );
+            timelineEvents.addAll( 0, older.timelineEvents );
         }
     }
 
@@ -145,8 +157,23 @@ public class EkosAnalyzeLog {
                     case "GuideStats":
                         parseGuideStats( result, ts, parts );
                         break;
+                    case "AlignState":
+                        parseAlignState( result, ts, parts );
+                        break;
+                    case "GuideState":
+                        parseGuideState( result, ts, parts );
+                        break;
+                    case "MountState":
+                        parseMountState( result, ts, parts );
+                        break;
+                    case "SchedulerJobStart":
+                        parseSchedulerJobStart( result, ts, parts );
+                        break;
+                    case "SchedulerJobEnd":
+                        parseSchedulerJobEnd( result, ts, parts );
+                        break;
                     default:
-                        //other event types (MountState, AlignState, ...) aren't needed for this replay
+                        //other event types (Temperature, MountCoords, ...) aren't needed for this replay
                 }
             }
         }
@@ -220,6 +247,92 @@ public class EkosAnalyzeLog {
         catch( NumberFormatException e ) {
             //skip malformed row
         }
+    }
+
+    /** AlignState/GuideState/MountState rows carry KStars' own *localized* status text (e.g.
+     *  German "Kalibrierung" for "Calibrating") rather than the enum constant name the live
+     *  D-Bus signal handlers record (see KStarsState.handleGuideStatus et al.) — confirmed
+     *  against real analyze logs written under both German and English KStars locales. Translated
+     *  here so the session timeline's lane coloring (keyed on the English constant name) works
+     *  the same regardless of whether an event came from a live signal or this replay. An
+     *  unrecognized value (a locale/version not seen yet) falls through as its raw text — the
+     *  frontend just renders it in the neutral/idle color rather than failing to parse. */
+    private static final Map<String,String> ALIGN_STATE_LABELS = Map.ofEntries(
+        Map.entry( "Inaktiv", "ALIGN_IDLE" ), Map.entry( "Idle", "ALIGN_IDLE" ),
+        Map.entry( "Beendet", "ALIGN_COMPLETE" ), Map.entry( "Complete", "ALIGN_COMPLETE" ),
+        Map.entry( "Fehlgeschlagen", "ALIGN_FAILED" ), Map.entry( "Failed", "ALIGN_FAILED" ),
+        Map.entry( "Abgebrochen", "ALIGN_ABORTED" ), Map.entry( "Aborted", "ALIGN_ABORTED" ),
+        Map.entry( "In Bearbeitung", "ALIGN_PROGRESS" ), Map.entry( "In Progress", "ALIGN_PROGRESS" ),
+        Map.entry( "Erfolgreich", "ALIGN_SUCCESSFUL" ), Map.entry( "Successful", "ALIGN_SUCCESSFUL" ),
+        Map.entry( "Abgleichen", "ALIGN_SYNCING" ), Map.entry( "Syncing", "ALIGN_SYNCING" ),
+        Map.entry( "Schwenken", "ALIGN_SLEWING" ), Map.entry( "Slewing", "ALIGN_SLEWING" ),
+        Map.entry( "Rotierend", "ALIGN_ROTATING" ), Map.entry( "Rotating", "ALIGN_ROTATING" ),
+        Map.entry( "Angehalten", "ALIGN_SUSPENDED" ), Map.entry( "Suspended", "ALIGN_SUSPENDED" )
+    );
+
+    private static final Map<String,String> GUIDE_STATE_LABELS = Map.ofEntries(
+        Map.entry( "Inaktiv", "GUIDE_IDLE" ), Map.entry( "Idle", "GUIDE_IDLE" ),
+        Map.entry( "Abgebrochen", "GUIDE_ABORTED" ), Map.entry( "Aborted", "GUIDE_ABORTED" ),
+        Map.entry( "Aufnahme läuft", "GUIDE_CAPTURE" ), Map.entry( "Capture", "GUIDE_CAPTURE" ),
+        Map.entry( "Looping", "GUIDE_LOOPING" ),
+        Map.entry( "Stern auswählen", "GUIDE_STAR_SELECT" ), Map.entry( "Star Select", "GUIDE_STAR_SELECT" ),
+        Map.entry( "Kalibrierung", "GUIDE_CALIBRATING" ), Map.entry( "Calibrating", "GUIDE_CALIBRATING" ),
+        Map.entry( "Kalibrierungsfehler", "GUIDE_CALIBRATION_ERROR" ), Map.entry( "Calibration error", "GUIDE_CALIBRATION_ERROR" ),
+        Map.entry( "Kalibriert", "GUIDE_CALIBRATION_SUCESS" ), Map.entry( "Calibration successful", "GUIDE_CALIBRATION_SUCESS" ),
+        Map.entry( "Nachführung", "GUIDE_GUIDING" ), Map.entry( "Guiding", "GUIDE_GUIDING" ),
+        Map.entry( "Reacquiring", "GUIDE_REACQUIRE" ),
+        Map.entry( "Dithering", "GUIDE_DITHERING" ),
+        Map.entry( "Dithering error", "GUIDE_DITHERING_ERROR" ),
+        Map.entry( "Dithering successful", "GUIDE_DITHERING_SUCCESS" ),
+        Map.entry( "Settling", "GUIDE_DITHERING_SETTLE" )
+    );
+
+    private static final Map<String,String> MOUNT_STATE_LABELS = Map.ofEntries(
+        Map.entry( "Inaktiv", "MOUNT_IDLE" ), Map.entry( "Idle", "MOUNT_IDLE" ),
+        Map.entry( "Moving", "MOUNT_MOVING" ),
+        Map.entry( "Schwenken", "MOUNT_SLEWING" ), Map.entry( "Slewing", "MOUNT_SLEWING" ),
+        Map.entry( "Verfolgung", "MOUNT_TRACKING" ), Map.entry( "Tracking", "MOUNT_TRACKING" ),
+        Map.entry( "Parking", "MOUNT_PARKING" ),
+        Map.entry( "Geparkt", "MOUNT_PARKED" ), Map.entry( "Parked", "MOUNT_PARKED" ),
+        Map.entry( "Fehler", "MOUNT_ERROR" ), Map.entry( "Error", "MOUNT_ERROR" )
+    );
+
+    private static void parseAlignState( ParsedHistory result, long ts, String[] parts ) {
+        if( parts.length < 3 ) {
+            return;
+        }
+        result.addTimelineEvent( ts, "align", ALIGN_STATE_LABELS.getOrDefault( parts[2], parts[2] ) );
+    }
+
+    private static void parseGuideState( ParsedHistory result, long ts, String[] parts ) {
+        if( parts.length < 3 ) {
+            return;
+        }
+        result.addTimelineEvent( ts, "guide", GUIDE_STATE_LABELS.getOrDefault( parts[2], parts[2] ) );
+    }
+
+    private static void parseMountState( ParsedHistory result, long ts, String[] parts ) {
+        if( parts.length < 3 ) {
+            return;
+        }
+        result.addTimelineEvent( ts, "mount", MOUNT_STATE_LABELS.getOrDefault( parts[2], parts[2] ) );
+    }
+
+    /** SchedulerJobStart,<offsetSec>,<jobName> — a job starting in the analyze log means it's
+     *  actually executing, same as the live "scheduler" lane's JOB_BUSY state, so the label is
+     *  built the same way (job name + "(JOB_BUSY)") for the frontend's opacity/name handling to
+     *  treat both sources identically. */
+    private static void parseSchedulerJobStart( ParsedHistory result, long ts, String[] parts ) {
+        if( parts.length < 3 ) {
+            return;
+        }
+        result.addTimelineEvent( ts, "scheduler", parts[2] + " (JOB_BUSY)" );
+    }
+
+    /** SchedulerJobEnd,<offsetSec>,<jobName>,<reason> — the reason (e.g. "twilight") isn't needed
+     *  here, just that the scheduler goes back to idle. */
+    private static void parseSchedulerJobEnd( ParsedHistory result, long ts, String[] parts ) {
+        result.addTimelineEvent( ts, "scheduler", "idle" );
     }
 
     private static int inferFrameType( String filepath ) {
