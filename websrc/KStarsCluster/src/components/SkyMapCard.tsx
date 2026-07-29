@@ -9,6 +9,41 @@ declare global {
   }
 }
 
+function ExpandIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 9V4h5" />
+      <path d="M15 4h5v5" />
+      <path d="M20 15v5h-5" />
+      <path d="M9 20H4v-5" />
+    </svg>
+  );
+}
+
+function CompressIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 4v5H4" />
+      <path d="M15 4v5h5" />
+      <path d="M20 15h-5v5" />
+      <path d="M4 15h5v5" />
+    </svg>
+  );
+}
+
+function SlidersIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <line x1="4" y1="6" x2="20" y2="6" />
+      <circle cx="9" cy="6" r="2" fill="currentColor" stroke="none" />
+      <line x1="4" y1="12" x2="20" y2="12" />
+      <circle cx="15" cy="12" r="2" fill="currentColor" stroke="none" />
+      <line x1="4" y1="18" x2="20" y2="18" />
+      <circle cx="7" cy="18" r="2" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 interface SurveyOption {
   id: string;
   label: string;
@@ -72,8 +107,65 @@ function fovCorners(centerRa: number, centerDec: number, widthDeg: number, heigh
 
 const FOLLOW_MOUNT_KEY = 'skymap.followMount';
 const SHOW_LAST_IMAGE_KEY = 'skymap.showLastImage';
+const SHOW_NGC_KEY = 'skymap.showNgc';
+const SHOW_SH2_KEY = 'skymap.showSh2';
+const PLANNING_FOV_ENABLED_KEY = 'skymap.planningFov.enabled';
+const PLANNING_FOV_SENSOR_WIDTH_KEY = 'skymap.planningFov.sensorWidthPx';
+const PLANNING_FOV_SENSOR_HEIGHT_KEY = 'skymap.planningFov.sensorHeightPx';
+const PLANNING_FOV_PIXEL_SIZE_KEY = 'skymap.planningFov.pixelSizeUm';
+const PLANNING_FOV_FOCAL_LENGTH_KEY = 'skymap.planningFov.focalLengthMm';
+const PLANNING_FOV_ROTATION_KEY = 'skymap.planningFov.rotationDeg';
 const VIEW_KEY = 'skymap.view';
 const DEFAULT_FOV_DEG = 10;
+// ASI2600MM Pro (6248x4176, 3.76µm) — just a starting point for the calculator below, not tied
+// to whatever camera is actually connected.
+const DEFAULT_SENSOR_WIDTH_PX = 6248;
+const DEFAULT_SENSOR_HEIGHT_PX = 4176;
+const DEFAULT_PIXEL_SIZE_UM = 3.76;
+const DEFAULT_FOCAL_LENGTH_MM = 418;
+const ARCMIN_PER_RADIAN = (180 / Math.PI) * 60;
+
+/** Small-angle FOV approximation (accurate well beyond any real camera/focal-length combo):
+ * sensor dimension in mm, divided by focal length, is the angle in radians. */
+function sensorFovArcmin(pixels: number, pixelSizeUm: number, focalLengthMm: number): number {
+  if (focalLengthMm <= 0) return 0;
+  const sensorMm = (pixels * pixelSizeUm) / 1000;
+  return (sensorMm / focalLengthMm) * ARCMIN_PER_RADIAN;
+}
+
+/** Sinnott's NGC 2000.0 (~13000 NGC/IC objects) and Sharpless's Sh2 HII-region catalogue
+ * (313 objects) — both small enough to load whole in one VizieR cone search rather than
+ * re-querying as the view pans/zooms, so a 180° radius (the whole sky, from any center) is
+ * fetched once per toggle-on and then just shown/hidden from then on. */
+const NGC_VIZIER_CAT = 'VII/118/ngc2000';
+const SH2_VIZIER_CAT = 'VII/20/catalog';
+const OVERLAY_CATALOG_RADIUS_DEG = 180;
+
+// Both catalogs' size columns are confirmed (via each ReadMe) to be a single largest-dimension
+// value in arcmin, not a proper major/minor ellipse — a circle of that diameter is the closest
+// honest approximation available, and it's already a lot more real than a fixed-size marker.
+// Objects with no recorded size (common for faint/small NGC entries) still get a small circle
+// rather than nothing, since a boundary that vanishes for "unknown size" reads as a bug.
+const MIN_BOUNDARY_RADIUS_DEG = 0.015;
+
+function sizeArcminToRadiusDeg(sizeArcmin: string | undefined): number {
+  const value = parseFloat(sizeArcmin ?? '');
+  if (!Number.isFinite(value) || value <= 0) return MIN_BOUNDARY_RADIUS_DEG;
+  return Math.max(MIN_BOUNDARY_RADIUS_DEG, value / 2 / 60);
+}
+
+/** Builds a circle-per-source graphic overlay sized by each source's real angular diameter,
+ * alongside (not instead of) the small click-for-details catalog marker `cat` already carries —
+ * the marker gives a precise, clickable center point; this overlay is the actual boundary. */
+function buildBoundaryOverlay(aladin: any, cat: any, sizeField: string, color: string): any {
+  const overlay = window.A.graphicOverlay({ color, lineWidth: 1 });
+  aladin.addOverlay(overlay);
+  cat.getSources().forEach((source: any) => {
+    const radiusDeg = sizeArcminToRadiusDeg(source.data?.[sizeField]);
+    overlay.add(window.A.circle(source.ra, source.dec, radiusDeg));
+  });
+  return overlay;
+}
 
 function readStoredBoolean(key: string): boolean {
   try {
@@ -85,6 +177,26 @@ function readStoredBoolean(key: string): boolean {
 }
 
 function writeStoredBoolean(key: string, value: boolean) {
+  try {
+    localStorage.setItem(key, String(value));
+  }
+  catch {
+    // storage unavailable (private browsing, quota, ...) — just don't persist
+  }
+}
+
+function readStoredNumber(key: string, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key);
+    const value = raw == null ? NaN : Number(raw);
+    return Number.isFinite(value) ? value : fallback;
+  }
+  catch {
+    return fallback;
+  }
+}
+
+function writeStoredNumber(key: string, value: number) {
   try {
     localStorage.setItem(key, String(value));
   }
@@ -151,12 +263,18 @@ function buildImageSurvey(survey: SurveyOption) {
 }
 
 export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename }: Props) {
+  const cardRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayImgRef = useRef<HTMLImageElement>(null);
   const aladinRef = useRef<any>(null);
   const mountCatalogRef = useRef<any>(null);
   const targetCatalogRef = useRef<any>(null);
   const fovOverlayRef = useRef<any>(null);
+  const planningFovOverlayRef = useRef<any>(null);
+  const ngcCatalogRef = useRef<any>(null);
+  const sh2CatalogRef = useRef<any>(null);
+  const ngcBoundaryRef = useRef<any>(null);
+  const sh2BoundaryRef = useRef<any>(null);
   const appliedSurveyIdRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
   const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
@@ -164,7 +282,47 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   // forget about it" toggles, so a reload silently reverting them is more surprising than useful.
   const [showLastImage, setShowLastImage] = useState(() => readStoredBoolean(SHOW_LAST_IMAGE_KEY));
   const [followMount, setFollowMount] = useState(() => readStoredBoolean(FOLLOW_MOUNT_KEY));
+  const [showNgc, setShowNgc] = useState(() => readStoredBoolean(SHOW_NGC_KEY));
+  const [showSh2, setShowSh2] = useState(() => readStoredBoolean(SHOW_SH2_KEY));
   const [lastImageStretch, setLastImageStretch] = useState<StretchSettings>(DEFAULT_STRETCH);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  // A user-set, equipment-independent FOV rectangle for planning framing — always centered on
+  // whatever the map is currently looking at (see fovCorners' caller in redraw()), unlike the
+  // live FOV rectangle above which tracks the mount and only exists once it's actually slewed
+  // somewhere. Lets you pan around and preview "would this target fit?" before committing to it.
+  const [planningFovEnabled, setPlanningFovEnabled] = useState(() => readStoredBoolean(PLANNING_FOV_ENABLED_KEY));
+  // Width/height in arcmin are derived (see sensorFovArcmin below) from these four equipment
+  // factors instead of being entered directly — matches how you'd actually plan a shot ("what
+  // does my camera+scope combo see"), and updates immediately if you're comparing focal lengths.
+  const [sensorWidthPx, setSensorWidthPx] = useState(() => readStoredNumber(PLANNING_FOV_SENSOR_WIDTH_KEY, DEFAULT_SENSOR_WIDTH_PX));
+  const [sensorHeightPx, setSensorHeightPx] = useState(() => readStoredNumber(PLANNING_FOV_SENSOR_HEIGHT_KEY, DEFAULT_SENSOR_HEIGHT_PX));
+  const [pixelSizeUm, setPixelSizeUm] = useState(() => readStoredNumber(PLANNING_FOV_PIXEL_SIZE_KEY, DEFAULT_PIXEL_SIZE_UM));
+  const [focalLengthMm, setFocalLengthMm] = useState(() => readStoredNumber(PLANNING_FOV_FOCAL_LENGTH_KEY, DEFAULT_FOCAL_LENGTH_MM));
+  const [planningFovRotationDeg, setPlanningFovRotationDeg] = useState(() => readStoredNumber(PLANNING_FOV_ROTATION_KEY, 0));
+  const [sensorConfigOpen, setSensorConfigOpen] = useState(false);
+  const sensorConfigRef = useRef<HTMLDivElement>(null);
+  const planningFovWidthArcmin = sensorFovArcmin(sensorWidthPx, pixelSizeUm, focalLengthMm);
+  const planningFovHeightArcmin = sensorFovArcmin(sensorHeightPx, pixelSizeUm, focalLengthMm);
+
+  // Closes on an outside click or Escape — there's no existing popover convention elsewhere in
+  // this app to match, so this is the plain/standard version of that pattern.
+  useEffect(() => {
+    if (!sensorConfigOpen) return undefined;
+    function onPointerDown(e: PointerEvent) {
+      if (sensorConfigRef.current && !sensorConfigRef.current.contains(e.target as Node)) {
+        setSensorConfigOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setSensorConfigOpen(false);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [sensorConfigOpen]);
 
   useEffect(() => {
     if (!window.A || !containerRef.current) return;
@@ -192,6 +350,12 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       const fovOverlay = window.A.graphicOverlay({ color: '#38bdf8', lineWidth: 2 });
       aladin.addOverlay(fovOverlay);
       fovOverlayRef.current = fovOverlay;
+
+      // Dashed + a different hue than the live FOV overlay, so "planned framing" is never
+      // mistaken for "where the camera is actually pointed right now".
+      const planningFovOverlay = window.A.graphicOverlay({ color: '#c084fc', lineWidth: 2, lineDash: [8, 6] });
+      aladin.addOverlay(planningFovOverlay);
+      planningFovOverlayRef.current = planningFovOverlay;
 
       setReady(true);
     });
@@ -248,6 +412,22 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       const overlay = fovOverlayRef.current;
       if (!aladin || !overlay) return;
 
+      const planningOverlay = planningFovOverlayRef.current;
+      if (planningOverlay) {
+        planningOverlay.removeAll();
+        if (planningFovEnabled) {
+          const [centerRa, centerDec] = aladin.getRaDec();
+          const corners = fovCorners(
+            centerRa,
+            centerDec,
+            planningFovWidthArcmin / 60,
+            planningFovHeightArcmin / 60,
+            planningFovRotationDeg,
+          );
+          planningOverlay.add(window.A.polygon(corners));
+        }
+      }
+
       overlay.removeAll();
       if (!mountCoords || !fov) {
         if (overlayImgRef.current) overlayImgRef.current.style.display = 'none';
@@ -284,7 +464,10 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     };
 
     redrawRef.current();
-  }, [mountCoords?.ra, mountCoords?.dec, fov?.widthArcmin, fov?.heightArcmin, pa, showLastImage, lastImageFilename]);
+  }, [
+    mountCoords?.ra, mountCoords?.dec, fov?.widthArcmin, fov?.heightArcmin, pa, showLastImage, lastImageFilename,
+    planningFovEnabled, planningFovWidthArcmin, planningFovHeightArcmin, planningFovRotationDeg,
+  ]);
 
   useEffect(() => {
     if (!ready) return;
@@ -311,6 +494,105 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     writeStoredBoolean(SHOW_LAST_IMAGE_KEY, showLastImage);
   }, [showLastImage]);
 
+  useEffect(() => {
+    writeStoredBoolean(SHOW_NGC_KEY, showNgc);
+  }, [showNgc]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_SH2_KEY, showSh2);
+  }, [showSh2]);
+
+  useEffect(() => {
+    writeStoredBoolean(PLANNING_FOV_ENABLED_KEY, planningFovEnabled);
+  }, [planningFovEnabled]);
+
+  useEffect(() => {
+    writeStoredNumber(PLANNING_FOV_SENSOR_WIDTH_KEY, sensorWidthPx);
+  }, [sensorWidthPx]);
+
+  useEffect(() => {
+    writeStoredNumber(PLANNING_FOV_SENSOR_HEIGHT_KEY, sensorHeightPx);
+  }, [sensorHeightPx]);
+
+  useEffect(() => {
+    writeStoredNumber(PLANNING_FOV_PIXEL_SIZE_KEY, pixelSizeUm);
+  }, [pixelSizeUm]);
+
+  useEffect(() => {
+    writeStoredNumber(PLANNING_FOV_FOCAL_LENGTH_KEY, focalLengthMm);
+  }, [focalLengthMm]);
+
+  useEffect(() => {
+    writeStoredNumber(PLANNING_FOV_ROTATION_KEY, planningFovRotationDeg);
+  }, [planningFovRotationDeg]);
+
+  // Both catalogs are fetched at most once (lazily, on first enable) and then just shown/hidden —
+  // a 180° cone search already covers the whole sky regardless of where it's centered, so there's
+  // never a reason to re-query VizieR as the view pans or zooms.
+  useEffect(() => {
+    if (!ready || !aladinRef.current) return;
+    if (ngcCatalogRef.current) {
+      const action = showNgc ? 'show' : 'hide';
+      ngcCatalogRef.current[action]();
+      ngcBoundaryRef.current?.[action]();
+      return;
+    }
+    if (!showNgc) return;
+    const aladin = aladinRef.current;
+    const [ra, dec] = aladin.getRaDec();
+    window.A.catalogFromVizieR(
+      NGC_VIZIER_CAT,
+      { ra, dec },
+      OVERLAY_CATALOG_RADIUS_DEG,
+      { onClick: 'showTable', shape: 'circle', sourceSize: 4, color: '#facc15', name: 'NGC/IC', limit: 20000 },
+      (cat: any) => {
+        ngcCatalogRef.current = cat;
+        aladin.addCatalog(cat);
+        ngcBoundaryRef.current = buildBoundaryOverlay(aladin, cat, 'size', '#facc15');
+      },
+    );
+  }, [ready, showNgc]);
+
+  useEffect(() => {
+    if (!ready || !aladinRef.current) return;
+    if (sh2CatalogRef.current) {
+      const action = showSh2 ? 'show' : 'hide';
+      sh2CatalogRef.current[action]();
+      sh2BoundaryRef.current?.[action]();
+      return;
+    }
+    if (!showSh2) return;
+    const aladin = aladinRef.current;
+    const [ra, dec] = aladin.getRaDec();
+    window.A.catalogFromVizieR(
+      SH2_VIZIER_CAT,
+      { ra, dec },
+      OVERLAY_CATALOG_RADIUS_DEG,
+      { onClick: 'showTable', shape: 'circle', sourceSize: 4, color: '#fb7185', name: 'Sh2', limit: 1000 },
+      (cat: any) => {
+        sh2CatalogRef.current = cat;
+        aladin.addCatalog(cat);
+        sh2BoundaryRef.current = buildBoundaryOverlay(aladin, cat, 'Diam', '#fb7185');
+      },
+    );
+  }, [ready, showSh2]);
+
+  useEffect(() => {
+    function onFullscreenChange() {
+      setIsFullscreen(document.fullscreenElement === cardRef.current);
+    }
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, []);
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement === cardRef.current) {
+      document.exitFullscreen();
+    } else {
+      cardRef.current?.requestFullscreen();
+    }
+  }
+
   // The overlay used DEFAULT_STRETCH (a no-op linear passthrough) unconditionally, so "last
   // image" always rendered essentially unstretched instead of matching what the image strip
   // shows for the same file. Cached per filename like ImageStrip's own requests — a 404 (e.g. a
@@ -325,7 +607,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   }, [lastImageFilename]);
 
   return (
-    <div className="card card--wide">
+    <div ref={cardRef} className="card card--wide">
       <h3>Sky Map</h3>
       <div className="sky-map-controls">
         <select value={surveyId} onChange={(e) => setSurveyId(e.target.value)}>
@@ -333,6 +615,15 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             <option key={s.id} value={s.id}>{s.label}</option>
           ))}
         </select>
+        <button
+          type="button"
+          className="sky-map-icon-button"
+          onClick={toggleFullscreen}
+          title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+        >
+          {isFullscreen ? <CompressIcon /> : <ExpandIcon />}
+        </button>
         <div className="sky-map-toggles">
           <label className="sky-map-toggle">
             <input
@@ -352,8 +643,84 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             />
             Show last image
           </label>
+          <label className="sky-map-toggle">
+            <input type="checkbox" checked={showNgc} onChange={(e) => setShowNgc(e.target.checked)} />
+            NGC/IC
+          </label>
+          <label className="sky-map-toggle">
+            <input type="checkbox" checked={showSh2} onChange={(e) => setShowSh2(e.target.checked)} />
+            Sharpless (Sh2)
+          </label>
+          <label className="sky-map-toggle">
+            <input
+              type="checkbox"
+              checked={planningFovEnabled}
+              onChange={(e) => setPlanningFovEnabled(e.target.checked)}
+            />
+            Planning FOV
+          </label>
         </div>
       </div>
+      {planningFovEnabled && (
+        <div className="sky-map-planning-fov">
+          <div className="sky-map-sensor-config" ref={sensorConfigRef}>
+            <button
+              type="button"
+              className="sky-map-icon-button"
+              onClick={() => setSensorConfigOpen((open) => !open)}
+              title="Sensor settings"
+              aria-label="Sensor settings"
+            >
+              <SlidersIcon />
+            </button>
+            {sensorConfigOpen && (
+              <div className="sky-map-sensor-popup">
+                <label>
+                  Sensor
+                  <input
+                    type="number" min={1} step={1} value={sensorWidthPx}
+                    onChange={(e) => setSensorWidthPx(Number(e.target.value))}
+                  />
+                  ×
+                  <input
+                    type="number" min={1} step={1} value={sensorHeightPx}
+                    onChange={(e) => setSensorHeightPx(Number(e.target.value))}
+                  />
+                  px
+                </label>
+                <label>
+                  Pixel size
+                  <input
+                    type="number" min={0.1} step={0.01} value={pixelSizeUm}
+                    onChange={(e) => setPixelSizeUm(Number(e.target.value))}
+                  />
+                  µm
+                </label>
+                <label>
+                  Focal length
+                  <input
+                    type="number" min={1} step={1} value={focalLengthMm}
+                    onChange={(e) => setFocalLengthMm(Number(e.target.value))}
+                  />
+                  mm
+                </label>
+              </div>
+            )}
+          </div>
+          <label>
+            Rotation
+            <input
+              type="number" step={1} value={planningFovRotationDeg}
+              onChange={(e) => setPlanningFovRotationDeg(Number(e.target.value))}
+            />
+            °
+          </label>
+          <span className="sky-map-planning-fov-result">
+            → {planningFovWidthArcmin.toFixed(1)}&apos; × {planningFovHeightArcmin.toFixed(1)}&apos;
+            {' '}({(planningFovWidthArcmin / 60).toFixed(2)}° × {(planningFovHeightArcmin / 60).toFixed(2)}°)
+          </span>
+        </div>
+      )}
       <div ref={containerRef} className="sky-map">
         {lastImageFilename && (
           <img

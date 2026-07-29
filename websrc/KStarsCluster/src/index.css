@@ -420,12 +420,107 @@ table td:first-child {
   color: var(--muted);
 }
 
+.sky-map-icon-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: #10121a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.sky-map-planning-fov {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.sky-map-planning-fov label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sky-map-planning-fov input[type='number'] {
+  width: 60px;
+  background: #10121a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 2px 6px;
+}
+
+.sky-map-planning-fov-result {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.sky-map-sensor-config {
+  position: relative;
+  display: flex;
+}
+
+.sky-map-sensor-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.sky-map-sensor-popup label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sky-map-sensor-popup input[type='number'] {
+  width: 60px;
+  background: #10121a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 2px 6px;
+}
+
 .sky-map {
   position: relative;
   width: 100%;
   height: 420px;
   border-radius: 6px;
   overflow: hidden;
+}
+
+/* requestFullscreen() is called on the card itself, so :fullscreen scopes to exactly that
+ * element — the sky-map div just needs to grow into whatever space the controls above it leave,
+ * instead of staying pinned at its normal in-page 420px height. Aladin's own view auto-adapts to
+ * its container's size (ResizeObserver-driven), so no extra JS is needed to make it repaint. */
+.card:fullscreen {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.card:fullscreen .sky-map {
+  flex: 1;
+  height: auto;
 }
 
 .sky-map-last-image {
