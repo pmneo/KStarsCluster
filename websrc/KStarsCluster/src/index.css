@@ -625,68 +625,24 @@ table td:first-child {
   outline: 1px solid #38bdf8;
 }
 
-.sky-map-astrobin-footprint {
+/* One canvas for every footprint (see drawAstrobinFootprints in SkyMapCard.tsx) instead of one
+ * absolutely-positioned element each — pointer-events: none so Aladin's own drag/zoom handling
+ * underneath keeps receiving mouse events; clicks are resolved by hand in SkyMapCard's own click
+ * handler on the container (see handleAstrobinClick), which still sees every event via bubbling
+ * regardless of this being non-interactive itself. */
+.sky-map-astrobin-canvas {
   position: absolute;
-  display: none;
-  transform-origin: center;
-}
-
-.sky-map-astrobin-thumb {
-  position: relative;
-  display: block;
-  width: 100%;
-  height: 100%;
-  cursor: pointer;
-  /* The backend picks AstroBin's aspect-ratio-preserving "regular" thumbnail specifically so this
-   * can just stretch to the computed footprint box without cropping — object-fit: cover here would
-   * zoom into a square-cropped source instead of showing the image's real extent. */
-  object-fit: fill;
-  opacity: 0.8;
-  outline: 1px solid #22d3ee;
-}
-
-/* z-index has to sit on the wrapper, not the thumb: the wrapper is what's actually absolutely
- * positioned and competing for stacking order against sibling footprints since the hide/reveal
- * wrapper was introduced — raising the inner img no longer lifts it above anything, since it's
- * only stacking within its own (single-child) wrapper. */
-.sky-map-astrobin-footprint:hover {
-  z-index: 1;
-}
-
-.sky-map-astrobin-footprint:hover .sky-map-astrobin-thumb {
-  opacity: 1;
-}
-
-/* A wide-field shot otherwise permanently covers any narrower-focal-length footprint of the same
- * area — collapsing it down to just its outline (plus a small reveal button) makes whatever's
- * underneath clickable again. pointer-events: none is the actual fix for that: without it, this
- * div's full (still wide-field-sized) box keeps intercepting hover/click for whatever's
- * underneath even though only its outline is visible — the reveal button below opts itself back
- * in with pointer-events: auto since it needs to stay clickable. */
-.sky-map-astrobin-footprint--hidden {
-  outline: 1px dashed #22d3ee;
+  inset: 0;
   pointer-events: none;
 }
 
-.sky-map-astrobin-reveal {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(15, 17, 26, 0.85);
-  border: 1px solid #22d3ee;
-  border-radius: 4px;
-  color: #22d3ee;
-  pointer-events: auto;
-}
-
+/* left/top/display are all set imperatively in redraw() — it has to keep tracking its footprint's
+ * own bottom-right corner across pans/zooms (see screenRectBottomRight), the same reason the
+ * footprints themselves are positioned that way rather than through React state/CSS. Starts
+ * hidden so it can't flash at the top-left corner for a frame before the first redraw places it. */
 .sky-map-astrobin-popover {
   position: absolute;
+  display: none;
   z-index: 2;
   width: 220px;
   background: var(--panel);
