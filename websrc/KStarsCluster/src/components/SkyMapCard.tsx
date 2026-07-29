@@ -31,6 +31,19 @@ function CompressIcon() {
   );
 }
 
+function GearIcon() {
+  const teeth = [0, 45, 90, 135, 180, 225, 270, 315];
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+      {teeth.map((deg) => (
+        <rect key={deg} x="10.5" y="0.5" width="3" height="5" rx="1" transform={`rotate(${deg} 12 12)`} />
+      ))}
+      <circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  );
+}
+
 function SlidersIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -119,7 +132,7 @@ function fovCorners(centerRa: number, centerDec: number, widthDeg: number, heigh
  * position predicts), and adding that same +180° there just rotates a correct answer into a wrong
  * one — confirmed the hard way when it flipped every AstroBin footprint 180°, not just the
  * one-off mirrored-solve cases the corners were adopted to fix in the first place. */
-function positionFootprintImage(img: HTMLImageElement, aladin: any, corners: [number, number][], extraHalfTurn: boolean) {
+function positionFootprintImage(img: HTMLElement, aladin: any, corners: [number, number][], extraHalfTurn: boolean) {
   const px = corners.map(([ra, dec]) => aladin.world2pix(ra, dec));
   // world2pix returns null/undefined for points its current projection can't map (e.g. an
   // AstroBin footprint on the opposite side of the sky from wherever the view happens to be) —
@@ -150,6 +163,15 @@ const SHOW_LAST_IMAGE_KEY = 'skymap.showLastImage';
 const SHOW_NGC_KEY = 'skymap.showNgc';
 const SHOW_SH2_KEY = 'skymap.showSh2';
 const SHOW_ASTROBIN_KEY = 'skymap.showAstrobin';
+// Real width is CSS-defined (see .sky-map-astrobin-popover); the height is only an estimate since
+// the actual rendered height depends on title wrapping and isn't known until after it paints —
+// good enough for clamping the popover to stay on-screen without needing a post-paint measurement.
+const ASTROBIN_POPOVER_WIDTH = 220;
+const ASTROBIN_POPOVER_HEIGHT_ESTIMATE = 140;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
 const PLANNING_FOV_ENABLED_KEY = 'skymap.planningFov.enabled';
 const PLANNING_FOV_SENSOR_WIDTH_KEY = 'skymap.planningFov.sensorWidthPx';
 const PLANNING_FOV_SENSOR_HEIGHT_KEY = 'skymap.planningFov.sensorHeightPx';
@@ -297,6 +319,7 @@ function astrobinSearchUrl(name: string): string {
 
 interface AstrobinFootprintBase {
   title: string;
+  hash: string;
   url: string;
   thumbnailUrl: string;
 }
@@ -322,6 +345,20 @@ function footprintCorners(f: AstrobinFootprint): [number, number][] {
 async function fetchAstrobinFootprints(): Promise<AstrobinFootprint[]> {
   const res = await fetch('/astrobin/footprints');
   if (!res.ok) throw new Error(`astrobin footprints request failed: ${res.status}`);
+  return res.json();
+}
+
+interface AstrobinImageDetail {
+  title: string;
+  url: string;
+  date: string | null;
+}
+
+/** Unlike the bulk footprint listing, capture date isn't worth fetching for every image up
+ * front — it's only ever shown for the one footprint someone actually clicks open. */
+async function fetchAstrobinImageDetail(hash: string): Promise<AstrobinImageDetail> {
+  const res = await fetch(`/astrobin/image-detail?hash=${encodeURIComponent(hash)}`);
+  if (!res.ok) throw new Error(`astrobin image detail request failed: ${res.status}`);
   return res.json();
 }
 
@@ -474,10 +511,12 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const sh2CatalogRef = useRef<any>(null);
   const ngcBoundaryRef = useRef<any>(null);
   const sh2BoundaryRef = useRef<any>(null);
-  // Screen-space <img> per footprint (see positionFootprintImage) rather than an Aladin catalog —
-  // this way the actual thumbnail pixels ARE the boundary, positioned/rotated/sized exactly like
-  // the "last image" overlay already does for a single live capture, just for many at once.
-  const astrobinThumbRefs = useRef<(HTMLImageElement | null)[]>([]);
+  // Screen-space wrapper <div> per footprint (see positionFootprintImage) rather than an Aladin
+  // catalog — this way the actual thumbnail pixels ARE the boundary, positioned/rotated/sized
+  // exactly like the "last image" overlay already does for a single live capture, just for many
+  // at once. The wrapper (rather than positioning the <img> directly) exists so a hidden
+  // footprint can swap its content for a reveal button without disturbing the positioning code.
+  const astrobinFootprintRefs = useRef<(HTMLDivElement | null)[]>([]);
   const astrobinFetchedRef = useRef(false);
   const appliedSurveyIdRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -490,6 +529,15 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const [showSh2, setShowSh2] = useState(() => readStoredBoolean(SHOW_SH2_KEY));
   const [showAstrobin, setShowAstrobin] = useState(() => readStoredBoolean(SHOW_ASTROBIN_KEY));
   const [astrobinFootprints, setAstrobinFootprints] = useState<AstrobinFootprint[] | null>(null);
+  // Wide-field shots otherwise sit permanently on top of any narrower-focal-length footprint of
+  // the same area, since they're bigger and later in z-order — "hidden" collapses one down to
+  // just its outline (plus a small reveal button) so whatever's underneath becomes clickable.
+  // Not persisted: it's a per-session decluttering aid, not a setting worth remembering forever.
+  const [hiddenAstrobinUrls, setHiddenAstrobinUrls] = useState<Set<string>>(new Set());
+  const [astrobinPopover, setAstrobinPopover] = useState<{
+    footprint: AstrobinFootprint; date: string | null; loading: boolean; error: boolean; x: number; y: number;
+  } | null>(null);
+  const astrobinPopoverRef = useRef<HTMLDivElement>(null);
   const [lastImageStretch, setLastImageStretch] = useState<StretchSettings>(DEFAULT_STRETCH);
   const [isFullscreen, setIsFullscreen] = useState(false);
   // A user-set, equipment-independent FOV rectangle for planning framing — always centered on
@@ -598,6 +646,52 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     };
   }, [sensorConfigOpen]);
 
+  // Same click-outside/Escape convention as the sensor-settings popup above.
+  useEffect(() => {
+    if (!astrobinPopover) return undefined;
+    function onPointerDown(e: PointerEvent) {
+      if (astrobinPopoverRef.current && !astrobinPopoverRef.current.contains(e.target as Node)) {
+        setAstrobinPopover(null);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setAstrobinPopover(null);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [astrobinPopover]);
+
+  function openAstrobinPopover(f: AstrobinFootprint, e: React.MouseEvent) {
+    const container = containerRef.current;
+    const containerRect = container?.getBoundingClientRect();
+    // Anchored to the click rather than a fixed corner — with dozens of footprints on screen at
+    // once (see hiddenAstrobinUrls above), a fixed-corner popup ends up far from whatever was
+    // actually clicked. Clamped against the map's own bounds (not the popover's real rendered
+    // size, which isn't known until after it paints) so it can't run off the edge of the map.
+    const x = containerRect ? clamp(e.clientX - containerRect.left, 0, containerRect.width - ASTROBIN_POPOVER_WIDTH) : 0;
+    const y = containerRect ? clamp(e.clientY - containerRect.top, 0, containerRect.height - ASTROBIN_POPOVER_HEIGHT_ESTIMATE) : 0;
+    setAstrobinPopover({ footprint: f, date: null, loading: true, error: false, x, y });
+    fetchAstrobinImageDetail(f.hash)
+      .then((detail) => {
+        setAstrobinPopover((prev) => (prev?.footprint.url === f.url ? { ...prev, date: detail.date, loading: false } : prev));
+      })
+      .catch(() => {
+        setAstrobinPopover((prev) => (prev?.footprint.url === f.url ? { ...prev, loading: false, error: true } : prev));
+      });
+  }
+
+  function toggleAstrobinHidden(url: string) {
+    setHiddenAstrobinUrls((prev) => {
+      const next = new Set(prev);
+      if (next.has(url)) next.delete(url); else next.add(url);
+      return next;
+    });
+  }
+
   useEffect(() => {
     if (!window.A || !containerRef.current) return;
     window.A.init.then(() => {
@@ -704,14 +798,14 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
 
       if (showAstrobin && astrobinFootprints) {
         astrobinFootprints.forEach((f, i) => {
-          const img = astrobinThumbRefs.current[i];
-          if (!img) return;
+          const el = astrobinFootprintRefs.current[i];
+          if (!el) return;
           // Only the fovCorners()-derived fallback (no real corners for this image) needs the
           // same +180° correction the live-capture overlay does — see positionFootprintImage.
-          positionFootprintImage(img, aladin, footprintCorners(f), !f.corners);
+          positionFootprintImage(el, aladin, footprintCorners(f), !f.corners);
         });
       } else {
-        astrobinThumbRefs.current.forEach((img) => { if (img) img.style.display = 'none'; });
+        astrobinFootprintRefs.current.forEach((el) => { if (el) el.style.display = 'none'; });
       }
 
       overlay.removeAll();
@@ -747,6 +841,23 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     };
     aladin.on('positionChanged', onChange);
     aladin.on('zoomChanged', onChange);
+
+    // Aladin's 'zoomChanged' callback only fires from explicit zoom calls (the +/- buttons,
+    // setZoomFactor, etc.) — mouse-wheel zooming animates the field of view frame-by-frame without
+    // ever going through the internal updateZoomState() that triggers it, so footprints/overlays
+    // would otherwise sit stale (at their pre-zoom size/position) until the next pan. Polling
+    // getFov() every animation frame is cheap (one float compare) next to the WebGL redraw Aladin
+    // is already doing at the same rate, and catches that case too.
+    let lastFov = aladin.getFov()[0];
+    let frameId = requestAnimationFrame(function pollFov() {
+      const fov = aladin.getFov()[0];
+      if (fov !== lastFov) {
+        lastFov = fov;
+        onChange();
+      }
+      frameId = requestAnimationFrame(pollFov);
+    });
+    return () => cancelAnimationFrame(frameId);
   }, [ready]);
 
   // Keeps the view centered on the mount as it moves, instead of a one-shot "center now" click.
@@ -1054,18 +1165,55 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             className="sky-map-last-image"
           />
         )}
-        {showAstrobin && astrobinFootprints?.map((f, i) => (
-          <img
-            key={f.url}
-            ref={(el) => { astrobinThumbRefs.current[i] = el; }}
-            src={f.thumbnailUrl}
-            alt={f.title}
-            title={f.title}
-            loading="lazy"
-            className="sky-map-astrobin-thumb"
-            onClick={() => window.open(f.url, '_blank', 'noreferrer')}
-          />
-        ))}
+        {showAstrobin && astrobinFootprints?.map((f, i) => {
+          const hidden = hiddenAstrobinUrls.has(f.url);
+          return (
+            <div
+              key={f.url}
+              ref={(el) => { astrobinFootprintRefs.current[i] = el; }}
+              className={hidden ? 'sky-map-astrobin-footprint sky-map-astrobin-footprint--hidden' : 'sky-map-astrobin-footprint'}
+            >
+              {hidden ? (
+                <button
+                  type="button"
+                  className="sky-map-astrobin-reveal"
+                  title={f.title}
+                  onClick={(e) => openAstrobinPopover(f, e)}
+                >
+                  <GearIcon />
+                </button>
+              ) : (
+                <img
+                  src={f.thumbnailUrl}
+                  alt={f.title}
+                  title={f.title}
+                  loading="lazy"
+                  className="sky-map-astrobin-thumb"
+                  onClick={(e) => openAstrobinPopover(f, e)}
+                />
+              )}
+            </div>
+          );
+        })}
+        {astrobinPopover && (
+          <div
+            className="sky-map-astrobin-popover"
+            ref={astrobinPopoverRef}
+            style={{ left: astrobinPopover.x, top: astrobinPopover.y }}
+          >
+            <button type="button" className="sky-map-astrobin-popover-close" onClick={() => setAstrobinPopover(null)} aria-label="Close">×</button>
+            <div className="sky-map-astrobin-popover-title">{astrobinPopover.footprint.title}</div>
+            <div className="sky-map-astrobin-popover-date">
+              {astrobinPopover.loading ? 'Loading…' : astrobinPopover.error ? 'Failed to load date' : (astrobinPopover.date ?? 'No acquisition date')}
+            </div>
+            <div className="sky-map-astrobin-popover-actions">
+              <a href={astrobinPopover.footprint.url} target="_blank" rel="noreferrer">Open on AstroBin</a>
+              <button type="button" onClick={() => toggleAstrobinHidden(astrobinPopover.footprint.url)}>
+                {hiddenAstrobinUrls.has(astrobinPopover.footprint.url) ? 'Show' : 'Hide'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

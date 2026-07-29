@@ -625,10 +625,17 @@ table td:first-child {
   outline: 1px solid #38bdf8;
 }
 
-.sky-map-astrobin-thumb {
+.sky-map-astrobin-footprint {
   position: absolute;
   display: none;
   transform-origin: center;
+}
+
+.sky-map-astrobin-thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
   cursor: pointer;
   /* The backend picks AstroBin's aspect-ratio-preserving "regular" thumbnail specifically so this
    * can just stretch to the computed footprint box without cropping — object-fit: cover here would
@@ -638,9 +645,87 @@ table td:first-child {
   outline: 1px solid #22d3ee;
 }
 
-.sky-map-astrobin-thumb:hover {
-  opacity: 1;
+/* z-index has to sit on the wrapper, not the thumb: the wrapper is what's actually absolutely
+ * positioned and competing for stacking order against sibling footprints since the hide/reveal
+ * wrapper was introduced — raising the inner img no longer lifts it above anything, since it's
+ * only stacking within its own (single-child) wrapper. */
+.sky-map-astrobin-footprint:hover {
   z-index: 1;
+}
+
+.sky-map-astrobin-footprint:hover .sky-map-astrobin-thumb {
+  opacity: 1;
+}
+
+/* A wide-field shot otherwise permanently covers any narrower-focal-length footprint of the same
+ * area — collapsing it down to just its outline (plus a small reveal button) makes whatever's
+ * underneath clickable again. pointer-events: none is the actual fix for that: without it, this
+ * div's full (still wide-field-sized) box keeps intercepting hover/click for whatever's
+ * underneath even though only its outline is visible — the reveal button below opts itself back
+ * in with pointer-events: auto since it needs to stay clickable. */
+.sky-map-astrobin-footprint--hidden {
+  outline: 1px dashed #22d3ee;
+  pointer-events: none;
+}
+
+.sky-map-astrobin-reveal {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 17, 26, 0.85);
+  border: 1px solid #22d3ee;
+  border-radius: 4px;
+  color: #22d3ee;
+  pointer-events: auto;
+}
+
+.sky-map-astrobin-popover {
+  position: absolute;
+  z-index: 2;
+  width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.sky-map-astrobin-popover-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 0 4px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.sky-map-astrobin-popover-title {
+  padding-right: 16px;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.sky-map-astrobin-popover-date {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.sky-map-astrobin-popover-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 0.8rem;
 }
 
 .image-strip {

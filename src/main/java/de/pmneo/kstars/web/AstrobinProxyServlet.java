@@ -37,6 +37,7 @@ public class AstrobinProxyServlet extends HttpServlet {
     // is fundamentally "my own dashboard showing my own gallery".
     private static final long ASTROBIN_USER_ID = 56163;
     private static final int IMAGE_CONTENT_TYPE_ID = 19;
+    private static final int IMAGE_REVISION_CONTENT_TYPE_ID = 20;
     private static final String API_BASE = "https://app.astrobin.com/api/v2";
 
     // The bulk solutions endpoint accepts a comma-separated id list in one request — batched
@@ -59,22 +60,44 @@ public class AstrobinProxyServlet extends HttpServlet {
     @Override
     protected void doGet( HttpServletRequest req, HttpServletResponse resp ) throws IOException {
         String pathInfo = req.getPathInfo();
-        if( !"/footprints".equals( pathInfo ) ) {
-            resp.sendError( HttpServletResponse.SC_NOT_FOUND );
+        if( "/footprints".equals( pathInfo ) ) {
+            List<Map<String, Object>> footprints;
+            try {
+                footprints = getFootprints();
+            }
+            catch( Exception e ) {
+                resp.sendError( HttpServletResponse.SC_BAD_GATEWAY );
+                return;
+            }
+            resp.setContentType( "application/json;charset=utf-8" );
+            gson.toJson( footprints, resp.getWriter() );
             return;
         }
 
-        List<Map<String, Object>> footprints;
-        try {
-            footprints = getFootprints();
-        }
-        catch( Exception e ) {
-            resp.sendError( HttpServletResponse.SC_BAD_GATEWAY );
+        if( "/image-detail".equals( pathInfo ) ) {
+            String hash = req.getParameter( "hash" );
+            if( hash == null || hash.isEmpty() ) {
+                resp.sendError( HttpServletResponse.SC_BAD_REQUEST );
+                return;
+            }
+            Map<String, Object> detail;
+            try {
+                detail = getImageDetail( hash );
+            }
+            catch( Exception e ) {
+                resp.sendError( HttpServletResponse.SC_BAD_GATEWAY );
+                return;
+            }
+            if( detail == null ) {
+                resp.sendError( HttpServletResponse.SC_NOT_FOUND );
+                return;
+            }
+            resp.setContentType( "application/json;charset=utf-8" );
+            gson.toJson( detail, resp.getWriter() );
             return;
         }
 
-        resp.setContentType( "application/json;charset=utf-8" );
-        gson.toJson( footprints, resp.getWriter() );
+        resp.sendError( HttpServletResponse.SC_NOT_FOUND );
     }
 
     private synchronized List<Map<String, Object>> getFootprints() throws Exception {
@@ -84,16 +107,16 @@ public class AstrobinProxyServlet extends HttpServlet {
         }
 
         List<Map<String, Object>> images = fetchAllImages();
-        Map<String, Map<String, Object>> solutionsByObjectId = fetchSolutions( images );
+        Map<String, Map<String, Object>> solutionsByKey = fetchSolutions( images );
 
         List<Map<String, Object>> footprints = new ArrayList<>();
         for( Map<String, Object> image : images ) {
-            String pk = String.valueOf( asLong( image.get( "pk" ) ) );
-            Map<String, Object> solution = solutionsByObjectId.get( pk );
+            Map<String, Object> solution = solutionsByKey.get( solutionKey( image ) );
             if( solution == null ) continue; // not (yet) plate-solved
 
             Map<String, Object> footprint = new HashMap<>();
             footprint.put( "title", image.get( "title" ) );
+            footprint.put( "hash", image.get( "hash" ) );
             footprint.put( "url", "https://app.astrobin.com/i/" + image.get( "hash" ) );
             footprint.put( "thumbnailUrl", extractThumbnailUrl( image ) );
 
@@ -105,9 +128,15 @@ public class AstrobinProxyServlet extends HttpServlet {
                 // No advanced solve for this one — fall back to reconstructing a rectangle from
                 // center + size + orientation, which carries the same "which rotation direction"
                 // risk described on preferAdvanced below (unavoidable without real corner data).
+                // w/h must come from whichever revision the solution itself belongs to — the base
+                // Image's own w/h can be a completely different aspect ratio once edits exist (the
+                // same revision mismatch solutionKey() exists to avoid, just for pixel dimensions
+                // instead of the plate-solve).
+                Map<String, Object> finalRevision = finalRevision( image );
+                Map<String, Object> dimensionsSource = finalRevision != null ? finalRevision : image;
                 double pixscale = preferAdvanced( solution, "advanced_pixscale", "pixscale" );
-                double w = asDouble( image.get( "w" ) );
-                double h = asDouble( image.get( "h" ) );
+                double w = asDouble( dimensionsSource.get( "w" ) );
+                double h = asDouble( dimensionsSource.get( "h" ) );
                 if( pixscale <= 0 || w <= 0 || h <= 0 ) continue;
 
                 footprint.put( "ra", preferAdvanced( solution, "advanced_ra", "ra" ) );
@@ -124,6 +153,46 @@ public class AstrobinProxyServlet extends HttpServlet {
         cachedFootprints = footprints;
         cachedAt = now;
         return footprints;
+    }
+
+    /** On-demand (not part of the bulk/cached footprint listing — capture date is only needed for
+     *  whichever single image the user actually clicks on the sky map, not eagerly for all few
+     *  hundred). The lightweight gallery listing has no acquisition-date field at all; only the
+     *  full per-image detail endpoint carries "deepSkyAcquisitions" (one entry per imaging
+     *  session, e.g. spread across several nights for the same target). Reports the [min, max]
+     *  session date range as a single "date" string — a plain date if it's all one night. */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> getImageDetail( String hash ) throws Exception {
+        // Like fetchAllImages, this is a filtered list endpoint, not a dedicated detail route — it
+        // still returns a paginated {"results": [...]} envelope even though the hash filter can only
+        // ever match zero or one image.
+        Map<String, Object> page = fetchJsonObject( API_BASE + "/images/image/?hash=" + hash );
+        if( page == null ) return null;
+        Object results = page.get( "results" );
+        if( !(results instanceof List) || ((List<Object>) results).isEmpty() ) return null;
+        Map<String, Object> image = (Map<String, Object>) ((List<Object>) results).get( 0 );
+
+        Map<String, Object> detail = new HashMap<>();
+        detail.put( "title", image.get( "title" ) );
+        detail.put( "url", "https://app.astrobin.com/i/" + hash );
+        detail.put( "date", captureDateRange( image.get( "deepSkyAcquisitions" ) ) );
+        return detail;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String captureDateRange( Object deepSkyAcquisitions ) {
+        if( !(deepSkyAcquisitions instanceof List) ) return null;
+        String min = null, max = null;
+        for( Object entry : (List<Object>) deepSkyAcquisitions ) {
+            if( !(entry instanceof Map) ) continue;
+            Object date = ((Map<String, Object>) entry).get( "date" );
+            if( date == null ) continue;
+            String dateStr = String.valueOf( date );
+            if( min == null || dateStr.compareTo( min ) < 0 ) min = dateStr;
+            if( max == null || dateStr.compareTo( max ) > 0 ) max = dateStr;
+        }
+        if( min == null ) return null;
+        return min.equals( max ) ? min : min + " – " + max;
     }
 
     /** The listing's own "finalGalleryThumbnail" is a 130x130 *square-cropped* thumbnail — fine for
@@ -171,27 +240,65 @@ public class AstrobinProxyServlet extends HttpServlet {
         return images;
     }
 
-    /** AstroBin's plate-solving results live behind a separate endpoint, keyed by Django's
-     *  generic content-type/object-id pair rather than being inlined into the image listing —
-     *  fetched in batches since it accepts a comma-separated id list per request, instead of one
-     *  round trip per image (a few hundred images would otherwise mean a few hundred requests). */
-    private Map<String, Map<String, Object>> fetchSolutions( List<Map<String, Object>> images ) throws Exception {
-        Map<String, Map<String, Object>> byObjectId = new HashMap<>();
-        for( int start = 0; start < images.size(); start += SOLUTION_BATCH_SIZE ) {
-            List<Map<String, Object>> batch = images.subList( start, Math.min( start + SOLUTION_BATCH_SIZE, images.size() ) );
-            String ids = batch.stream()
-                    .map( image -> String.valueOf( asLong( image.get( "pk" ) ) ) )
-                    .collect( Collectors.joining( "," ) );
-            String url = API_BASE + "/platesolving/solutions/?content_type=" + IMAGE_CONTENT_TYPE_ID + "&object_ids=" + ids;
+    /** Images with edit history carry their *own* plate-solve per revision, tied to the specific
+     *  revision's ImageRevision id (Django content-type 20) rather than the base Image id (content
+     *  type 19) — confirmed on a real image whose base-Image solution was ~90° off from what its
+     *  current (edited) revision actually shows, because that base solution belonged to an earlier,
+     *  differently-oriented upload the user has since replaced. The listing's own "revisions" array
+     *  already tells us which revision (if any) is the current "final" one, with no extra request
+     *  needed to find it. Images with no edit history (empty "revisions") have only the base
+     *  Image-level solution, which is then also the current one. */
+    private static String solutionKey( Map<String, Object> image ) {
+        Map<String, Object> finalRevision = finalRevision( image );
+        return finalRevision != null
+                ? IMAGE_REVISION_CONTENT_TYPE_ID + ":" + asLong( finalRevision.get( "pk" ) )
+                : IMAGE_CONTENT_TYPE_ID + ":" + asLong( image.get( "pk" ) );
+    }
 
-            List<Map<String, Object>> solutions = fetchJsonArray( url );
-            if( solutions == null ) continue;
-            for( Map<String, Object> solution : solutions ) {
-                Object objectId = solution.get( "object_id" );
-                if( objectId != null ) byObjectId.put( String.valueOf( objectId ), solution );
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> finalRevision( Map<String, Object> image ) {
+        Object revisions = image.get( "revisions" );
+        if( !(revisions instanceof List) ) return null;
+        for( Object entry : (List<Object>) revisions ) {
+            if( entry instanceof Map && Boolean.TRUE.equals( ((Map<String, Object>) entry).get( "isFinal" ) ) ) {
+                return (Map<String, Object>) entry;
             }
         }
-        return byObjectId;
+        return null;
+    }
+
+    /** AstroBin's plate-solving results live behind a separate endpoint, keyed by Django's generic
+     *  content-type/object-id pair rather than being inlined into the image listing — fetched in
+     *  batches (per content type, see solutionKey) since it accepts a comma-separated id list per
+     *  request, instead of one round trip per image (a few hundred images would otherwise mean a
+     *  few hundred requests). */
+    private Map<String, Map<String, Object>> fetchSolutions( List<Map<String, Object>> images ) throws Exception {
+        Map<Integer, List<Long>> idsByContentType = new HashMap<>();
+        for( Map<String, Object> image : images ) {
+            Map<String, Object> finalRevision = finalRevision( image );
+            int contentType = finalRevision != null ? IMAGE_REVISION_CONTENT_TYPE_ID : IMAGE_CONTENT_TYPE_ID;
+            long objectId = asLong( finalRevision != null ? finalRevision.get( "pk" ) : image.get( "pk" ) );
+            idsByContentType.computeIfAbsent( contentType, k -> new ArrayList<>() ).add( objectId );
+        }
+
+        Map<String, Map<String, Object>> byKey = new HashMap<>();
+        for( Map.Entry<Integer, List<Long>> entry : idsByContentType.entrySet() ) {
+            int contentType = entry.getKey();
+            List<Long> ids = entry.getValue();
+            for( int start = 0; start < ids.size(); start += SOLUTION_BATCH_SIZE ) {
+                List<Long> batch = ids.subList( start, Math.min( start + SOLUTION_BATCH_SIZE, ids.size() ) );
+                String idsParam = batch.stream().map( String::valueOf ).collect( Collectors.joining( "," ) );
+                String url = API_BASE + "/platesolving/solutions/?content_type=" + contentType + "&object_ids=" + idsParam;
+
+                List<Map<String, Object>> solutions = fetchJsonArray( url );
+                if( solutions == null ) continue;
+                for( Map<String, Object> solution : solutions ) {
+                    Object objectId = solution.get( "object_id" );
+                    if( objectId != null ) byKey.put( contentType + ":" + objectId, solution );
+                }
+            }
+        }
+        return byKey;
     }
 
     @SuppressWarnings("unchecked")
