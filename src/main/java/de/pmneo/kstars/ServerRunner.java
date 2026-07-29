@@ -17,6 +17,7 @@ import org.eclipse.jetty.websocket.jakarta.server.config.JakartaWebSocketServlet
 import com.sampullara.cli.Args;
 import com.sampullara.cli.Argument;
 
+import de.pmneo.kstars.web.AstrobinProxyServlet;
 import de.pmneo.kstars.web.CommandServlet;
 import de.pmneo.kstars.web.HipsProxyServlet;
 import de.pmneo.kstars.web.LoggingSocket;
@@ -145,6 +146,7 @@ public class ServerRunner {
 
 		contextHandler.addServlet(CommandServlet.class, "/cmd/*");
         contextHandler.addServlet(HipsProxyServlet.class, "/hips/*");
+        contextHandler.addServlet(AstrobinProxyServlet.class, "/astrobin/*");
         contextHandler.addServlet(DefaultServlet.class, "/");
 
         // Start Server

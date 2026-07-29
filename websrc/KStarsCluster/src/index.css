@@ -625,6 +625,24 @@ table td:first-child {
   outline: 1px solid #38bdf8;
 }
 
+.sky-map-astrobin-thumb {
+  position: absolute;
+  display: none;
+  transform-origin: center;
+  cursor: pointer;
+  /* The backend picks AstroBin's aspect-ratio-preserving "regular" thumbnail specifically so this
+   * can just stretch to the computed footprint box without cropping — object-fit: cover here would
+   * zoom into a square-cropped source instead of showing the image's real extent. */
+  object-fit: fill;
+  opacity: 0.8;
+  outline: 1px solid #22d3ee;
+}
+
+.sky-map-astrobin-thumb:hover {
+  opacity: 1;
+  z-index: 1;
+}
+
 .image-strip {
   display: flex;
   gap: 8px;

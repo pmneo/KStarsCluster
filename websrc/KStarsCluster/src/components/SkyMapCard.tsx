@@ -105,10 +105,51 @@ function fovCorners(centerRa: number, centerDec: number, widthDeg: number, heigh
   });
 }
 
+/** Positions a plain screen-space <img> over a sky-registered rectangle (world corners in
+ * [top-left, top-right, bottom-right, bottom-left] winding order) by projecting them to pixels —
+ * the technique the live "last image" overlay already uses, generalized so any number of images
+ * (e.g. one per AstroBin footprint) can share it. Aladin's own image layers need real HiPS/WCS
+ * tiling, which a one-off JPEG thumbnail doesn't have, so this fakes it with CSS instead.
+ *
+ * `extraHalfTurn` exists because the two callers need opposite answers to the same question, and
+ * there's no way to derive it from the corners alone: the live-capture caller's corners come from
+ * fovCorners() using Ekos's own `pa`, which (empirically) needs a +180° correction to stop the
+ * actual photo rendering upside down; AstroBin's corners are real solved RA/Dec per corner
+ * (verified against a named object's true catalog position landing exactly where its pixel
+ * position predicts), and adding that same +180° there just rotates a correct answer into a wrong
+ * one — confirmed the hard way when it flipped every AstroBin footprint 180°, not just the
+ * one-off mirrored-solve cases the corners were adopted to fix in the first place. */
+function positionFootprintImage(img: HTMLImageElement, aladin: any, corners: [number, number][], extraHalfTurn: boolean) {
+  const px = corners.map(([ra, dec]) => aladin.world2pix(ra, dec));
+  // world2pix returns null/undefined for points its current projection can't map (e.g. an
+  // AstroBin footprint on the opposite side of the sky from wherever the view happens to be) —
+  // rather than crashing the whole redraw() (which would also skip the live FOV overlay below
+  // it), just leave this one image hidden until it's somewhere projectable.
+  if (px.some((p) => !p)) {
+    img.style.display = 'none';
+    return;
+  }
+  const cx = (px[0][0] + px[2][0]) / 2;
+  const cy = (px[0][1] + px[2][1]) / 2;
+  const topW = Math.hypot(px[1][0] - px[0][0], px[1][1] - px[0][1]);
+  const rightH = Math.hypot(px[2][0] - px[1][0], px[2][1] - px[1][1]);
+  const angle = (Math.atan2(px[1][1] - px[0][1], px[1][0] - px[0][0]) * 180) / Math.PI + (extraHalfTurn ? 180 : 0);
+
+  img.style.display = 'block';
+  img.style.width = `${topW}px`;
+  img.style.height = `${rightH}px`;
+  img.style.left = `${cx}px`;
+  img.style.top = `${cy}px`;
+  img.style.marginLeft = `${-topW / 2}px`;
+  img.style.marginTop = `${-rightH / 2}px`;
+  img.style.transform = `rotate(${angle}deg)`;
+}
+
 const FOLLOW_MOUNT_KEY = 'skymap.followMount';
 const SHOW_LAST_IMAGE_KEY = 'skymap.showLastImage';
 const SHOW_NGC_KEY = 'skymap.showNgc';
 const SHOW_SH2_KEY = 'skymap.showSh2';
+const SHOW_ASTROBIN_KEY = 'skymap.showAstrobin';
 const PLANNING_FOV_ENABLED_KEY = 'skymap.planningFov.enabled';
 const PLANNING_FOV_SENSOR_WIDTH_KEY = 'skymap.planningFov.sensorWidthPx';
 const PLANNING_FOV_SENSOR_HEIGHT_KEY = 'skymap.planningFov.sensorHeightPx';
@@ -252,6 +293,36 @@ interface SimbadFovObject {
 
 function astrobinSearchUrl(name: string): string {
   return `https://www.astrobin.com/search/?q=${encodeURIComponent(name)}`;
+}
+
+interface AstrobinFootprintBase {
+  title: string;
+  url: string;
+  thumbnailUrl: string;
+}
+
+/** The backend prefers real corner RA/Dec pairs (AstroBin's own advanced-plate-solve output) when
+ * available — that sidesteps rotation-angle sign/handedness guessing entirely, which turned out to
+ * be genuinely ambiguous (both the raw "basic" orientation field and a fixed basic-vs-advanced
+ * preference were each confirmed wrong on different real images). `corners` is only absent for
+ * images that were never advanced-solved, the rarer case — see footprintCorners below. */
+type AstrobinFootprint = AstrobinFootprintBase & (
+  | { corners: [number, number][]; ra?: undefined }
+  | { corners?: undefined; ra: number; dec: number; widthDeg: number; heightDeg: number; orientationDeg: number }
+);
+
+function footprintCorners(f: AstrobinFootprint): [number, number][] {
+  return f.corners ?? fovCorners(f.ra, f.dec, f.widthDeg, f.heightDeg, f.orientationDeg);
+}
+
+/** Server-proxied (see AstrobinProxyServlet — the underlying AstroBin endpoints send no
+ * Access-Control-Allow-Origin, so the browser can't call them directly) and cached for an hour
+ * there, so this itself is cheap and doesn't need its own client-side caching beyond "already
+ * fetched once this page session" (see astrobinFetchedRef below). */
+async function fetchAstrobinFootprints(): Promise<AstrobinFootprint[]> {
+  const res = await fetch('/astrobin/footprints');
+  if (!res.ok) throw new Error(`astrobin footprints request failed: ${res.status}`);
+  return res.json();
 }
 
 /** AstroBin's coordinate search (RA/Dec-Koordinaten, an AstroBin Ultimate feature) encodes its
@@ -403,6 +474,11 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const sh2CatalogRef = useRef<any>(null);
   const ngcBoundaryRef = useRef<any>(null);
   const sh2BoundaryRef = useRef<any>(null);
+  // Screen-space <img> per footprint (see positionFootprintImage) rather than an Aladin catalog —
+  // this way the actual thumbnail pixels ARE the boundary, positioned/rotated/sized exactly like
+  // the "last image" overlay already does for a single live capture, just for many at once.
+  const astrobinThumbRefs = useRef<(HTMLImageElement | null)[]>([]);
+  const astrobinFetchedRef = useRef(false);
   const appliedSurveyIdRef = useRef<string | null>(null);
   const [ready, setReady] = useState(false);
   const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
@@ -412,6 +488,8 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const [followMount, setFollowMount] = useState(() => readStoredBoolean(FOLLOW_MOUNT_KEY));
   const [showNgc, setShowNgc] = useState(() => readStoredBoolean(SHOW_NGC_KEY));
   const [showSh2, setShowSh2] = useState(() => readStoredBoolean(SHOW_SH2_KEY));
+  const [showAstrobin, setShowAstrobin] = useState(() => readStoredBoolean(SHOW_ASTROBIN_KEY));
+  const [astrobinFootprints, setAstrobinFootprints] = useState<AstrobinFootprint[] | null>(null);
   const [lastImageStretch, setLastImageStretch] = useState<StretchSettings>(DEFAULT_STRETCH);
   const [isFullscreen, setIsFullscreen] = useState(false);
   // A user-set, equipment-independent FOV rectangle for planning framing — always centered on
@@ -624,6 +702,18 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         }
       }
 
+      if (showAstrobin && astrobinFootprints) {
+        astrobinFootprints.forEach((f, i) => {
+          const img = astrobinThumbRefs.current[i];
+          if (!img) return;
+          // Only the fovCorners()-derived fallback (no real corners for this image) needs the
+          // same +180° correction the live-capture overlay does — see positionFootprintImage.
+          positionFootprintImage(img, aladin, footprintCorners(f), !f.corners);
+        });
+      } else {
+        astrobinThumbRefs.current.forEach((img) => { if (img) img.style.display = 'none'; });
+      }
+
       overlay.removeAll();
       if (!mountCoords || !fov) {
         if (overlayImgRef.current) overlayImgRef.current.style.display = 'none';
@@ -635,25 +725,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       overlay.add(window.A.polygon(corners));
 
       if (overlayImgRef.current && showLastImage && lastImageFilename) {
-        const px = corners.map(([ra, dec]) => aladin.world2pix(ra, dec));
-        const cx = (px[0][0] + px[2][0]) / 2;
-        const cy = (px[0][1] + px[2][1]) / 2;
-        const topW = Math.hypot(px[1][0] - px[0][0], px[1][1] - px[0][1]);
-        const rightH = Math.hypot(px[2][0] - px[1][0], px[2][1] - px[1][1]);
-        // +180: the FOV rectangle itself is 180°-symmetric so this never showed up there, but
-        // the actual photo is not — verified empirically that it renders upside down without
-        // this correction.
-        const angle = (Math.atan2(px[1][1] - px[0][1], px[1][0] - px[0][0]) * 180) / Math.PI + 180;
-
-        const img = overlayImgRef.current;
-        img.style.display = 'block';
-        img.style.width = `${topW}px`;
-        img.style.height = `${rightH}px`;
-        img.style.left = `${cx}px`;
-        img.style.top = `${cy}px`;
-        img.style.marginLeft = `${-topW / 2}px`;
-        img.style.marginTop = `${-rightH / 2}px`;
-        img.style.transform = `rotate(${angle}deg)`;
+        positionFootprintImage(overlayImgRef.current, aladin, corners, true);
       } else if (overlayImgRef.current) {
         overlayImgRef.current.style.display = 'none';
       }
@@ -662,6 +734,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     redrawRef.current();
   }, [
     mountCoords?.ra, mountCoords?.dec, fov?.widthArcmin, fov?.heightArcmin, pa, showLastImage, lastImageFilename,
+    showAstrobin, astrobinFootprints,
     planningFovEnabled, planningFovWidthArcmin, planningFovHeightArcmin, planningFovRotationDeg,
   ]);
 
@@ -697,6 +770,10 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   useEffect(() => {
     writeStoredBoolean(SHOW_SH2_KEY, showSh2);
   }, [showSh2]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_ASTROBIN_KEY, showAstrobin);
+  }, [showAstrobin]);
 
   useEffect(() => {
     writeStoredBoolean(PLANNING_FOV_ENABLED_KEY, planningFovEnabled);
@@ -773,6 +850,16 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     );
   }, [ready, showSh2]);
 
+  // Fetched at most once (lazily, on first enable) from our own server-side cache — see
+  // fetchAstrobinFootprints — then just shown/hidden via redraw()'s showAstrobin check.
+  useEffect(() => {
+    if (!showAstrobin || astrobinFetchedRef.current) return;
+    astrobinFetchedRef.current = true;
+    fetchAstrobinFootprints()
+      .then(setAstrobinFootprints)
+      .catch(() => { /* AstroBin unreachable — leave the toggle checked but nothing drawn, no retry loop */ });
+  }, [showAstrobin]);
+
   useEffect(() => {
     function onFullscreenChange() {
       setIsFullscreen(document.fullscreenElement === cardRef.current);
@@ -846,6 +933,10 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
           <label className="sky-map-toggle">
             <input type="checkbox" checked={showSh2} onChange={(e) => setShowSh2(e.target.checked)} />
             Sharpless (Sh2)
+          </label>
+          <label className="sky-map-toggle">
+            <input type="checkbox" checked={showAstrobin} onChange={(e) => setShowAstrobin(e.target.checked)} />
+            My AstroBin
           </label>
           <label className="sky-map-toggle">
             <input
@@ -963,6 +1054,18 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             className="sky-map-last-image"
           />
         )}
+        {showAstrobin && astrobinFootprints?.map((f, i) => (
+          <img
+            key={f.url}
+            ref={(el) => { astrobinThumbRefs.current[i] = el; }}
+            src={f.thumbnailUrl}
+            alt={f.title}
+            title={f.title}
+            loading="lazy"
+            className="sky-map-astrobin-thumb"
+            onClick={() => window.open(f.url, '_blank', 'noreferrer')}
+          />
+        ))}
       </div>
     </div>
   );
