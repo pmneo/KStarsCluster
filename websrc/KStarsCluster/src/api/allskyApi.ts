@@ -21,16 +21,16 @@ export interface AllskyCameraInfo {
 }
 
 export function allskyImageUrl(cam: string, path: string): string {
-  return `/cmd/allsky/image?${new URLSearchParams({ cam, path }).toString()}`;
+  return `/allsky/image?${new URLSearchParams({ cam, path }).toString()}`;
 }
 
 export async function fetchAllskyCameras(): Promise<Record<string, AllskyCameraInfo>> {
-  const res = await fetch('/cmd/allsky/cameras');
+  const res = await fetch('/allsky/cameras');
   return res.json();
 }
 
 export async function fetchAllskyLatest(cam: string): Promise<AllskyLatest> {
-  const res = await fetch(`/cmd/allsky/latest?${new URLSearchParams({ cam }).toString()}`);
+  const res = await fetch(`/allsky/latest?${new URLSearchParams({ cam }).toString()}`);
   return res.json();
 }
 
@@ -43,7 +43,7 @@ export async function fetchAllskyLatest(cam: string): Promise<AllskyLatest> {
 export async function fetchAllskyChart(cam: string, limitS: number, timestampMs?: number): Promise<AllskyPoint[]> {
   const params: Record<string, string> = { cam, limitS: String(limitS) };
   if (timestampMs !== undefined) params.timestamp = String(Math.round(timestampMs / 1000));
-  const res = await fetch(`/cmd/allsky/chart?${new URLSearchParams(params).toString()}`);
+  const res = await fetch(`/allsky/chart?${new URLSearchParams(params).toString()}`);
   return res.json();
 }
 

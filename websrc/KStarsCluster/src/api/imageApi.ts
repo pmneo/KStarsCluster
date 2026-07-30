@@ -15,11 +15,11 @@ export function imageUrl(filename: string, maxDim: number, stretch: StretchSetti
     midtones: String(stretch.midtones),
     highlights: String(stretch.highlights),
   });
-  return `/cmd/images/thumb?${params.toString()}`;
+  return `/images/thumb?${params.toString()}`;
 }
 
 export async function fetchAutoStretch(filename: string, strong: boolean): Promise<StretchSettings> {
   const params = new URLSearchParams({ file: filename, strong: String(strong) });
-  const res = await fetch(`/cmd/images/autostretch?${params.toString()}`);
+  const res = await fetch(`/images/autostretch?${params.toString()}`);
   return res.json();
 }

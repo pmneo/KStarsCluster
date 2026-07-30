@@ -21,8 +21,8 @@ public class CommandServlet extends HttpServlet
         public Object doAction( String[] pathParts, HttpServletRequest req, HttpServletResponse resp ) throws Exception;
     }
 
-    /** Polled/loaded continuously by the UI (status WS fallback, image thumbnails, allsky widget) — logging every call would drown out actual commands. */
-    private static final Set<String> QUIET_ACTIONS = Set.of( "status", "images", "allsky" );
+    /** Polled continuously by the UI (status WS fallback) — logging every call would drown out actual commands. */
+    private static final Set<String> QUIET_ACTIONS = Set.of( "status" );
 
     private Map<String,Action> actions = new HashMap<>();
 

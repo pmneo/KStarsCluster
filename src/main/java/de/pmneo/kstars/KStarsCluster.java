@@ -1,10 +1,5 @@
 package de.pmneo.kstars;
 
-import java.awt.Color;
-import java.awt.FontMetrics;
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
-import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileReader;
@@ -15,7 +10,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.regex.Pattern;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -55,7 +49,6 @@ import com.google.gson.GsonBuilder;
 
 import bsh.Interpreter;
 
-import de.pmneo.kstars.utils.AllskyClient;
 import de.pmneo.kstars.utils.Coordinates;
 import de.pmneo.kstars.utils.EkosAnalyzeLog;
 import de.pmneo.kstars.utils.FitsThumbnail;
@@ -64,8 +57,6 @@ import de.pmneo.kstars.web.CommandServlet.Action;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-
-import javax.imageio.ImageIO;
 
 
 public abstract class KStarsCluster extends KStarsState {
@@ -148,16 +139,6 @@ public abstract class KStarsCluster extends KStarsState {
 	private final List<Runnable> subscriptions = new ArrayList<>();
 
 	protected final HttpClient client;
-
-	/** showDetails: whether star count/history are meaningful for this camera — false for one
-	 *  pointed at the dome interior rather than the sky (no point charting "stars" there). */
-	private record AllskyCamera( String label, boolean showDetails, AllskyClient client ) {}
-
-	/** One indi-allsky install per site — "cam" query param on the allsky/* actions selects which. */
-	private final Map<String, AllskyCamera> allskyCameras = Map.of(
-			"default", new AllskyCamera( "Allsky", true, new AllskyClient( "192.168.0.109", 1 ) ),
-			"obsy", new AllskyCamera( "Allsky (Obsy)", false, new AllskyClient( "192.168.0.145", 2 ) )
-	);
 
 	public KStarsCluster( String logPrefix ) throws DBusException {
 		super( logPrefix );
@@ -1459,126 +1440,6 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 		} );
 
-		actions.put( "images", ( parts, req, resp ) -> {
-			if( parts.length < 2 ) {
-				return "usage: images/<thumb|autostretch>";
-			}
-			switch( parts[1] ) {
-				case "thumb": {
-					File fitsFile = resolveFileParam( req, resp );
-					if( fitsFile == null ) {
-						// A missing/blank "file" param (400) is a caller bug — leave that as a
-						// plain error response. A file that's unrecognized/gone (404) is the
-						// normal case for e.g. analyze-log-restored images whose files have
-						// since been moved or deleted — serve a placeholder instead of leaving
-						// the <img> tag broken.
-						if( resp.getStatus() == HttpServletResponse.SC_NOT_FOUND ) {
-							byte[] placeholder = getNotFoundImageBytes();
-							resp.setStatus( HttpServletResponse.SC_OK );
-							resp.setContentType( "image/jpeg" );
-							resp.setContentLength( placeholder.length );
-							resp.getOutputStream().write( placeholder );
-							resp.getOutputStream().flush();
-						}
-						return null;
-					}
-
-					int maxDim = clamp( parseIntParam( req, "maxDim", 320 ), 32, 8000 );
-					double shadows = clamp( parseDoubleParam( req, "shadows", 0.0 ), 0, 1 );
-					double midtones = clamp( parseDoubleParam( req, "midtones", 0.5 ), 0, 1 );
-					double highlights = clamp( parseDoubleParam( req, "highlights", 1.0 ), 0, 1 );
-
-					byte[] jpeg = renderThumbnailCached( fitsFile, maxDim, shadows, midtones, highlights );
-					resp.setContentType( "image/jpeg" );
-					resp.setContentLength( jpeg.length );
-					resp.getOutputStream().write( jpeg );
-					resp.getOutputStream().flush();
-					return null;
-				}
-
-				case "autostretch": {
-					File fitsFile = resolveFileParam( req, resp );
-					if( fitsFile == null ) {
-						return null;
-					}
-
-					boolean strong = "true".equals( req.getParameter( "strong" ) );
-					double[] shmh = computeAutoStretchCached( fitsFile, strong );
-
-					Map<String,Object> res = new LinkedHashMap<>();
-					res.put( "shadows", shmh[0] );
-					res.put( "midtones", shmh[1] );
-					res.put( "highlights", shmh[2] );
-					return res;
-				}
-
-				default:
-					return "unknown images action " + parts[1];
-			}
-		} );
-
-		actions.put( "allsky", ( parts, req, resp ) -> {
-			if( parts.length < 2 ) {
-				return "usage: allsky/<cameras|latest|chart|image>";
-			}
-
-			if( "cameras".equals( parts[1] ) ) {
-				Map<String,Object> res = new LinkedHashMap<>();
-				allskyCameras.forEach( ( id, cam ) -> {
-					Map<String,Object> info = new LinkedHashMap<>();
-					info.put( "label", cam.label() );
-					info.put( "showDetails", cam.showDetails() );
-					res.put( id, info );
-				} );
-				return res;
-			}
-
-			String camId = req.getParameter( "cam" );
-			AllskyCamera cam = allskyCameras.get( camId != null ? camId : "default" );
-			if( cam == null ) {
-				resp.setStatus( HttpServletResponse.SC_NOT_FOUND );
-				return "unknown allsky camera " + camId;
-			}
-
-			switch( parts[1] ) {
-				case "latest":
-					return fetchAllskyLatest( cam.client() );
-
-				case "chart": {
-					int limitS = clamp( parseIntParam( req, "limitS", 15000 ), 60, 86400 );
-					// Epoch seconds, matching indi-allsky's own convention (and the "ts" field this
-					// same endpoint returns is only ever converted TO milliseconds, never from) —
-					// omitted entirely (rather than defaulting to "now") when absent, so existing
-					// callers asking for "the last limitS seconds" keep working unchanged.
-					Long timestamp = parseLongParam( req, "timestamp" );
-					return fetchAllskyChart( cam.client(), limitS, timestamp );
-				}
-
-				case "image": {
-					String path = req.getParameter( "path" );
-					if( path == null || !ALLSKY_IMAGE_PATH.matcher( path ).matches() ) {
-						resp.setStatus( HttpServletResponse.SC_BAD_REQUEST );
-						return null;
-					}
-
-					byte[] jpeg = cam.client().fetchImage( path );
-					if( jpeg == null ) {
-						resp.setStatus( HttpServletResponse.SC_NOT_FOUND );
-						return null;
-					}
-
-					resp.setContentType( "image/jpeg" );
-					resp.setContentLength( jpeg.length );
-					resp.getOutputStream().write( jpeg );
-					resp.getOutputStream().flush();
-					return null;
-				}
-
-				default:
-					return "unknown allsky action " + parts[1];
-			}
-		} );
-
 		actions.put( "flats", ( parts, req, resp ) -> {
 			if( mountStatus.get() != MountStatus.MOUNT_PARKED ) {
 				return "mount is not parked";
@@ -2359,173 +2220,6 @@ public abstract class KStarsCluster extends KStarsState {
 		return res;
 	}
 
-	private static int parseIntParam( HttpServletRequest req, String name, int fallback ) {
-		try {
-			String v = req.getParameter( name );
-			return v == null ? fallback : Integer.parseInt( v );
-		}
-		catch( Throwable t ) {
-			return fallback;
-		}
-	}
-
-	/** Null (not a numeric fallback) when absent/unparseable — unlike limitS, an allsky chart
-	 *  timestamp has no sensible default to fall back to, callers just treat null as "omit it". */
-	private static Long parseLongParam( HttpServletRequest req, String name ) {
-		try {
-			String v = req.getParameter( name );
-			return v == null ? null : Long.parseLong( v );
-		}
-		catch( Throwable t ) {
-			return null;
-		}
-	}
-
-	private static double parseDoubleParam( HttpServletRequest req, String name, double fallback ) {
-		try {
-			String v = req.getParameter( name );
-			return v == null ? fallback : Double.parseDouble( v );
-		}
-		catch( Throwable t ) {
-			return fallback;
-		}
-	}
-
-	private static int clamp( int v, int lo, int hi ) {
-		return Math.max( lo, Math.min( hi, v ) );
-	}
-
-	private static double clamp( double v, double lo, double hi ) {
-		return Math.max( lo, Math.min( hi, v ) );
-	}
-
-	/** Shared by the thumb/autostretch sub-actions: validates the "file" param, 404s on the response if it's unusable. */
-	private File resolveFileParam( HttpServletRequest req, HttpServletResponse resp ) {
-		String file = req.getParameter( "file" );
-		if( file == null || file.isBlank() ) {
-			resp.setStatus( HttpServletResponse.SC_BAD_REQUEST );
-			return null;
-		}
-		File fitsFile = resolveKnownCapturedFile( file );
-		if( fitsFile == null ) {
-			resp.setStatus( HttpServletResponse.SC_NOT_FOUND );
-			return null;
-		}
-		return fitsFile;
-	}
-
-	private static final Pattern ALLSKY_IMAGE_PATH = Pattern.compile( "images/[A-Za-z0-9_.\\-/]+\\.jpe?g" );
-
-	/** Generous staleness cutoff for js/latest — during the day capture can pause for hours, and
-	 *  the endpoint returns latest_image.url == null once the most recent capture is older than
-	 *  this, so this needs to comfortably span a capture gap, not just a single poll interval. */
-	private static final int ALLSKY_LATEST_MAX_AGE_S = 86400;
-
-	/** Window used to enrich the image with a star count — this is a nice-to-have overlay, not
-	 *  the source of the image itself (see below), so unlike the old escalating search this is
-	 *  just one request; if it comes up empty (e.g. capture gap, or an install with timelapse
-	 *  indexing disabled — see fetchLoop's javadoc) the image is still shown, just without it. */
-	private static final int ALLSKY_STARS_WINDOW_S = 3600;
-
-	/**
-	 * The image itself always comes from js/latest — indi-allsky's own "Latest" page uses the same
-	 * endpoint, and unlike js/loop (used only below to enrich with star count) it reliably returns
-	 * the most recent capture even on installs where js/loop's image_list is permanently empty
-	 * (confirmed against a real camera: js/loop returned "No Timelapse Data" for every camera_id
-	 * and window up to 24h, while js/latest returned the actual latest frame). SQM turned out not
-	 * to be a useful signal here, so it's dropped rather than passed through.
-	 */
-	@SuppressWarnings("unchecked")
-	private Map<String,Object> fetchAllskyLatest( AllskyClient client ) throws Exception {
-		Map<String,Object> res = new LinkedHashMap<>();
-
-		Map<String,Object> latest = client.fetchLatest( ALLSKY_LATEST_MAX_AGE_S );
-		Object url = mapGet( latest, "latest_image", "url" );
-		if( url != null ) {
-			res.put( "url", url );
-			res.put( "moonmode", mapGet( latest, "latest_image", "moonmode" ) );
-		}
-
-		Map<String,Object> loop = client.fetchLoop( ALLSKY_STARS_WINDOW_S );
-		List<Map<String,Object>> images = (List<Map<String,Object>>) loop.get( "image_list" );
-		if( images != null && !images.isEmpty() ) {
-			Map<String,Object> loopLatest = images.get( 0 );
-			res.putIfAbsent( "url", loopLatest.get( "url" ) );
-			res.putIfAbsent( "moonmode", loopLatest.get( "moonmode" ) );
-			res.put( "stars", loopLatest.get( "stars" ) );
-			res.put( "ts", secondsToMillis( loopLatest.get( "timestamp" ) ) );
-		}
-
-		Object starsAvg = mapGet( loop, "stars_data", "avg" );
-		if( starsAvg != null ) {
-			res.put( "starsAvg", starsAvg );
-		}
-
-		return res;
-	}
-
-	/** Star-count history for the chart — oldest first, matching every other chart in this app
-	 *  (indi-allsky's own loop response is newest first). `timestamp` (epoch seconds), when given,
-	 *  anchors the window there instead of at "now" — see AllskyClient.fetchLoop's javadoc. */
-	@SuppressWarnings("unchecked")
-	private List<Map<String,Object>> fetchAllskyChart( AllskyClient client, int limitS, Long timestamp ) throws Exception {
-		Map<String,Object> loop = client.fetchLoop( limitS, timestamp );
-		List<Map<String,Object>> images = (List<Map<String,Object>>) loop.get( "image_list" );
-
-		List<Map<String,Object>> points = new ArrayList<>();
-		if( images != null ) {
-			for( int i = images.size() - 1; i >= 0; i-- ) {
-				Map<String,Object> img = images.get( i );
-				Map<String,Object> point = new LinkedHashMap<>();
-				point.put( "ts", secondsToMillis( img.get( "timestamp" ) ) );
-				point.put( "stars", img.get( "stars" ) );
-				point.put( "url", img.get( "url" ) );
-				points.add( point );
-			}
-		}
-		return points;
-	}
-
-	@SuppressWarnings("unchecked")
-	private static Object mapGet( Map<String,Object> m, String key, String subKey ) {
-		Object sub = m.get( key );
-		return sub instanceof Map ? ((Map<String,Object>) sub).get( subKey ) : null;
-	}
-
-	private static long secondsToMillis( Object seconds ) {
-		return seconds instanceof Number ? ((Number) seconds).longValue() * 1000L : 0L;
-	}
-
-	private static byte[] notFoundImageBytes;
-
-	/**
-	 * Images restored from the Ekos analyze log on startup can point at files that have since
-	 * been moved (e.g. by an external reorganizing tool) or deleted — rather than a broken-image
-	 * icon in the browser, the thumb action serves this placeholder instead.
-	 */
-	private static synchronized byte[] getNotFoundImageBytes() throws IOException {
-		if( notFoundImageBytes != null ) {
-			return notFoundImageBytes;
-		}
-
-		BufferedImage img = new BufferedImage( 320, 213, BufferedImage.TYPE_INT_RGB );
-		Graphics2D g = img.createGraphics();
-		g.setRenderingHint( RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON );
-		g.setColor( new Color( 0x20, 0x20, 0x20 ) );
-		g.fillRect( 0, 0, img.getWidth(), img.getHeight() );
-		g.setColor( new Color( 0x80, 0x80, 0x80 ) );
-		g.setFont( g.getFont().deriveFont( 18f ) );
-		FontMetrics fm = g.getFontMetrics();
-		String text = "Image not found";
-		g.drawString( text, (img.getWidth() - fm.stringWidth( text )) / 2, img.getHeight() / 2 );
-		g.dispose();
-
-		ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-		ImageIO.write( img, "jpg", bytes );
-		notFoundImageBytes = bytes.toByteArray();
-		return notFoundImageBytes;
-	}
-
 	/**
 	 * Refuses to render anything that wasn't actually reported by a captureComplete signal —
 	 * the "file" query param on the thumb action is client-supplied, so this is the only thing
@@ -2589,7 +2283,7 @@ public abstract class KStarsCluster extends KStarsState {
 	 *  disk cache the thumbnails themselves use. */
 	private final Map<String,double[]> autoStretchCache = new ConcurrentHashMap<>();
 
-	private double[] computeAutoStretchCached( File fitsFile, boolean strong ) throws Exception {
+	public double[] computeAutoStretchCached( File fitsFile, boolean strong ) throws Exception {
 		String cacheKey = fitsFile.getAbsolutePath() + "_" + fitsFile.lastModified() + "_" + strong;
 
 		double[] cached = autoStretchCache.get( cacheKey );
