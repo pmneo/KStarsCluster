@@ -3,10 +3,12 @@ import { useStatusSocket } from './api/useStatusSocket';
 import { getTrains, getDevices, getLastImageFilename, type ViewerImage, type TimelineCaptureSelection } from './api/types';
 import { fetchAllskyCameras, fetchAllskyChart, nearestAllskyMatches, type AllskyCameraInfo, type AllskyMatch, type AllskyPoint } from './api/allskyApi';
 import { ConnectionCard } from './components/ConnectionCard';
-import { TrainCard } from './components/TrainCard';
+import { TrainCaptureCard } from './components/TrainCaptureCard';
+import { TrainFocusCard } from './components/TrainFocusCard';
 import { SchedulerCard } from './components/SchedulerCard';
 import { CoolingCalibrationCard } from './components/CoolingCalibrationCard';
 import { ObservatoryCard } from './components/ObservatoryCard';
+import { CurrentStatusCard } from './components/CurrentStatusCard';
 import { LogPanel } from './components/LogPanel';
 import { DeviceList } from './components/DeviceList';
 import { SkyMapCard } from './components/SkyMapCard';
@@ -100,7 +102,17 @@ export function App() {
         <AllskySection />
         {status && (
           <>
-            <ObservatoryCard roofStatus={status.roofStatus} />
+            <CurrentStatusCard
+              captureRunning={status.captureRunning}
+              focusRunning={status.focusRunning}
+              mountStatus={status.mountStatus}
+              alignStatus={status.alignStatus}
+              gudingRunning={status.gudingRunning}
+              ditheringActive={status.ditheringActive}
+              sequenceQueue={status.sequenceQueue ?? {}}
+              guideDeltaHistory={status.guideDeltaHistory ?? []}
+              guideSigma={status.guideSigma}
+            />
             <SessionTimeline
               images={status.images ?? {}}
               hfrHistory={status.hfrHistory ?? {}}
@@ -126,17 +138,23 @@ export function App() {
               lastImageFilename={getLastImageFilename(status)}
             />
             {trains.map((train) => (
-              <TrainCard
-                key={train}
+              <TrainCaptureCard
+                key={`${train}-capture`}
                 train={train}
                 captureStatus={status.captureStatus[train]}
-                focusState={status.focusState[train]}
                 captureRunning={status.captureRunning[train]}
-                focusRunning={status.focusRunning[train]}
-                hfrHistory={status.hfrHistory?.[train] ?? []}
                 images={status.images?.[train] ?? []}
                 sequenceQueue={status.sequenceQueue?.[train]}
                 onOpenImage={setViewerImage}
+              />
+            ))}
+            {trains.map((train) => (
+              <TrainFocusCard
+                key={`${train}-focus`}
+                train={train}
+                focusState={status.focusState[train]}
+                focusRunning={status.focusRunning[train]}
+                hfrHistory={status.hfrHistory?.[train] ?? []}
               />
             ))}
             <GuideCard
@@ -145,6 +163,7 @@ export function App() {
               guideSigma={status.guideSigma}
               guideDeltaHistory={status.guideDeltaHistory ?? []}
             />
+            <ObservatoryCard roofStatus={status.roofStatus} />
             <CoolingCalibrationCard />
             <DeviceList devices={devices} />
           </>

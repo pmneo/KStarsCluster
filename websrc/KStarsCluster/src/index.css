@@ -7,6 +7,9 @@
   --muted: #8b93a7;
   --accent: #4dabf7;
   --danger: #ff6b6b;
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-critical: #d03b3b;
 }
 
 * {
@@ -131,6 +134,38 @@ button {
 
 button:hover:not(:disabled) {
   border-color: var(--accent);
+}
+
+/* One lock guards every button in the card it wraps (roof/cap/light, connection, cooling, ...)
+ * instead of a lock per individual button/group. Locked children are inert via pointer-events,
+ * not just dimmed, so an accidental click on their usual spot does nothing. */
+.safety-lock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.safety-lock-toggle {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+}
+
+.safety-lock--locked .safety-lock-toggle {
+  border-color: var(--danger);
+}
+
+.safety-lock-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.safety-lock--locked .safety-lock-body button {
+  pointer-events: none;
+  opacity: 0.35;
+  filter: grayscale(0.6);
 }
 
 button:disabled {
@@ -359,6 +394,73 @@ table td:first-child {
 .progress-bar-fill {
   height: 100%;
   background: var(--accent);
+}
+
+/* CurrentStatusCard's headline — one badge for whichever activity currently has priority
+ * (see currentActivity in the component for the ordering). */
+.current-status {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.current-status--aligning,
+.current-status--focusing,
+.current-status--slewing {
+  background: rgba(250, 178, 25, 0.15);
+  color: var(--status-warning);
+}
+
+.current-status--capturing {
+  background: rgba(77, 171, 247, 0.15);
+  color: var(--accent);
+}
+
+.current-status--guiding {
+  background: rgba(12, 163, 12, 0.15);
+  color: var(--status-good);
+}
+
+.current-status--idle {
+  background: rgba(139, 147, 167, 0.15);
+  color: var(--muted);
+}
+
+.current-captures {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.current-capture-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.current-capture-label,
+.current-capture-remaining {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.current-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0 0 12px;
+}
+
+.current-guiding {
+  margin: 0;
+}
+
+.current-guiding dt,
+.current-guiding dd {
+  font-size: 0.8rem;
 }
 
 .sequence-steps {

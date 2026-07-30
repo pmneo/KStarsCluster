@@ -1,5 +1,4 @@
 import { getJobStateLabel, type SchedulerJob } from '../api/types';
-import { actions } from '../api/actions';
 
 interface Props {
   schedulerState: string;
@@ -21,10 +20,6 @@ export function SchedulerCard({ schedulerState, activeJob, jobs }: Props) {
         <dt>State</dt>
         <dd>{schedulerState}</dd>
       </dl>
-      <div className="actions">
-        <button onClick={() => actions.scheduler.start()}>Start</button>
-        <button onClick={() => actions.scheduler.stop()}>Stop</button>
-      </div>
       {jobs.length > 0 && (
         <div className="table-scroll">
           <table className="scheduler-jobs">

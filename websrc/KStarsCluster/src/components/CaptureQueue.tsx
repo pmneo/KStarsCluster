@@ -1,6 +1,6 @@
 import { parseLocaleNumber, type SequenceQueueStatus } from '../api/types';
 
-function formatDuration(totalSeconds: number): string {
+export function formatDuration(totalSeconds: number): string {
   if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return '—';
   const s = Math.round(totalSeconds);
   const h = Math.floor(s / 3600);

@@ -1,4 +1,5 @@
 import { actions } from '../api/actions';
+import { SafetyLock } from './SafetyLock';
 
 interface Props {
   kstarsRunning: boolean;
@@ -22,17 +23,19 @@ export function ConnectionCard({ kstarsRunning, ekosReady, ekosStatus, manualSta
         <dt>State</dt>
         <dd>{connectionLabel}</dd>
       </dl>
-      <div className="actions">
-        <button onClick={() => actions.connection.startEkos()} disabled={ekosReady || manualStartRequested}>
-          {manualStartRequested ? 'Starting…' : 'Start Ekos / KStars'}
-        </button>
-        {automationSuspended
-          ? <button onClick={() => actions.connection.resume()}>Resume</button>
-          : <button onClick={() => actions.connection.suspend()}>Suspend</button>}
-        <button onClick={() => { if (confirm('Stop KStars?')) actions.connection.stopKStars(); }} disabled={!kstarsRunning}>
-          Stop KStars
-        </button>
-      </div>
+      <SafetyLock label="connection controls">
+        <div className="actions">
+          <button onClick={() => actions.connection.startEkos()} disabled={ekosReady || manualStartRequested}>
+            {manualStartRequested ? 'Starting…' : 'Start Ekos / KStars'}
+          </button>
+          {automationSuspended
+            ? <button onClick={() => actions.connection.resume()}>Resume</button>
+            : <button onClick={() => actions.connection.suspend()}>Suspend</button>}
+          <button onClick={() => actions.connection.stopKStars()} disabled={!kstarsRunning}>
+            Stop KStars
+          </button>
+        </div>
+      </SafetyLock>
     </div>
   );
 }

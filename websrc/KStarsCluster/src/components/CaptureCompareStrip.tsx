@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
 import { allskyImageUrl, type AllskyMatch } from '../api/allskyApi';
-import type { TimelineCaptureSelection, ViewerImage } from '../api/types';
+import { getFrameNumber, type TimelineCaptureSelection, type ViewerImage } from '../api/types';
 
 const THUMB_MAX_DIM = 200;
 
@@ -34,6 +34,7 @@ export function CaptureCompareStrip({ selection, allskyMatches, onOpenImage, onC
   const [stretch, setStretch] = useState<StretchSettings>(DEFAULT_STRETCH);
   const requestedFilenameRef = useRef<string | null>(null);
   const capture = selection?.capture;
+  const frameNumber = capture ? getFrameNumber(capture.image.filename) : undefined;
 
   useEffect(() => {
     const filename = capture?.image.filename;
@@ -71,6 +72,7 @@ export function CaptureCompareStrip({ selection, allskyMatches, onOpenImage, onC
           <span className="image-caption">
             {capture.image.target && <>{capture.image.target} · </>}
             {capture.image.filter} {capture.image.exposure}s
+            {frameNumber !== undefined && <> · #{frameNumber}</>}
           </span>
         </div>
       ) : (

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
-import { getFrameTypeLabel, type CapturedImage, type ViewerImage } from '../api/types';
+import { getFrameNumber, getFrameTypeLabel, type CapturedImage, type ViewerImage } from '../api/types';
 
 const THUMB_MAX_DIM = 200;
 
@@ -18,6 +18,7 @@ interface ThumbProps {
 function Thumb({ img, stretch, onVisible, onOpen }: ThumbProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
+  const frameNumber = getFrameNumber(img.filename);
 
   useEffect(() => {
     if (visible) return undefined;
@@ -49,6 +50,7 @@ function Thumb({ img, stretch, onVisible, onOpen }: ThumbProps) {
       <span className="image-caption">
         {img.target && <>{img.target} · </>}
         {getFrameTypeLabel(img.type)} {img.filter} {img.exposure}s
+        {frameNumber !== undefined && <> · #{frameNumber}</>}
         {img.hfr >= 0 && <> · HFR {img.hfr.toFixed(2)}</>}
       </span>
     </div>

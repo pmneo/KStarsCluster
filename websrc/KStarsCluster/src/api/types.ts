@@ -97,6 +97,14 @@ export function getFrameTypeLabel(type: number): string {
   return FRAME_TYPE_LABELS[type] ?? `Type ${type}`;
 }
 
+/** KStars' default capture filename ends "..._<exposure>_secs__<frame number>.<ext>" (e.g.
+ * "MWP1_ALV1_Light_OIII_300_secs__386.fits") — the sequence number right before the extension is
+ * the only part of that not already shown elsewhere in the caption (target/filter/exposure). */
+export function getFrameNumber(filename: string): number | undefined {
+  const match = filename.match(/_(\d+)\.[^./\\]+$/);
+  return match ? Number(match[1]) : undefined;
+}
+
 /** One planned exposure step from Capture.getSequenceQueueStatusJSON — numeric fields ride as
  * locale-formatted strings straight from KStars (e.g. "3,000000" under a German locale). */
 export interface SequenceStep {
