@@ -1546,7 +1546,12 @@ public abstract class KStarsCluster extends KStarsState {
 
 				case "chart": {
 					int limitS = clamp( parseIntParam( req, "limitS", 15000 ), 60, 86400 );
-					return fetchAllskyChart( cam.client(), limitS );
+					// Epoch seconds, matching indi-allsky's own convention (and the "ts" field this
+					// same endpoint returns is only ever converted TO milliseconds, never from) —
+					// omitted entirely (rather than defaulting to "now") when absent, so existing
+					// callers asking for "the last limitS seconds" keep working unchanged.
+					Long timestamp = parseLongParam( req, "timestamp" );
+					return fetchAllskyChart( cam.client(), limitS, timestamp );
 				}
 
 				case "image": {
@@ -2364,6 +2369,18 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 
+	/** Null (not a numeric fallback) when absent/unparseable — unlike limitS, an allsky chart
+	 *  timestamp has no sensible default to fall back to, callers just treat null as "omit it". */
+	private static Long parseLongParam( HttpServletRequest req, String name ) {
+		try {
+			String v = req.getParameter( name );
+			return v == null ? null : Long.parseLong( v );
+		}
+		catch( Throwable t ) {
+			return null;
+		}
+	}
+
 	private static double parseDoubleParam( HttpServletRequest req, String name, double fallback ) {
 		try {
 			String v = req.getParameter( name );
@@ -2448,10 +2465,11 @@ public abstract class KStarsCluster extends KStarsState {
 	}
 
 	/** Star-count history for the chart — oldest first, matching every other chart in this app
-	 *  (indi-allsky's own loop response is newest first). */
+	 *  (indi-allsky's own loop response is newest first). `timestamp` (epoch seconds), when given,
+	 *  anchors the window there instead of at "now" — see AllskyClient.fetchLoop's javadoc. */
 	@SuppressWarnings("unchecked")
-	private List<Map<String,Object>> fetchAllskyChart( AllskyClient client, int limitS ) throws Exception {
-		Map<String,Object> loop = client.fetchLoop( limitS );
+	private List<Map<String,Object>> fetchAllskyChart( AllskyClient client, int limitS, Long timestamp ) throws Exception {
+		Map<String,Object> loop = client.fetchLoop( limitS, timestamp );
 		List<Map<String,Object>> images = (List<Map<String,Object>>) loop.get( "image_list" );
 
 		List<Map<String,Object>> points = new ArrayList<>();

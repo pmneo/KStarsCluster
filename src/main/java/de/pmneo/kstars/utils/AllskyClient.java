@@ -73,9 +73,24 @@ public class AllskyClient {
      *  Some indi-allsky installs return an always-empty image_list here (timelapse indexing
      *  disabled server-side) even while capturing fine — don't rely on this alone for "is there a
      *  latest image", see {@link #fetchLatest(int)}. */
-    @SuppressWarnings("unchecked")
     public Map<String,Object> fetchLoop( int limitS ) throws Exception {
+        return fetchLoop( limitS, null );
+    }
+
+    /** Same as {@link #fetchLoop(int)}, but anchored at a specific point in time (epoch seconds)
+     *  instead of implicitly "now" — confirmed empirically against a real instance: with
+     *  timestamp=T, image_list's newest entry IS timestamp T (not just "on or before"), and every
+     *  entry after it goes backwards from there, i.e. the window is [T-limitS, T]. Used to look up
+     *  what an allsky camera saw around a specific capture's own timestamp, which can be well
+     *  outside whatever "last limitS seconds from now" already covers — pass a timestamp pushed
+     *  forward by half the window to get a window that's centered on, rather than ending at, the
+     *  moment you actually care about. */
+    @SuppressWarnings("unchecked")
+    public Map<String,Object> fetchLoop( int limitS, Long timestamp ) throws Exception {
         String url = baseUrl + "js/loop?camera_id=" + cameraId + "&limit_s=" + limitS;
+        if( timestamp != null ) {
+            url += "&timestamp=" + timestamp;
+        }
         HttpsURLConnection conn = open( url );
         try {
             if( conn.getResponseCode() != 200 ) {

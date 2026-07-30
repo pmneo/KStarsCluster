@@ -4,7 +4,10 @@ import { AllskyChart } from './AllskyChart';
 
 const LATEST_POLL_MS = 60_000;
 const CHART_POLL_MS = 5 * 60_000;
-const CHART_LIMIT_S = 15_000;
+// Trimmed from 15_000s — this only needs to cover a quick "how's the sky right now" glance, not
+// the full session (App.tsx fetches its own separate, on-demand window for the Session Timeline's
+// click/hover-to-compare feature, so this doesn't need to double as that too).
+const CHART_LIMIT_S = 3_600;
 
 interface Props {
   cam: string;

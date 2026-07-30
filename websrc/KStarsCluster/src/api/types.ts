@@ -78,6 +78,16 @@ export interface ViewerImage {
   exposure?: number;
 }
 
+/** A capture slice hovered/clicked on the Session Timeline — `train` identifies which TrainCard's
+ * own ImageStrip should show it (and the allsky images captured around the same time) in place of
+ * that strip's normal recent-images list; `ts` is the capture's own timestamp, used to find the
+ * nearest allsky match per camera (see allskyApi's nearestAllskyMatches). */
+export interface TimelineCaptureSelection {
+  train: string;
+  ts: number;
+  image: ViewerImage;
+}
+
 /** INDI CCDChip::CCDFrameType order — confirmed against a real captureComplete signal (Flat frame -> type 3). */
 const FRAME_TYPE_LABELS = ['Light', 'Bias', 'Dark', 'Flat'];
 

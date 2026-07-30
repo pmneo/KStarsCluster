@@ -1,12 +1,27 @@
 import { useRef, useState } from 'react';
-import type { CapturedImage, GuideDeltaSample, HfrSample, TimelineEvent, ViewerImage } from '../api/types';
+import type { CapturedImage, GuideDeltaSample, HfrSample, TimelineEvent, TimelineCaptureSelection, ViewerImage } from '../api/types';
 import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
+import type { AllskyMatch } from '../api/allskyApi';
+import { CaptureCompareStrip } from './CaptureCompareStrip';
 
 interface Props {
   images: Record<string, CapturedImage[]>;
   hfrHistory: Record<string, HfrSample[]>;
   guideDeltaHistory: GuideDeltaSample[];
   timelineEvents: TimelineEvent[];
+  /** Transient — fires on every capture-segment hover, and with null on mouse-leave (see
+   * handleSegmentLeave). Drives the live preview below the timeline; falls back to
+   * onSelectCapture's last pin once the mouse leaves. */
+  onHoverCapture: (selection: TimelineCaptureSelection | null) => void;
+  /** Persistent — fires on a capture-segment click, pinning the compare strip below the timeline
+   * to this capture (plus its nearest allsky matches) until another one is clicked or it's
+   * explicitly cleared. */
+  onSelectCapture: (selection: TimelineCaptureSelection) => void;
+  /** hoveredCapture ?? pinnedCapture, computed in App — whichever is currently active is what
+   * CaptureCompareStrip below renders. */
+  activeCapture: TimelineCaptureSelection | null;
+  activeAllskyMatches: AllskyMatch[];
+  onClearActiveCapture: () => void;
   onOpenImage: (image: ViewerImage) => void;
 }
 
@@ -52,6 +67,11 @@ function alignColor(label: string): string {
   return IDLE;
 }
 
+/** Unlike MOUNT_TRACKING/GUIDE_GUIDING, "aligned successfully" isn't an ongoing state that keeps
+ * being true until something else happens — it's a one-off event marking the align run's end,
+ * same as an abort/failure — see toSegments' momentaryLabels. */
+const ALIGN_MOMENTARY_LABELS = new Set(['ALIGN_SUCCESSFUL', 'ALIGN_COMPLETE']);
+
 interface Segment {
   key: string;
   start: number;
@@ -59,26 +79,31 @@ interface Segment {
   color: string;
   opacity: number;
   title: string;
-  /** Only set for Capture segments — lets the hover tooltip show the actual frame, and a click
-   * open it in the full ImageViewer. */
+  /** Only set for Capture segments — lets the hover tooltip show the actual frame, and hover/click
+   * populate that train's ImageStrip with it (plus its nearest allsky matches). */
   viewerImage?: ViewerImage;
+  /** Which train's Capture row this segment belongs to — only set alongside viewerImage. */
+  train?: string;
 }
 
 /** Turns one lane's state-change events into contiguous segments: each event normally lasts
  * until the next one on the same lane, and the last one runs to `now` (it's still the current
- * state) — EXCEPT a critical (aborted/error/failed) event, which is a "this stopped here" moment,
- * not a state that meaningfully persists. Rendered as a zero-duration segment instead: still
- * visible (the row rendering clamps every segment to a minimum width), but as a short stop
- * marker rather than a long red bar reaching all the way to whatever comes next. */
-function toSegments( events: TimelineEvent[], lane: string, now: number, colorFor: (label: string) => string ): Segment[] {
+ * state) — EXCEPT a critical (aborted/error/failed) event, or one of `momentaryLabels`, which is
+ * a "this happened here" moment rather than a state that meaningfully persists (align completing
+ * is the same kind of moment as align aborting — both mark the end of the align run, neither is
+ * an ongoing state the way MOUNT_TRACKING or GUIDE_GUIDING are). Rendered as a zero-duration
+ * segment instead: still visible (the row rendering clamps every segment to a minimum width), but
+ * as a short marker rather than a long bar reaching all the way to whatever comes next. */
+function toSegments( events: TimelineEvent[], lane: string, now: number, colorFor: (label: string) => string, momentaryLabels?: Set<string> ): Segment[] {
   const laneEvents = events.filter((e) => e.lane === lane).sort((a, b) => a.ts - b.ts);
   return laneEvents.map((e, i) => {
     const color = colorFor(e.label);
+    const isMomentary = color === STATUS_CRITICAL || momentaryLabels?.has(e.label);
     const naturalEnd = i + 1 < laneEvents.length ? laneEvents[i + 1].ts : now;
     return {
       key: `${lane}-${e.ts}`,
       start: e.ts,
-      end: color === STATUS_CRITICAL ? e.ts : naturalEnd,
+      end: isMomentary ? e.ts : naturalEnd,
       color,
       opacity: 1,
       title: `${e.label}  (${new Date(e.ts).toLocaleTimeString()})`,
@@ -127,7 +152,7 @@ function filterColor(filter: string, dynamicSeen: Map<string, string>, legend: M
   return color;
 }
 
-function captureSegments( imgs: CapturedImage[], dynamicSeen: Map<string, string>, legend: Map<string, string> ): Segment[] {
+function captureSegments( imgs: CapturedImage[], train: string, dynamicSeen: Map<string, string>, legend: Map<string, string> ): Segment[] {
   return imgs.map((img) => ({
     key: `capture-${img.filename}`,
     start: img.ts - img.exposure * 1000,
@@ -136,6 +161,7 @@ function captureSegments( imgs: CapturedImage[], dynamicSeen: Map<string, string
     opacity: 1,
     title: `${img.filter} ${img.exposure}s${img.target ? ` · ${img.target}` : ''}  (${new Date(img.ts).toLocaleTimeString()})`,
     viewerImage: { filename: img.filename, target: img.target, filter: img.filter, exposure: img.exposure },
+    train,
   }));
 }
 
@@ -265,7 +291,10 @@ function TimelineScrollbar({ fullStart, fullEnd, viewStart, viewEnd, onChange }:
   );
 }
 
-export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelineEvents, onOpenImage }: Props) {
+export function SessionTimeline({
+  images, hfrHistory, guideDeltaHistory, timelineEvents, onHoverCapture, onSelectCapture,
+  activeCapture, activeAllskyMatches, onClearActiveCapture, onOpenImage,
+}: Props) {
   // null = "follow now", i.e. the default last-24h view whose right edge keeps up with live
   // data. Set once the user drags a handle, at which point the view holds still at that exact
   // range instead of continuing to track "now" — matches how scrubbing a Premiere timeline
@@ -285,14 +314,14 @@ export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelin
   const rows: Row[] = [];
   rows.push({ label: 'Scheduler', segments: schedulerSegments(timelineEvents, jobColors, now) });
   for (const train of Object.keys(images).sort()) {
-    rows.push({ label: `Capture (${train})`, segments: captureSegments(images[train], dynamicFilterSeen, filterLegend) });
+    rows.push({ label: `Capture (${train})`, segments: captureSegments(images[train], train, dynamicFilterSeen, filterLegend) });
   }
   for (const train of Object.keys(hfrHistory).sort()) {
     rows.push({ label: `Focus (${train})`, segments: focusSegments(hfrHistory[train]) });
   }
   rows.push({ label: 'Guide', segments: toSegments(timelineEvents, 'guide', now, guideColor) });
   rows.push({ label: 'Mount', segments: toSegments(timelineEvents, 'mount', now, mountColor) });
-  rows.push({ label: 'Align', segments: toSegments(timelineEvents, 'align', now, alignColor) });
+  rows.push({ label: 'Align', segments: toSegments(timelineEvents, 'align', now, alignColor, ALIGN_MOMENTARY_LABELS) });
 
   const allTs = [
     ...rows.flatMap((r) => r.segments.flatMap((s) => [s.start, s.end])),
@@ -312,6 +341,10 @@ export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelin
     const filename = seg.viewerImage?.filename;
     hoveredThumbnailRef.current = filename;
     setHover({ x: e.clientX, y: e.clientY, title: seg.title, thumbnail: filename });
+
+    if (seg.viewerImage && seg.train !== undefined) {
+      onHoverCapture({ train: seg.train, ts: seg.end, image: seg.viewerImage });
+    }
     if (!filename) return;
 
     const cached = stretchCache.current.get(filename);
@@ -339,11 +372,12 @@ export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelin
   function handleSegmentLeave() {
     hoveredThumbnailRef.current = undefined;
     setHover(null);
+    onHoverCapture(null);
   }
 
   function handleSegmentClick(seg: Segment) {
-    if (seg.viewerImage) {
-      onOpenImage(seg.viewerImage);
+    if (seg.viewerImage && seg.train !== undefined) {
+      onSelectCapture({ train: seg.train, ts: seg.end, image: seg.viewerImage });
     }
   }
 
@@ -379,7 +413,13 @@ export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelin
           Reset
         </button>
       </div>
-      <svg viewBox={`0 0 ${WIDTH} ${height}`} width="100%" height={height} role="img" aria-label="Session timeline">
+      {/* preserveAspectRatio="none": width is percentage (fills the card) but height is a fixed
+       * pixel value (rows.length-driven, not tied to the card's aspect ratio) — the SVG default
+       * (xMidYMid meet) treats that mismatch as "letterbox it", uniformly scaling by whichever
+       * dimension is the tighter fit (height, since it's pinned) and centering the result, leaving
+       * equal blank margins on both left and right instead of actually using the card's full
+       * width. "none" stretches width and height independently instead, exactly filling the box. */}
+      <svg viewBox={`0 0 ${WIDTH} ${height}`} width="100%" height={height} preserveAspectRatio="none" role="img" aria-label="Session timeline">
         {ticks.map((ts, i) => (
           <g key={i}>
             <line x1={x(ts)} y1={0} x2={x(ts)} y2={height - 20} stroke="#2c3040" strokeDasharray="2,3" />
@@ -433,6 +473,15 @@ export function SessionTimeline({ images, hfrHistory, guideDeltaHistory, timelin
             Focus
           </span>
         </div>
+      )}
+
+      {activeCapture && (
+        <CaptureCompareStrip
+          selection={activeCapture}
+          allskyMatches={activeAllskyMatches}
+          onOpenImage={onOpenImage}
+          onClear={onClearActiveCapture}
+        />
       )}
 
       {hover && (

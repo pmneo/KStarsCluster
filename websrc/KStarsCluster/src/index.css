@@ -734,6 +734,37 @@ table td:first-child {
   text-overflow: ellipsis;
 }
 
+/* Replaces the strip's normal scrolling thumbnail list while a Session Timeline capture is
+ * hovered/pinned (see ImageStrip's `override`) — just the one capture plus its nearest allsky
+ * match per camera, bigger than the regular 120x80 thumbs since there's only ever 2-3 of them
+ * rather than a couple hundred to scroll through. */
+.image-strip--compare {
+  align-items: flex-start;
+}
+
+.image-thumb--compare img,
+.image-thumb--compare .image-thumb-placeholder {
+  width: 160px;
+  height: 110px;
+}
+
+.image-thumb--compare .image-caption {
+  max-width: 160px;
+}
+
+.image-strip-clear {
+  align-self: center;
+  margin-left: 4px;
+  padding: 4px 10px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 /* Scaled to cover a fixed-height box and centered rather than shown at native size+aspect —
  * compact regardless of whether the source camera is portrait or landscape, with the star/moon
  * overlay sitting directly on top instead of a separate stats row above it. */
