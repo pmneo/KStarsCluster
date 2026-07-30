@@ -1,6 +1,5 @@
 import { useRef, useState } from 'react';
 import type { CapturedImage, GuideDeltaSample, HfrSample, TimelineEvent, TimelineCaptureSelection, ViewerImage } from '../api/types';
-import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
 import type { AllskyMatch } from '../api/allskyApi';
 import { CaptureCompareStrip } from './CaptureCompareStrip';
 
@@ -9,13 +8,13 @@ interface Props {
   hfrHistory: Record<string, HfrSample[]>;
   guideDeltaHistory: GuideDeltaSample[];
   timelineEvents: TimelineEvent[];
-  /** Transient — fires on every capture-segment hover, and with null on mouse-leave (see
-   * handleSegmentLeave). Drives the live preview below the timeline; falls back to
-   * onSelectCapture's last pin once the mouse leaves. */
+  /** Transient — fires on hovering ANY segment on ANY row (not just a Capture slice — see
+   * buildSelection), and with null on mouse-leave (see handleSegmentLeave). Drives the live
+   * preview below the timeline; falls back to onSelectCapture's last pin once the mouse leaves. */
   onHoverCapture: (selection: TimelineCaptureSelection | null) => void;
-  /** Persistent — fires on a capture-segment click, pinning the compare strip below the timeline
-   * to this capture (plus its nearest allsky matches) until another one is clicked or it's
-   * explicitly cleared. */
+  /** Persistent — fires on clicking any segment on any row, pinning the compare strip below the
+   * timeline to that moment (plus its nearest allsky matches, and its capture frame if one was
+   * actually exposing right then) until another one is clicked or it's explicitly cleared. */
   onSelectCapture: (selection: TimelineCaptureSelection) => void;
   /** hoveredCapture ?? pinnedCapture, computed in App — whichever is currently active is what
    * CaptureCompareStrip below renders. */
@@ -78,12 +77,33 @@ interface Segment {
   end: number;
   color: string;
   opacity: number;
+  /** Label only, no timestamp — a long-running segment (e.g. hours of SCHEDULER_IDLE) covers a
+   * whole range, so baking in its own start time would show the same fixed time no matter where
+   * along the bar you're actually hovering. The tooltip appends whatever time is under the mouse
+   * instead — see timestampAtClientX. */
   title: string;
-  /** Only set for Capture segments — lets the hover tooltip show the actual frame, and hover/click
-   * populate that train's ImageStrip with it (plus its nearest allsky matches). */
-  viewerImage?: ViewerImage;
-  /** Which train's Capture row this segment belongs to — only set alongside viewerImage. */
-  train?: string;
+}
+
+/** The capture (across every train, not just whichever row was actually hovered) that was
+ * actually exposing at a given timestamp — an exact-window check (img.ts - exposure*1000 <= ts <=
+ * img.ts), not "whichever capture happens to be nearest": hovering an hour of SCHEDULER_IDLE with
+ * nothing capturing shouldn't show some capture from hours away as if it were "around" that
+ * moment. For an actual Capture segment, seg.start/end (see captureSegments) already ARE that
+ * same image's own exposure window, and timestampAtClientX clamps to them — so hovering a Capture
+ * slice always resolves back to that exact image, no separate code path needed. */
+function findActiveCaptureAt(ts: number, images: Record<string, CapturedImage[]>): { train: string; image: ViewerImage } | undefined {
+  for (const [train, imgs] of Object.entries(images)) {
+    for (const img of imgs) {
+      if (ts >= img.ts - img.exposure * 1000 && ts <= img.ts) {
+        return { train, image: { filename: img.filename, target: img.target, filter: img.filter, exposure: img.exposure } };
+      }
+    }
+  }
+  return undefined;
+}
+
+function buildSelection(ts: number, images: Record<string, CapturedImage[]>): TimelineCaptureSelection {
+  return { ts, capture: findActiveCaptureAt(ts, images) };
 }
 
 /** Turns one lane's state-change events into contiguous segments: each event normally lasts
@@ -106,7 +126,7 @@ function toSegments( events: TimelineEvent[], lane: string, now: number, colorFo
       end: isMomentary ? e.ts : naturalEnd,
       color,
       opacity: 1,
-      title: `${e.label}  (${new Date(e.ts).toLocaleTimeString()})`,
+      title: e.label,
     };
   });
 }
@@ -123,7 +143,7 @@ function schedulerSegments( events: TimelineEvent[], seen: Map<string, string>, 
       end: i + 1 < laneEvents.length ? laneEvents[i + 1].ts : now,
       color: isIdle ? IDLE : categoricalColor(seen, jobName),
       opacity: isIdle || isBusy ? 1 : 0.45,
-      title: `${e.label}  (${new Date(e.ts).toLocaleTimeString()})`,
+      title: e.label,
     };
   });
 }
@@ -152,16 +172,14 @@ function filterColor(filter: string, dynamicSeen: Map<string, string>, legend: M
   return color;
 }
 
-function captureSegments( imgs: CapturedImage[], train: string, dynamicSeen: Map<string, string>, legend: Map<string, string> ): Segment[] {
+function captureSegments( imgs: CapturedImage[], dynamicSeen: Map<string, string>, legend: Map<string, string> ): Segment[] {
   return imgs.map((img) => ({
     key: `capture-${img.filename}`,
     start: img.ts - img.exposure * 1000,
     end: img.ts,
     color: filterColor(img.filter, dynamicSeen, legend),
     opacity: 1,
-    title: `${img.filter} ${img.exposure}s${img.target ? ` · ${img.target}` : ''}  (${new Date(img.ts).toLocaleTimeString()})`,
-    viewerImage: { filename: img.filename, target: img.target, filter: img.filter, exposure: img.exposure },
-    train,
+    title: `${img.filter} ${img.exposure}s${img.target ? ` · ${img.target}` : ''}`,
   }));
 }
 
@@ -187,7 +205,7 @@ function focusSegments( samples: HfrSample[] ): Segment[] {
     end: run[run.length - 1].ts,
     color: FOCUS_MARK,
     opacity: 1,
-    title: `Autofocus (${run.length} points, best HFR ${Math.min(...run.map((s) => s.hfr)).toFixed(2)})  (${new Date(run[0].ts).toLocaleTimeString()})`,
+    title: `Autofocus (${run.length} points, best HFR ${Math.min(...run.map((s) => s.hfr)).toFixed(2)})`,
   }));
 }
 
@@ -217,7 +235,8 @@ interface HoverState {
   x: number;
   y: number;
   title: string;
-  thumbnail?: string;
+  /** Whatever's under the mouse right now, not the segment's own start — see timestampAtClientX. */
+  ts: number;
 }
 
 type DragMode = 'start' | 'end' | 'pan';
@@ -301,9 +320,11 @@ export function SessionTimeline({
   // doesn't keep chasing the playhead either.
   const [viewRange, setViewRange] = useState<{ start: number; end: number } | null>(null);
   const [hover, setHover] = useState<HoverState | null>(null);
-  const [thumbStretch, setThumbStretch] = useState<StretchSettings>(DEFAULT_STRETCH);
-  const stretchCache = useRef(new Map<string, StretchSettings>());
-  const hoveredThumbnailRef = useRef<string | undefined>(undefined);
+  const svgRef = useRef<SVGSVGElement>(null);
+  // Debounces onHoverCapture (and therefore App's allsky fetch — see CaptureCompareStrip) so
+  // dragging across a long segment doesn't fire a network request per pixel of mouse movement;
+  // the tooltip's own displayed time isn't debounced, since that's just a local re-render.
+  const hoverCaptureDebounceRef = useRef<number | undefined>(undefined);
 
   const now = Date.now();
 
@@ -314,7 +335,7 @@ export function SessionTimeline({
   const rows: Row[] = [];
   rows.push({ label: 'Scheduler', segments: schedulerSegments(timelineEvents, jobColors, now) });
   for (const train of Object.keys(images).sort()) {
-    rows.push({ label: `Capture (${train})`, segments: captureSegments(images[train], train, dynamicFilterSeen, filterLegend) });
+    rows.push({ label: `Capture (${train})`, segments: captureSegments(images[train], dynamicFilterSeen, filterLegend) });
   }
   for (const train of Object.keys(hfrHistory).sort()) {
     rows.push({ label: `Focus (${train})`, segments: focusSegments(hfrHistory[train]) });
@@ -337,50 +358,6 @@ export function SessionTimeline({
     );
   }
 
-  function handleSegmentHover(e: React.MouseEvent, seg: Segment) {
-    const filename = seg.viewerImage?.filename;
-    hoveredThumbnailRef.current = filename;
-    setHover({ x: e.clientX, y: e.clientY, title: seg.title, thumbnail: filename });
-
-    if (seg.viewerImage && seg.train !== undefined) {
-      onHoverCapture({ train: seg.train, ts: seg.end, image: seg.viewerImage });
-    }
-    if (!filename) return;
-
-    const cached = stretchCache.current.get(filename);
-    if (cached) {
-      setThumbStretch(cached);
-      return;
-    }
-
-    setThumbStretch(DEFAULT_STRETCH);
-    fetchAutoStretch(filename, false)
-      .then((s) => {
-        stretchCache.current.set(filename, s);
-        // the pointer may have moved to a different segment while this was in flight
-        if (hoveredThumbnailRef.current === filename) {
-          setThumbStretch(s);
-        }
-      })
-      .catch(() => { /* leave the default stretch in place, no retry */ });
-  }
-
-  function handleSegmentMove(e: React.MouseEvent) {
-    setHover((h) => (h ? { ...h, x: e.clientX, y: e.clientY } : h));
-  }
-
-  function handleSegmentLeave() {
-    hoveredThumbnailRef.current = undefined;
-    setHover(null);
-    onHoverCapture(null);
-  }
-
-  function handleSegmentClick(seg: Segment) {
-    if (seg.viewerImage && seg.train !== undefined) {
-      onSelectCapture({ train: seg.train, ts: seg.end, image: seg.viewerImage });
-    }
-  }
-
   const fullStart = Math.min(...allTs);
   const fullEnd = now;
   const domainStart = viewRange ? viewRange.start : Math.max(fullStart, fullEnd - DEFAULT_WINDOW_MS);
@@ -388,6 +365,49 @@ export function SessionTimeline({
   const plotWidth = WIDTH - LABEL_WIDTH;
   const scale = plotWidth / Math.max(1, domainEnd - domainStart);
   const x = (ts: number) => LABEL_WIDTH + Math.max(0, ts - domainStart) * scale;
+
+  /** Inverse of x() above, accounting for the SVG's own on-screen size (viewBox units aren't
+   * screen pixels — see preserveAspectRatio="none" on the <svg>) — clamped to the segment's own
+   * bounds so a moment marker (rendered wider than its actual zero duration, see toSegments)
+   * always resolves to that one instant regardless of where within its rendered width you are. */
+  function timestampAtClientX(clientX: number, seg: Segment): number {
+    const svg = svgRef.current;
+    if (!svg) return seg.end;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0) return seg.end;
+    const viewBoxX = ((clientX - rect.left) / rect.width) * WIDTH;
+    const ts = domainStart + (viewBoxX - LABEL_WIDTH) / scale;
+    return clamp(ts, seg.start, seg.end);
+  }
+
+  function updateActiveCapture(ts: number) {
+    window.clearTimeout(hoverCaptureDebounceRef.current);
+    hoverCaptureDebounceRef.current = window.setTimeout(() => {
+      onHoverCapture(buildSelection(ts, images));
+    }, 120);
+  }
+
+  function handleSegmentHover(e: React.MouseEvent, seg: Segment) {
+    const ts = timestampAtClientX(e.clientX, seg);
+    setHover({ x: e.clientX, y: e.clientY, title: seg.title, ts });
+    updateActiveCapture(ts);
+  }
+
+  function handleSegmentMove(e: React.MouseEvent, seg: Segment) {
+    const ts = timestampAtClientX(e.clientX, seg);
+    setHover((h) => (h ? { ...h, x: e.clientX, y: e.clientY, ts } : h));
+    updateActiveCapture(ts);
+  }
+
+  function handleSegmentLeave() {
+    window.clearTimeout(hoverCaptureDebounceRef.current);
+    setHover(null);
+    onHoverCapture(null);
+  }
+
+  function handleSegmentClick(e: React.MouseEvent, seg: Segment) {
+    onSelectCapture(buildSelection(timestampAtClientX(e.clientX, seg), images));
+  }
 
   const height = rows.length * (ROW_HEIGHT + ROW_GAP) + 24;
   const tickCount = 6;
@@ -419,7 +439,7 @@ export function SessionTimeline({
        * dimension is the tighter fit (height, since it's pinned) and centering the result, leaving
        * equal blank margins on both left and right instead of actually using the card's full
        * width. "none" stretches width and height independently instead, exactly filling the box. */}
-      <svg viewBox={`0 0 ${WIDTH} ${height}`} width="100%" height={height} preserveAspectRatio="none" role="img" aria-label="Session timeline">
+      <svg ref={svgRef} viewBox={`0 0 ${WIDTH} ${height}`} width="100%" height={height} preserveAspectRatio="none" role="img" aria-label="Session timeline">
         {ticks.map((ts, i) => (
           <g key={i}>
             <line x1={x(ts)} y1={0} x2={x(ts)} y2={height - 20} stroke="#2c3040" strokeDasharray="2,3" />
@@ -447,11 +467,11 @@ export function SessionTimeline({
                     height={ROW_HEIGHT}
                     fill={seg.color}
                     opacity={seg.opacity}
-                    style={seg.viewerImage ? { cursor: 'pointer' } : undefined}
+                    style={{ cursor: 'pointer' }}
                     onMouseEnter={(e) => handleSegmentHover(e, seg)}
-                    onMouseMove={handleSegmentMove}
+                    onMouseMove={(e) => handleSegmentMove(e, seg)}
                     onMouseLeave={handleSegmentLeave}
-                    onClick={() => handleSegmentClick(seg)}
+                    onClick={(e) => handleSegmentClick(e, seg)}
                   />
                 );
               })}
@@ -475,21 +495,16 @@ export function SessionTimeline({
         </div>
       )}
 
-      {activeCapture && (
-        <CaptureCompareStrip
-          selection={activeCapture}
-          allskyMatches={activeAllskyMatches}
-          onOpenImage={onOpenImage}
-          onClear={onClearActiveCapture}
-        />
-      )}
+      <CaptureCompareStrip
+        selection={activeCapture}
+        allskyMatches={activeAllskyMatches}
+        onOpenImage={onOpenImage}
+        onClear={onClearActiveCapture}
+      />
 
       {hover && (
         <div className="timeline-tooltip" style={{ left: hover.x + 14, top: hover.y + 14 }}>
-          {hover.thumbnail && (
-            <img src={imageUrl(hover.thumbnail, 160, thumbStretch)} alt="" className="timeline-tooltip-thumb" />
-          )}
-          <div>{hover.title}</div>
+          {hover.title}  ({new Date(hover.ts).toLocaleTimeString()})
         </div>
       )}
     </div>

@@ -78,14 +78,16 @@ export interface ViewerImage {
   exposure?: number;
 }
 
-/** A capture slice hovered/clicked on the Session Timeline — `train` identifies which TrainCard's
- * own ImageStrip should show it (and the allsky images captured around the same time) in place of
- * that strip's normal recent-images list; `ts` is the capture's own timestamp, used to find the
- * nearest allsky match per camera (see allskyApi's nearestAllskyMatches). */
+/** Whatever moment is hovered/clicked on the Session Timeline (any row, not just a Capture slice —
+ * see SessionTimeline's timestampAtClientX) — `ts` is used to find the nearest allsky match per
+ * camera (see allskyApi's nearestAllskyMatches) regardless of what's at that exact moment.
+ * `capture` is only set if a capture was actually exposing at that precise instant (see
+ * SessionTimeline's findActiveCaptureAt) — e.g. hovering an hour of SCHEDULER_IDLE with nothing
+ * capturing leaves it unset, so CaptureCompareStrip shows the allsky comparison without implying a
+ * specific frame was taken "around" that moment when none actually was. */
 export interface TimelineCaptureSelection {
-  train: string;
   ts: number;
-  image: ViewerImage;
+  capture?: { train: string; image: ViewerImage };
 }
 
 /** INDI CCDChip::CCDFrameType order — confirmed against a real captureComplete signal (Flat frame -> type 3). */

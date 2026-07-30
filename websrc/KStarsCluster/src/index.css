@@ -280,14 +280,6 @@ button:disabled {
   max-width: 220px;
 }
 
-.timeline-tooltip-thumb {
-  display: block;
-  width: 160px;
-  height: auto;
-  border-radius: 4px;
-  margin-bottom: 4px;
-}
-
 .hfr-chart-label {
   color: var(--muted);
   font-size: 0.75rem;
