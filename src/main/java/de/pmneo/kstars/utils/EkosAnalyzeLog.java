@@ -14,10 +14,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import de.pmneo.kstars.KStarsState.CapturedImage;
-import de.pmneo.kstars.KStarsState.GuideDeltaSample;
-import de.pmneo.kstars.KStarsState.HfrSample;
-import de.pmneo.kstars.KStarsState.TimelineEvent;
+import de.pmneo.kstars.SessionHistory.CapturedImage;
+import de.pmneo.kstars.SessionHistory.GuideDeltaSample;
+import de.pmneo.kstars.SessionHistory.HfrSample;
+import de.pmneo.kstars.SessionHistory.TimelineEvent;
 
 /**
  * Parses Ekos's own "Analyze" session log (~/.local/share/kstars/analyze/ekos-*.analyze) to
@@ -237,7 +237,7 @@ public class EkosAnalyzeLog {
 
     private static void parseGuideStats( ParsedHistory result, long ts, String[] parts ) {
         // GuideStats,<offsetSec>,<raError>,<decError>,... — no train field; guiding is tracked
-        // app-wide regardless of which train is currently capturing (see KStarsState.guideDeltaHistory).
+        // app-wide regardless of which train is currently capturing (see SessionHistory.guideDeltaHistory).
         if( parts.length < 4 ) {
             return;
         }

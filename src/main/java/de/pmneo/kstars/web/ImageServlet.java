@@ -119,7 +119,7 @@ public class ImageServlet extends HttpServlet {
             resp.setStatus( HttpServletResponse.SC_BAD_REQUEST );
             return null;
         }
-        File fitsFile = cluster.resolveKnownCapturedFile( file );
+        File fitsFile = cluster.history.resolveKnownCapturedFile( file );
         if( fitsFile == null ) {
             resp.setStatus( HttpServletResponse.SC_NOT_FOUND );
             return null;
