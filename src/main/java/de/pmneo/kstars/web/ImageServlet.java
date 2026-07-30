@@ -16,6 +16,7 @@ import javax.imageio.ImageIO;
 import com.google.gson.Gson;
 
 import de.pmneo.kstars.KStarsCluster;
+import de.pmneo.kstars.utils.FitsThumbnailCache;
 
 import jakarta.servlet.ServletConfig;
 import jakarta.servlet.ServletException;
@@ -26,14 +27,15 @@ import jakarta.servlet.http.HttpServletResponse;
 /**
  * Serves the observatory's own captured FITS frames as browser-viewable JPEG thumbnails (with an
  * adjustable linear stretch), and reports an auto-computed stretch for a given frame. The actual
- * FITS decoding/rendering and the "is this filename something we actually captured" security
- * check (never render an arbitrary client-supplied path) live on KStarsCluster itself, since they
- * need its live captured-image history — fetched here via the shared "cluster" servlet context
- * attribute, same as CommandServlet.
+ * FITS decoding/rendering/caching (FitsThumbnailCache) is entirely self-contained; only the "is
+ * this filename something we actually captured" security check (never render an arbitrary
+ * client-supplied path) needs KStarsCluster's own live captured-image history, fetched via the
+ * shared "cluster" servlet context attribute, same as CommandServlet.
  */
 public class ImageServlet extends HttpServlet {
 
     private KStarsCluster cluster;
+    private final FitsThumbnailCache thumbnails = new FitsThumbnailCache();
     private final Gson gson = new Gson();
 
     @Override
@@ -91,7 +93,7 @@ public class ImageServlet extends HttpServlet {
         double midtones = clamp( parseDoubleParam( req, "midtones", 0.5 ), 0, 1 );
         double highlights = clamp( parseDoubleParam( req, "highlights", 1.0 ), 0, 1 );
 
-        byte[] jpeg = cluster.renderThumbnailCached( fitsFile, maxDim, shadows, midtones, highlights );
+        byte[] jpeg = thumbnails.renderThumbnail( fitsFile, maxDim, shadows, midtones, highlights );
         writeJpeg( resp, jpeg );
     }
 
@@ -102,7 +104,7 @@ public class ImageServlet extends HttpServlet {
         }
 
         boolean strong = "true".equals( req.getParameter( "strong" ) );
-        double[] shmh = cluster.computeAutoStretchCached( fitsFile, strong );
+        double[] shmh = thumbnails.computeAutoStretch( fitsFile, strong );
 
         Map<String,Object> res = new LinkedHashMap<>();
         res.put( "shadows", shmh[0] );

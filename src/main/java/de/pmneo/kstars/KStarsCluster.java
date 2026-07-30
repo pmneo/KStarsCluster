@@ -7,7 +7,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -15,7 +14,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -50,7 +48,6 @@ import com.google.gson.GsonBuilder;
 import bsh.Interpreter;
 
 import de.pmneo.kstars.utils.Coordinates;
-import de.pmneo.kstars.utils.FitsThumbnail;
 import de.pmneo.kstars.utils.RaDecUtils;
 import de.pmneo.kstars.web.CommandServlet.Action;
 
@@ -2139,49 +2136,4 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 
-	/** Keyed by path+mtime+strong. Reading the whole FITS file to sample median/MAD is the
-	 *  expensive part — every thumbnail in the image strip auto-fetches its own auto-stretch, so
-	 *  the same file+strong combo gets requested repeatedly (re-renders, multiple tabs, polling).
-	 *  The result is a handful of doubles, so a plain in-memory map is enough — no need for the
-	 *  disk cache the thumbnails themselves use. */
-	private final Map<String,double[]> autoStretchCache = new ConcurrentHashMap<>();
-
-	public double[] computeAutoStretchCached( File fitsFile, boolean strong ) throws Exception {
-		String cacheKey = fitsFile.getAbsolutePath() + "_" + fitsFile.lastModified() + "_" + strong;
-
-		double[] cached = autoStretchCache.get( cacheKey );
-		if( cached != null ) {
-			return cached;
-		}
-
-		double[] shmh = FitsThumbnail.computeAutoStretch( fitsFile, strong );
-		autoStretchCache.put( cacheKey, shmh );
-		return shmh;
-	}
-
-	private static final File THUMBNAIL_CACHE_DIR = new File( "./thumb-cache" );
-
-	/** Serves a cached render if present, otherwise renders and caches one keyed by path+mtime+size+stretch. */
-	public byte[] renderThumbnailCached( File fitsFile, int maxDim, double shadows, double midtones, double highlights ) throws Exception {
-		THUMBNAIL_CACHE_DIR.mkdirs();
-
-		String cacheKey = Integer.toHexString( fitsFile.getAbsolutePath().hashCode() ) + "_" + fitsFile.lastModified()
-				+ "_" + maxDim + "_" + shadows + "_" + midtones + "_" + highlights + ".jpg";
-		File cacheFile = new File( THUMBNAIL_CACHE_DIR, cacheKey );
-
-		if( cacheFile.isFile() ) {
-			return Files.readAllBytes( cacheFile.toPath() );
-		}
-
-		byte[] jpeg = FitsThumbnail.render( fitsFile, maxDim, shadows, midtones, highlights );
-
-		try {
-			Files.write( cacheFile.toPath(), jpeg );
-		}
-		catch( Throwable t ) {
-			logError( "Failed to cache thumbnail for " + fitsFile, t );
-		}
-
-		return jpeg;
-	}
 }
