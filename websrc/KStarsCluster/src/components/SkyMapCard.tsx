@@ -663,15 +663,26 @@ async function astrobinCoordsSearchUrl(raDeg: number, decDeg: number, radiusDeg:
   return `https://app.astrobin.com/search?p=${encodeURIComponent(btoa(binary))}`;
 }
 
+/** Decoded once (getImageData) when the Terrain panorama loads — see its own loader comment for
+ * why this replaced drawing straight from the HTMLImageElement. */
+interface TerrainPixelData {
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+}
+
 /** Columns for the downsampled az/alt lookup grid drawTerrainOverlay samples the panorama at —
  * KStars' own TerrainRenderer does the same trick (compute az/alt for every Nth screen pixel,
- * upscale/interpolate the rest) since per-pixel az/alt is the expensive part; here the "upscale"
- * step is just letting the browser's own smoothed drawImage scale a tiny canvas up to full size.
- * 64 columns of a real photo just comes out as an unrecognizable color blur once upscaled to fill
- * the card — high enough to actually make out rooflines/trees. Only affordable once a pan/zoom
- * gesture has settled (see terrainDebounceRef) — during the gesture itself, TERRAIN_LIVE_SAMPLE_COLS
- * is used instead (see its own comment for why a live pass exists at all). */
-const TERRAIN_SAMPLE_COLS = 320;
+ * upscale/interpolate the rest) since per-pixel az/alt (one aladin.pix2world() call each) is the
+ * expensive part; here the "upscale" step is just letting the browser's own smoothed drawImage
+ * scale a tiny canvas up to full size. 320 here used to mean ~68,000 pix2world calls (320 cols ×
+ * ~212 rows for a typical card) *plus* 68,000 individual drawImage() calls to copy one source
+ * pixel each — that second part was the real cost (per-call canvas overhead, not the per-pixel
+ * work), fixed by sampling the source's own pixel array directly instead (see TerrainPixelData).
+ * 160 still resolves rooflines/trees once upscaled, at roughly a quarter of the pix2world calls.
+ * Only affordable once a pan/zoom gesture has settled (see terrainDebounceRef) — during the
+ * gesture itself, TERRAIN_LIVE_SAMPLE_COLS is used instead (see its own comment for why). */
+const TERRAIN_SAMPLE_COLS = 160;
 
 /** Drawn on *every* redraw() call, not debounced — without this, the terrain layer visibly stayed
  * at its pre-gesture framing for the entire zoom/pan (however slow or fast) and only snapped to
@@ -694,14 +705,13 @@ function drawTerrainOverlay(
   aladin: any,
   containerW: number,
   containerH: number,
-  terrainImg: HTMLImageElement,
+  src: TerrainPixelData,
   info: ObservatoryInfo,
   dateMs: number,
   stats: ProjectionStats,
   cols: number,
 ) {
-  const imgW = terrainImg.naturalWidth;
-  const imgH = terrainImg.naturalHeight;
+  const { data: srcData, width: imgW, height: imgH } = src;
   if (imgW === 0 || imgH === 0 || containerW === 0 || containerH === 0) return;
 
   const rows = Math.max(1, Math.round(cols * (containerH / containerW)));
@@ -712,6 +722,10 @@ function drawTerrainOverlay(
   const octx = offscreen.getContext('2d');
   if (!octx) return;
 
+  // Built as one plain typed-array (destData) and blitted in a single putImageData call, rather
+  // than one drawImage() per sampled cell — with cols/rows in the thousands, per-call canvas
+  // overhead dwarfed the actual per-pixel work (see TERRAIN_SAMPLE_COLS's comment).
+  const destData = octx.createImageData(cols, rows);
   for (let j = 0; j < rows; j++) {
     const y = ((j + 0.5) / rows) * containerH;
     for (let i = 0; i < cols; i++) {
@@ -720,8 +734,8 @@ function drawTerrainOverlay(
       // Aladin returns null for a screen point outside the current projection's valid disk — but
       // right at that boundary (common when zoomed out far enough to see the whole sky at once)
       // it can instead return a "valid" array holding NaN, which !world doesn't catch and which
-      // then poisons every downstream value (a single NaN drawImage() source coordinate is enough
-      // to throw and abort the whole redraw — that's the reported "crashes on zoom out").
+      // then poisons every downstream value (a single NaN array index is enough to read garbage
+      // or throw — that's the reported "crashes on zoom out").
       if (!world || !Number.isFinite(world[0]) || !Number.isFinite(world[1])) continue;
 
       const { altDeg, azDeg } = raDecToAltAz(world[0], world[1], info.latitude, info.longitude, dateMs);
@@ -731,14 +745,20 @@ function drawTerrainOverlay(
       let az = (((azDeg + info.terrainCorrectAz) % 360) + 360) % 360;
       if (az > 180) az -= 360;
 
-      const pixX = Math.max(0, Math.min(imgW - 1, imgW / 2 + (az / 360) * imgW));
-      const pixYFromBottom = Math.max(0, Math.min(imgH - 1, ((alt + 90) / 180) * imgH));
+      const pixX = Math.max(0, Math.min(imgW - 1, Math.round(imgW / 2 + (az / 360) * imgW)));
+      const pixYFromBottom = Math.max(0, Math.min(imgH - 1, Math.round(((alt + 90) / 180) * imgH)));
       const pixY = (imgH - 1) - pixYFromBottom;
       if (!Number.isFinite(pixX) || !Number.isFinite(pixY)) continue;
 
-      octx.drawImage(terrainImg, pixX, pixY, 1, 1, i, j, 1, 1);
+      const srcIdx = (pixY * imgW + pixX) * 4;
+      const destIdx = (j * cols + i) * 4;
+      destData.data[destIdx] = srcData[srcIdx];
+      destData.data[destIdx + 1] = srcData[srcIdx + 1];
+      destData.data[destIdx + 2] = srcData[srcIdx + 2];
+      destData.data[destIdx + 3] = srcData[srcIdx + 3];
     }
   }
+  octx.putImageData(destData, 0, 0);
 
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(offscreen, 0, 0, cols, rows, 0, 0, containerW, containerH);
@@ -983,7 +1003,13 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   // their draw calls.
   const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
   const terrainImgRef = useRef<HTMLImageElement | null>(null);
+  const terrainPixelDataRef = useRef<TerrainPixelData | null>(null);
   const terrainDebounceRef = useRef<number | undefined>(undefined);
+  // A ref, not a `let` inside the redraw effect: that effect's own dependency list includes things
+  // like mountCoords.ra/dec, which change every couple hundred ms while the mount is tracking —
+  // each of those re-runs the whole effect (a fresh closure), which would reset an effect-scoped
+  // `let` back to null constantly and defeat the gate below it guards. A ref survives that.
+  const lastTerrainViewKeyRef = useRef<string | null>(null);
   const horizonRetryRef = useRef<number | undefined>(undefined);
   const [ready, setReady] = useState(false);
   const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
@@ -1428,45 +1454,68 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         const tctx = terrainCanvas.getContext('2d');
         if (tctx) {
           tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          window.clearTimeout(terrainDebounceRef.current);
-          if (showHorizon && showTerrain && terrainImageLoaded && terrainImgRef.current && observatoryInfo && isValidLocation(observatoryInfo)) {
-            const img = terrainImgRef.current;
+          if (showHorizon && showTerrain && terrainImageLoaded && terrainPixelDataRef.current && observatoryInfo && isValidLocation(observatoryInfo)) {
+            const src = terrainPixelDataRef.current;
             const info = observatoryInfo;
 
-            // Drawn every call (cheap, low-res) so the terrain visibly tracks the live gesture
-            // instead of staying frozen at the pre-gesture framing until it settles — see
-            // TERRAIN_LIVE_SAMPLE_COLS's own comment for the "sky map shrinks, ours doesn't" this
-            // fixes. Its own exceptions are ignored: a blurry frame skipping one bad sample or two
-            // isn't worth retrying when a sharper attempt is already scheduled below regardless.
-            tctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
-            drawTerrainOverlay(
-              tctx, aladin, container.clientWidth, container.clientHeight, img, info, horizonTime,
-              { exceptions: 0 }, TERRAIN_LIVE_SAMPLE_COLS,
-            );
+            // redraw() (and this whole effect) reruns on plenty of things that have nothing to do
+            // with the terrain view — mountCoords.ra/dec updates every couple hundred ms while the
+            // mount is tracking (sometimes faster than this key gate's own 120ms debounce window),
+            // the resync guard's periodic onChange() tick, etc. Without this key gate, every one of
+            // those redrew the terrain layer from scratch: a low-res flash immediately, then a sharp
+            // redraw ~120ms later, on a view that never actually changed — which is exactly what
+            // reads as "flickering between two resolutions". Marking the key seen *immediately*
+            // (right here, not after the sharp pass finishes) is what actually fixes it: otherwise a
+            // same-key call arriving before the 120ms debounce fires would re-enter this branch, redo
+            // the live-pass flash, and cancel+reschedule the sharp pass — which at typical mountCoords
+            // update rates meant the sharp pass got perpetually cancelled and never once completed. A
+            // genuine pan/zoom still changes ra/dec/fov and invalidates this key, so the live+sharp
+            // sequence still runs for anything that actually needs it. (lastTerrainViewKeyRef is a
+            // ref, not a `let` inside this effect, precisely because the effect itself reruns this
+            // often — see its own comment.)
+            const [curRa, curDec] = aladin.getRaDec();
+            const terrainViewKey = `${curRa},${curDec},${aladin.getFov()[0]},${container.clientWidth},${container.clientHeight},${horizonTime}`;
+            if (terrainViewKey !== lastTerrainViewKeyRef.current) {
+              lastTerrainViewKeyRef.current = terrainViewKey;
+              window.clearTimeout(terrainDebounceRef.current);
 
-            // The high-res refinement stays debounced — walking TERRAIN_SAMPLE_COLS's much bigger
-            // grid on every single animation-frame tick of a pan/zoom visibly bogged down the tab,
-            // which the cheap live pass above doesn't. ~120ms after the gesture settles (same
-            // window SessionTimeline's hover debounce uses) redraws it sharp.
-            //
-            // A zoom/pan that brings fresh HiPS tiles into view can leave Aladin's own WebGL
-            // texture state transiently broken for a bit (see safePix2World's javadoc) — long
-            // enough, sometimes, to still be broken when this fires. Retrying a few times instead
-            // of accepting whatever this one attempt got means a zoom that lands in that window
-            // doesn't leave the terrain layer stuck on the blurry live-pass version forever.
-            const attempt = (retriesLeft: number) => {
-              const stats: ProjectionStats = { exceptions: 0 };
+              // Drawn every call (cheap, low-res) so the terrain visibly tracks the live gesture
+              // instead of staying frozen at the pre-gesture framing until it settles — see
+              // TERRAIN_LIVE_SAMPLE_COLS's own comment for the "sky map shrinks, ours doesn't" this
+              // fixes. Its own exceptions are ignored: a blurry frame skipping one bad sample or two
+              // isn't worth retrying when a sharper attempt is already scheduled below regardless.
               tctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
               drawTerrainOverlay(
-                tctx, aladin, container.clientWidth, container.clientHeight, img, info, horizonTime,
-                stats, TERRAIN_SAMPLE_COLS,
+                tctx, aladin, container.clientWidth, container.clientHeight, src, info, horizonTime,
+                { exceptions: 0 }, TERRAIN_LIVE_SAMPLE_COLS,
               );
-              if (stats.exceptions > 0 && retriesLeft > 0) {
-                terrainDebounceRef.current = window.setTimeout(() => attempt(retriesLeft - 1), 250);
-              }
-            };
-            terrainDebounceRef.current = window.setTimeout(() => attempt(3), 120);
+
+              // The high-res refinement stays debounced — walking TERRAIN_SAMPLE_COLS's much bigger
+              // grid on every single animation-frame tick of a pan/zoom visibly bogged down the tab,
+              // which the cheap live pass above doesn't. ~120ms after the gesture settles (same
+              // window SessionTimeline's hover debounce uses) redraws it sharp.
+              //
+              // A zoom/pan that brings fresh HiPS tiles into view can leave Aladin's own WebGL
+              // texture state transiently broken for a bit (see safePix2World's javadoc) — long
+              // enough, sometimes, to still be broken when this fires. Retrying a few times instead
+              // of accepting whatever this one attempt got means a zoom that lands in that window
+              // doesn't leave the terrain layer stuck on the blurry live-pass version forever.
+              const attempt = (retriesLeft: number) => {
+                const stats: ProjectionStats = { exceptions: 0 };
+                tctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
+                drawTerrainOverlay(
+                  tctx, aladin, container.clientWidth, container.clientHeight, src, info, horizonTime,
+                  stats, TERRAIN_SAMPLE_COLS,
+                );
+                if (stats.exceptions > 0 && retriesLeft > 0) {
+                  terrainDebounceRef.current = window.setTimeout(() => attempt(retriesLeft - 1), 250);
+                }
+              };
+              terrainDebounceRef.current = window.setTimeout(() => attempt(3), 120);
+            }
           } else {
+            lastTerrainViewKeyRef.current = null;
+            window.clearTimeout(terrainDebounceRef.current);
             tctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
           }
         }
@@ -1729,7 +1778,22 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   useEffect(() => {
     if (!showHorizon || !showTerrain || !observatoryInfo?.hasTerrain || terrainImgRef.current) return;
     const img = new Image();
-    img.onload = () => setTerrainImageLoaded(true);
+    img.onload = () => {
+      // Decoded once, here, rather than drawImage()-ing straight from the HTMLImageElement inside
+      // drawTerrainOverlay's sampling loop: that was one canvas draw call per sampled grid cell
+      // (tens of thousands per redraw, see TERRAIN_SAMPLE_COLS), and canvas call overhead dominated
+      // over the actual per-pixel work. A single getImageData() here gives drawTerrainOverlay a
+      // plain typed-array it can index directly — same-origin image, so this doesn't taint anything.
+      const off = document.createElement('canvas');
+      off.width = img.naturalWidth;
+      off.height = img.naturalHeight;
+      const octx = off.getContext('2d');
+      if (!octx) return;
+      octx.drawImage(img, 0, 0);
+      const { data } = octx.getImageData(0, 0, off.width, off.height);
+      terrainPixelDataRef.current = { data, width: off.width, height: off.height };
+      setTerrainImageLoaded(true);
+    };
     img.src = TERRAIN_IMAGE_URL;
     terrainImgRef.current = img;
   }, [showHorizon, showTerrain, observatoryInfo?.hasTerrain]);
