@@ -768,8 +768,9 @@ table td:first-child {
   outline: 1px solid #38bdf8;
 }
 
-/* The Terrain panorama reprojection (drawTerrainOverlay) — sits below the AstroBin canvas in DOM
- * order (see SkyMapCard.tsx) so obstruction silhouettes never paint over footprint outlines. */
+/* The Terrain panorama reprojection (drawTerrainOverlay) — sits above the AstroBin canvas but
+ * below the horizon canvas in DOM order (see SkyMapCard.tsx), so the terrain silhouette paints
+ * over footprint outlines but never over the horizon line. */
 .sky-map-terrain-canvas {
   position: absolute;
   inset: 0;
@@ -778,7 +779,9 @@ table td:first-child {
 
 /* The flat horizon line + artificial-horizon regions (drawHorizonOverlay) — hand-rolled canvas
  * drawing rather than an Aladin polygon overlay (see horizonCanvasRef's own comment for why),
- * layered above the terrain photo so the line stays visible over the ground silhouette. */
+ * layered above both the terrain photo and the AstroBin footprints (last in DOM order, see
+ * SkyMapCard.tsx) so the horizon line stays visible instead of getting covered by the terrain
+ * silhouette or a wide AstroBin footprint. */
 .sky-map-horizon-canvas {
   position: absolute;
   inset: 0;

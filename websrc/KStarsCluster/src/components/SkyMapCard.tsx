@@ -675,14 +675,13 @@ interface TerrainPixelData {
  * KStars' own TerrainRenderer does the same trick (compute az/alt for every Nth screen pixel,
  * upscale/interpolate the rest) since per-pixel az/alt (one aladin.pix2world() call each) is the
  * expensive part; here the "upscale" step is just letting the browser's own smoothed drawImage
- * scale a tiny canvas up to full size. 320 here used to mean ~68,000 pix2world calls (320 cols ×
- * ~212 rows for a typical card) *plus* 68,000 individual drawImage() calls to copy one source
- * pixel each — that second part was the real cost (per-call canvas overhead, not the per-pixel
- * work), fixed by sampling the source's own pixel array directly instead (see TerrainPixelData).
- * 160 still resolves rooflines/trees once upscaled, at roughly a quarter of the pix2world calls.
- * Only affordable once a pan/zoom gesture has settled (see terrainDebounceRef) — during the
- * gesture itself, TERRAIN_LIVE_SAMPLE_COLS is used instead (see its own comment for why). */
-const TERRAIN_SAMPLE_COLS = 160;
+ * scale a tiny canvas up to full size. Sampling the source's own pixel array directly (see
+ * TerrainPixelData) instead of one drawImage() per cell removed the per-call canvas overhead that
+ * used to dominate, so this affords a much finer grid now: 280 cols × ~185 rows (~52,000
+ * pix2world calls) measured at ~210ms, resolving individual roof shingles once upscaled, still
+ * only paid once a pan/zoom gesture has settled (see terrainDebounceRef) — during the gesture
+ * itself, TERRAIN_LIVE_SAMPLE_COLS is used instead (see its own comment for why). */
+const TERRAIN_SAMPLE_COLS = 280;
 
 /** Drawn on *every* redraw() call, not debounced — without this, the terrain layer visibly stayed
  * at its pre-gesture framing for the entire zoom/pan (however slow or fast) and only snapped to
@@ -691,8 +690,11 @@ const TERRAIN_SAMPLE_COLS = 160;
  * than TERRAIN_SAMPLE_COLS — this one runs at the browser's actual frame rate for the whole
  * duration of a gesture, not once after it settles, so it needs to be cheap enough that a fast
  * flick of the scroll wheel never reintroduces the jank the debounced high-res pass exists to
- * avoid; the debounced pass then sharpens it once things settle, same as before. */
-const TERRAIN_LIVE_SAMPLE_COLS = 32;
+ * avoid; the debounced pass then sharpens it once things settle, same as before. 48 cols (measured
+ * ~17ms average per redraw during a continuous pan, one dropped frame in 59) is as far as this can
+ * go without visibly dropping frames — TERRAIN_SAMPLE_COLS can be much higher because it only runs
+ * once, debounced, not on every frame of the gesture. */
+const TERRAIN_LIVE_SAMPLE_COLS = 48;
 
 /** Reprojects the user's "Terrain" panorama (an equirectangular Az/Alt photo, see
  * ObservatoryInfo/KStarsConfig's Terrain.* keys) onto the sky map's current view for the chosen
@@ -2095,9 +2097,12 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             className="sky-map-last-image"
           />
         )}
-        <canvas ref={terrainCanvasRef} className="sky-map-terrain-canvas" />
-        <canvas ref={horizonCanvasRef} className="sky-map-horizon-canvas" />
         <canvas ref={astrobinCanvasRef} className="sky-map-astrobin-canvas" />
+        <canvas ref={terrainCanvasRef} className="sky-map-terrain-canvas" />
+        {/* Painted last (on top of the terrain photo and AstroBin footprints) so the horizon line
+            and artificial-horizon shading are always visible, not hidden under the terrain overlay
+            or a wide AstroBin footprint. */}
+        <canvas ref={horizonCanvasRef} className="sky-map-horizon-canvas" />
         {astrobinPopover && (
           <div className="sky-map-astrobin-popover" ref={astrobinPopoverRef}>
             <button type="button" className="sky-map-astrobin-popover-close" onClick={() => setAstrobinPopover(null)} aria-label="Close">×</button>
