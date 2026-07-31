@@ -27,6 +27,22 @@ public class KStarsConfig extends WithLogging {
         return config.getDouble( "Location.Longitude", -999 );
     }
 
+    /** Absolute path to the user's "Terrain" panorama image (View > Show Terrain in KStars) —
+     *  null if the feature was never configured. See TerrainSourceCorrectAz/Alt for the two
+     *  alignment offsets KStars applies when sampling it, needed to reproduce the same mapping. */
+    public String getTerrainSource() {
+        String value = config.getString( "Terrain.TerrainSource", null );
+        return ( value == null || value.isBlank() ) ? null : value;
+    }
+
+    public double getTerrainCorrectAz() {
+        return config.getDouble( "Terrain.TerrainSourceCorrectAz", 0 );
+    }
+
+    public double getTerrainCorrectAlt() {
+        return config.getDouble( "Terrain.TerrainSourceCorrectAlt", 0 );
+    }
+
     public Calendar[] getCivilTwilight() {
         try {
             double longitude = config.getDouble("Location.Longitude", -999 );

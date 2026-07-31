@@ -22,6 +22,7 @@ import de.pmneo.kstars.web.AstrobinProxyServlet;
 import de.pmneo.kstars.web.CommandServlet;
 import de.pmneo.kstars.web.HipsProxyServlet;
 import de.pmneo.kstars.web.ImageServlet;
+import de.pmneo.kstars.web.ObservatoryServlet;
 import de.pmneo.kstars.web.LoggingSocket;
 import de.pmneo.kstars.web.StatusSocket;
 
@@ -151,6 +152,7 @@ public class ServerRunner {
         contextHandler.addServlet(AstrobinProxyServlet.class, "/astrobin/*");
         contextHandler.addServlet(AllskyProxyServlet.class, "/allsky/*");
         contextHandler.addServlet(ImageServlet.class, "/images/*");
+        contextHandler.addServlet(ObservatoryServlet.class, "/observatory/*");
         contextHandler.addServlet(DefaultServlet.class, "/");
 
         // Start Server

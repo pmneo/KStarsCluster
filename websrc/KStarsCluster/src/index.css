@@ -280,6 +280,9 @@ button:disabled {
   background: #14161c;
   border: 1px solid var(--border);
   border-radius: 7px;
+  /* Without this, a touch drag on the band/handles is ambiguous with the page's own vertical
+   * scroll — the browser can steal the gesture before our pointermove handler ever sees it. */
+  touch-action: none;
 }
 
 .timeline-scrollbar-band {
@@ -288,6 +291,7 @@ button:disabled {
   bottom: 0;
   background: rgba(77, 171, 247, 0.35);
   cursor: grab;
+  touch-action: none;
 }
 
 .timeline-scrollbar-handle {
@@ -299,6 +303,17 @@ button:disabled {
   background: var(--accent);
   border-radius: 3px;
   cursor: ew-resize;
+  touch-action: none;
+}
+
+/* A 10px handle is fine for a mouse pointer but too small to reliably grab with a finger — widen
+ * the hit target (and the handle itself, so it's not misleadingly narrower than what you can
+ * actually touch) on coarse/touch pointers only, leaving the precise mouse look untouched. */
+@media (pointer: coarse) {
+  .timeline-scrollbar-handle {
+    width: 24px;
+    margin-left: -12px;
+  }
 }
 
 .timeline-tooltip {
@@ -502,8 +517,10 @@ table td:first-child {
 .sky-map-toggles {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   margin-left: auto;
+  min-width: 0;
 }
 
 .sky-map-toggle {
@@ -592,6 +609,38 @@ table td:first-child {
   border-radius: 6px;
   color: var(--text);
   padding: 2px 6px;
+}
+
+.sky-map-horizon {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.sky-map-horizon label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sky-map-horizon input[type='datetime-local'] {
+  background: #10121a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 2px 6px;
+}
+
+.sky-map-horizon-warning {
+  color: var(--danger);
+}
+
+.sky-map-horizon-note {
+  color: var(--text);
 }
 
 .sky-map-fov-results-anchor {
@@ -717,6 +766,23 @@ table td:first-child {
   pointer-events: none;
   opacity: 0.85;
   outline: 1px solid #38bdf8;
+}
+
+/* The Terrain panorama reprojection (drawTerrainOverlay) — sits below the AstroBin canvas in DOM
+ * order (see SkyMapCard.tsx) so obstruction silhouettes never paint over footprint outlines. */
+.sky-map-terrain-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The flat horizon line + artificial-horizon regions (drawHorizonOverlay) — hand-rolled canvas
+ * drawing rather than an Aladin polygon overlay (see horizonCanvasRef's own comment for why),
+ * layered above the terrain photo so the line stays visible over the ground silhouette. */
+.sky-map-horizon-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 /* One canvas for every footprint (see drawAstrobinFootprints in SkyMapCard.tsx) instead of one

@@ -131,6 +131,14 @@
             <artifactId>nom-tam-fits</artifactId>
             <version>1.21.1</version>
         </dependency>
+
+        <!-- Reads KStars' own userdb.sqlite (read-only) to pull the user's artificial horizon
+             regions for the Sky Map's horizon simulation. -->
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>3.53.2.1</version>
+        </dependency>
     </dependencies>
 
     <build>

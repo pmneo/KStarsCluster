@@ -1,11 +1,51 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SchedulerJob } from '../api/types';
 import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
+import { altAzToRaDec, raDecToAltAz } from '../api/coordinates';
+import {
+  fetchObservatoryInfo, fetchArtificialHorizon, isValidLocation, TERRAIN_IMAGE_URL,
+  type ObservatoryInfo, type ArtificialHorizonRegion,
+} from '../api/horizonApi';
 
 // Aladin Lite v3 is loaded via <script> in index.html, not bundled — it ships no official types.
 declare global {
   interface Window {
     A: any;
+  }
+}
+
+/** Shared by a single grid/loop pass — counts how many projection calls actually threw (as
+ * opposed to legitimately returning null for an off-screen point), so a caller whose whole grid
+ * came back empty can tell "nothing here is on-screen right now" apart from "the WebGL texture
+ * state was transiently broken for this entire attempt" and retry only the latter (see
+ * terrainDebounceRef's retry loop). */
+interface ProjectionStats { exceptions: number; }
+
+/** aladin.world2pix/pix2world don't just return null for a point their current projection can't
+ * handle (already handled everywhere below) — under some internal states (observed alongside a
+ * "Tex image ... incurring lazy initialization" WebGL warning, so likely a HiPS tile texture not
+ * fully ready yet, typically right after a zoom/pan brings new tiles into view) they throw
+ * outright instead ("can't access property Symbol.iterator, i is undefined"), which none of our
+ * own null-checks can catch since the exception happens inside Aladin's own code before it ever
+ * returns. Every call site here goes through these wrappers so one bad projection this redraw
+ * can't ever take down the whole grid/loop it's part of. */
+function safeWorld2Pix(aladin: any, ra: number, dec: number, stats?: ProjectionStats): [number, number] | null {
+  try {
+    return aladin.world2pix(ra, dec) ?? null;
+  }
+  catch {
+    if (stats) stats.exceptions++;
+    return null;
+  }
+}
+
+function safePix2World(aladin: any, x: number, y: number, stats?: ProjectionStats): [number, number] | null {
+  try {
+    return aladin.pix2world(x, y) ?? null;
+  }
+  catch {
+    if (stats) stats.exceptions++;
+    return null;
   }
 }
 
@@ -127,12 +167,13 @@ interface ScreenRect {
  * one — confirmed the hard way when it flipped every AstroBin footprint 180°, not just the
  * one-off mirrored-solve cases the corners were adopted to fix in the first place. */
 function computeScreenRect(aladin: any, corners: [number, number][], extraHalfTurn: boolean): ScreenRect | null {
-  const px = corners.map(([ra, dec]) => aladin.world2pix(ra, dec));
+  const projected = corners.map(([ra, dec]) => safeWorld2Pix(aladin, ra, dec));
   // world2pix returns null/undefined for points its current projection can't map (e.g. an
   // AstroBin footprint on the opposite side of the sky from wherever the view happens to be) —
   // rather than crashing the whole redraw() (which would also skip the live FOV overlay below
   // it), just leave this one unrendered until it's somewhere projectable.
-  if (px.some((p) => !p)) return null;
+  if (projected.some((p) => !p)) return null;
+  const px = projected as [number, number][];
   const cx = (px[0][0] + px[2][0]) / 2;
   const cy = (px[0][1] + px[2][1]) / 2;
   const w = Math.hypot(px[1][0] - px[0][0], px[1][1] - px[0][1]);
@@ -168,6 +209,8 @@ const SHOW_LAST_IMAGE_KEY = 'skymap.showLastImage';
 const SHOW_NGC_KEY = 'skymap.showNgc';
 const SHOW_SH2_KEY = 'skymap.showSh2';
 const SHOW_ASTROBIN_KEY = 'skymap.showAstrobin';
+const SHOW_HORIZON_KEY = 'skymap.showHorizon';
+const SHOW_TERRAIN_KEY = 'skymap.showTerrain';
 // Real width is CSS-defined (see .sky-map-astrobin-popover); the height is only an estimate since
 // the actual rendered height depends on title wrapping and isn't known until after it paints —
 // good enough for clamping the popover to stay on-screen without needing a post-paint measurement.
@@ -620,6 +663,194 @@ async function astrobinCoordsSearchUrl(raDeg: number, decDeg: number, radiusDeg:
   return `https://app.astrobin.com/search?p=${encodeURIComponent(btoa(binary))}`;
 }
 
+/** Columns for the downsampled az/alt lookup grid drawTerrainOverlay samples the panorama at —
+ * KStars' own TerrainRenderer does the same trick (compute az/alt for every Nth screen pixel,
+ * upscale/interpolate the rest) since per-pixel az/alt is the expensive part; here the "upscale"
+ * step is just letting the browser's own smoothed drawImage scale a tiny canvas up to full size.
+ * 64 columns of a real photo just comes out as an unrecognizable color blur once upscaled to fill
+ * the card — high enough to actually make out rooflines/trees. Only affordable once a pan/zoom
+ * gesture has settled (see terrainDebounceRef) — during the gesture itself, TERRAIN_LIVE_SAMPLE_COLS
+ * is used instead (see its own comment for why a live pass exists at all). */
+const TERRAIN_SAMPLE_COLS = 320;
+
+/** Drawn on *every* redraw() call, not debounced — without this, the terrain layer visibly stayed
+ * at its pre-gesture framing for the entire zoom/pan (however slow or fast) and only snapped to
+ * the new view ~120ms after the mouse stopped, while Aladin's own WebGL view already tracked the
+ * gesture live; that read as "the sky map shrinks, our overlay doesn't". Deliberately much coarser
+ * than TERRAIN_SAMPLE_COLS — this one runs at the browser's actual frame rate for the whole
+ * duration of a gesture, not once after it settles, so it needs to be cheap enough that a fast
+ * flick of the scroll wheel never reintroduces the jank the debounced high-res pass exists to
+ * avoid; the debounced pass then sharpens it once things settle, same as before. */
+const TERRAIN_LIVE_SAMPLE_COLS = 32;
+
+/** Reprojects the user's "Terrain" panorama (an equirectangular Az/Alt photo, see
+ * ObservatoryInfo/KStarsConfig's Terrain.* keys) onto the sky map's current view for the chosen
+ * simulation time — the exact inverse of how the image was meant to be read: for each screen pixel
+ * (downsampled), find what RA/Dec Aladin is showing there, convert that to Alt/Az for the chosen
+ * time, then sample the source photo's pixel for that Alt/Az (see KStars' own
+ * terrainrenderer.cpp::getPixel, which this mirrors exactly, correction offsets included). */
+function drawTerrainOverlay(
+  ctx: CanvasRenderingContext2D,
+  aladin: any,
+  containerW: number,
+  containerH: number,
+  terrainImg: HTMLImageElement,
+  info: ObservatoryInfo,
+  dateMs: number,
+  stats: ProjectionStats,
+  cols: number,
+) {
+  const imgW = terrainImg.naturalWidth;
+  const imgH = terrainImg.naturalHeight;
+  if (imgW === 0 || imgH === 0 || containerW === 0 || containerH === 0) return;
+
+  const rows = Math.max(1, Math.round(cols * (containerH / containerW)));
+
+  const offscreen = document.createElement('canvas');
+  offscreen.width = cols;
+  offscreen.height = rows;
+  const octx = offscreen.getContext('2d');
+  if (!octx) return;
+
+  for (let j = 0; j < rows; j++) {
+    const y = ((j + 0.5) / rows) * containerH;
+    for (let i = 0; i < cols; i++) {
+      const x = ((i + 0.5) / cols) * containerW;
+      const world = safePix2World(aladin, x, y, stats);
+      // Aladin returns null for a screen point outside the current projection's valid disk — but
+      // right at that boundary (common when zoomed out far enough to see the whole sky at once)
+      // it can instead return a "valid" array holding NaN, which !world doesn't catch and which
+      // then poisons every downstream value (a single NaN drawImage() source coordinate is enough
+      // to throw and abort the whole redraw — that's the reported "crashes on zoom out").
+      if (!world || !Number.isFinite(world[0]) || !Number.isFinite(world[1])) continue;
+
+      const { altDeg, azDeg } = raDecToAltAz(world[0], world[1], info.latitude, info.longitude, dateMs);
+      const alt = altDeg - info.terrainCorrectAlt;
+      if (alt < -90 || alt > 90) continue;
+
+      let az = (((azDeg + info.terrainCorrectAz) % 360) + 360) % 360;
+      if (az > 180) az -= 360;
+
+      const pixX = Math.max(0, Math.min(imgW - 1, imgW / 2 + (az / 360) * imgW));
+      const pixYFromBottom = Math.max(0, Math.min(imgH - 1, ((alt + 90) / 180) * imgH));
+      const pixY = (imgH - 1) - pixYFromBottom;
+      if (!Number.isFinite(pixX) || !Number.isFinite(pixY)) continue;
+
+      octx.drawImage(terrainImg, pixX, pixY, 1, 1, i, j, 1, 1);
+    }
+  }
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(offscreen, 0, 0, cols, rows, 0, 0, containerW, containerH);
+}
+
+/** Projects a closed loop of (RA, DEC) degree pairs to screen pixels via aladin.world2pix, one
+ * per vertex — null wherever that vertex isn't currently projectable, exactly like the FOV
+ * overlays' own computeScreenRect already handles per-corner. */
+function projectLoop(
+  aladin: any,
+  points: [number, number][],
+  stats?: ProjectionStats,
+): ({ x: number; y: number } | null)[] {
+  return points.map(([ra, dec]) => {
+    const p = safeWorld2Pix(aladin, ra, dec, stats);
+    return p ? { x: p[0], y: p[1] } : null;
+  });
+}
+
+/** Strokes a closed loop of screen points, breaking into separate sub-paths wherever a vertex
+ * didn't project (null) or the jump to it is implausibly large relative to the viewport (see
+ * maxSegmentPx) — the loop only ever fully renders when the whole thing is in frame (e.g. zoomed
+ * out to see the whole sky); otherwise whatever contiguous arc is currently visible still draws
+ * correctly instead of the whole shape silently vanishing.
+ *
+ * Stroke-only: filling one of these sub-paths would implicitly close it with a straight line
+ * straight from wherever the visible arc happens to end back to wherever it starts — for an arc
+ * that's only a fraction of the true loop (the common case), that chord cuts across the screen at
+ * whatever angle those two endpoints happen to define, which is exactly the "filled diagonally"
+ * artifact an earlier version of this had. Regions are just outlined, not shaded, now anyway. */
+function strokeHorizonLoop(
+  ctx: CanvasRenderingContext2D,
+  screenPoints: ({ x: number; y: number } | null)[],
+  stroke: string,
+  maxSegmentPx: number,
+  lineWidth = 1.5,
+) {
+  const n = screenPoints.length;
+  if (n < 2) return;
+
+  const subpaths: { x: number; y: number }[][] = [];
+  let current: { x: number; y: number }[] = [];
+  let prev: { x: number; y: number } | null = null;
+  // i <= n (not < n) revisits index 0 at the end, closing the loop when it stayed unbroken.
+  for (let i = 0; i <= n; i++) {
+    const pt = screenPoints[i % n];
+    const jumpTooFar = !!(pt && prev && Math.hypot(pt.x - prev.x, pt.y - prev.y) > maxSegmentPx);
+    if (!pt || jumpTooFar) {
+      if (current.length > 1) subpaths.push(current);
+      current = pt && jumpTooFar ? [pt] : [];
+    } else {
+      current.push(pt);
+    }
+    prev = pt;
+  }
+  if (current.length > 1) subpaths.push(current);
+
+  for (const sub of subpaths) {
+    ctx.beginPath();
+    ctx.moveTo(sub[0].x, sub[0].y);
+    for (let i = 1; i < sub.length; i++) ctx.lineTo(sub[i].x, sub[i].y);
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = lineWidth;
+    ctx.stroke();
+  }
+}
+
+/** Draws the flat geometric horizon (always available from lat/lon alone) plus any enabled
+ * artificial-horizon regions, both reprojected in RA/Dec for the chosen simulation time. */
+function drawHorizonOverlay(
+  ctx: CanvasRenderingContext2D,
+  aladin: any,
+  info: ObservatoryInfo,
+  regions: ArtificialHorizonRegion[],
+  dateMs: number,
+  containerW: number,
+  containerH: number,
+  stats?: ProjectionStats,
+) {
+  // A real jump between adjacent sample points never needs more than a fraction of the viewport
+  // itself — anything longer means world2pix landed the far side of a wraparound rather than
+  // somewhere actually adjacent on screen (see strokeHorizonLoop). A fixed pixel constant here
+  // instead of scaling to the viewport used to make this check nearly unreachable (4000px, when
+  // the canvas itself is only a few hundred px), which is exactly how the FOV-180° diagonal chord
+  // (a `world2pix`-succeeds-but-lands-absurdly artifact, not a redraw failure) got through unbroken.
+  const maxSegmentPx = Math.max(containerW, containerH) * 0.6;
+
+  const flatPoints: [number, number][] = [];
+  for (let az = 0; az < 360; az += 3) {
+    const { raDeg, decDeg } = altAzToRaDec(0, az, info.latitude, info.longitude, dateMs);
+    flatPoints.push([raDeg, decDeg]);
+  }
+  strokeHorizonLoop(ctx, projectLoop(aladin, flatPoints, stats), '#f97316', maxSegmentPx, 1.5);
+
+  regions.forEach((region) => {
+    const points: [number, number][] = region.points.map((p) => {
+      const { raDeg, decDeg } = altAzToRaDec(p.alt, p.az, info.latitude, info.longitude, dateMs);
+      return [raDeg, decDeg];
+    });
+    strokeHorizonLoop(ctx, projectLoop(aladin, points, stats), '#dc2626', maxSegmentPx, 1);
+  });
+}
+
+/** "YYYY-MM-DDTHH:mm" in local time, the string format <input type="datetime-local"> both
+ * displays and expects back — new Date(dateString) parses that same format as local time too, so
+ * this round-trips through the input without any UTC conversion drift. */
+function toDatetimeLocalValue(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function readStoredBoolean(key: string): boolean {
   try {
     return localStorage.getItem(key) === 'true';
@@ -739,6 +970,21 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const astrobinHitRectsRef = useRef<AstrobinHitRect[]>([]);
   const astrobinFetchedRef = useRef(false);
   const appliedSurveyIdRef = useRef<string | null>(null);
+  // The flat geometric horizon + any enabled artificial-horizon regions — plain canvas drawing
+  // (drawHorizonOverlay), not Aladin's own A.polygon/graphicOverlay: Aladin's polygon renderer
+  // crashes outright (TypeError reading 'x' of undefined) the moment any one vertex fails to
+  // project onto the current view, which a 360°-sweep horizon loop does constantly unless the
+  // whole sky happens to be in frame. world2pix() itself degrades gracefully (returns null); it's
+  // only Aladin's *own* draw() that doesn't guard for that, so bypassing it avoids the crash.
+  const horizonCanvasRef = useRef<HTMLCanvasElement>(null);
+  // The Terrain panorama re-projection (drawTerrainOverlay) is plain canvas drawing, like the
+  // AstroBin footprints, but on its own canvas layered underneath them (see index.css) rather than
+  // sharing one — the two are cleared/redrawn independently and there's no reason to interleave
+  // their draw calls.
+  const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
+  const terrainImgRef = useRef<HTMLImageElement | null>(null);
+  const terrainDebounceRef = useRef<number | undefined>(undefined);
+  const horizonRetryRef = useRef<number | undefined>(undefined);
   const [ready, setReady] = useState(false);
   const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
   // Persisted across reloads (see FOLLOW_MOUNT_KEY/SHOW_LAST_IMAGE_KEY) — both are "set once,
@@ -749,6 +995,18 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const [showSh2, setShowSh2] = useState(() => readStoredBoolean(SHOW_SH2_KEY));
   const [showAstrobin, setShowAstrobin] = useState(() => readStoredBoolean(SHOW_ASTROBIN_KEY));
   const [astrobinFootprints, setAstrobinFootprints] = useState<AstrobinFootprint[] | null>(null);
+  // Horizon simulation: the flat 0°-altitude circle plus (if defined) the user's own artificial
+  // horizon regions and Terrain panorama, all reprojected for whatever moment horizonTime is —
+  // "now" by default (planning ahead needs a moment other than the current one). Not itself
+  // persisted (a stale simulated time from a past session is more confusing to reload into than
+  // starting fresh at "now" every time), unlike the showHorizon/showTerrain toggles.
+  const [showHorizon, setShowHorizon] = useState(() => readStoredBoolean(SHOW_HORIZON_KEY));
+  const [showTerrain, setShowTerrain] = useState(() => readStoredBoolean(SHOW_TERRAIN_KEY));
+  const [horizonTime, setHorizonTime] = useState(() => Date.now());
+  const [observatoryInfo, setObservatoryInfo] = useState<ObservatoryInfo | null>(null);
+  const [artificialHorizon, setArtificialHorizon] = useState<ArtificialHorizonRegion[]>([]);
+  const [terrainImageLoaded, setTerrainImageLoaded] = useState(false);
+  const observatoryFetchedRef = useRef(false);
   // Wide-field shots otherwise sit permanently on top of any narrower-focal-length footprint of
   // the same area, since they're bigger and later in z-order — "hidden" collapses one down to
   // just its outline (plus a small reveal button) so whatever's underneath becomes clickable.
@@ -1067,8 +1325,48 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         }
       }
 
-      const canvas = astrobinCanvasRef.current;
       const container = containerRef.current;
+      const horizonCanvas = horizonCanvasRef.current;
+      if (horizonCanvas && container) {
+        const dpr = window.devicePixelRatio || 1;
+        const targetW = Math.round(container.clientWidth * dpr);
+        const targetH = Math.round(container.clientHeight * dpr);
+        if (horizonCanvas.width !== targetW || horizonCanvas.height !== targetH) {
+          horizonCanvas.width = targetW;
+          horizonCanvas.height = targetH;
+          horizonCanvas.style.width = `${container.clientWidth}px`;
+          horizonCanvas.style.height = `${container.clientHeight}px`;
+        }
+        const hctx = horizonCanvas.getContext('2d');
+        if (hctx) {
+          hctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          window.clearTimeout(horizonRetryRef.current);
+          if (showHorizon && observatoryInfo && isValidLocation(observatoryInfo)) {
+            const info = observatoryInfo;
+            // Same transient-WebGL-exception hazard as the terrain overlay (see its own retry
+            // comment above) can leave world2pix returning null for most/all of this loop's points
+            // right after a zoom/pan brings fresh HiPS tiles in — without a retry, that one bad
+            // frame's (near-)empty result just sits there until some unrelated redraw (e.g. a pan)
+            // happens to land outside the bad window, which reads as "the horizon froze on zoom".
+            const attempt = (retriesLeft: number) => {
+              const stats: ProjectionStats = { exceptions: 0 };
+              hctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
+              drawHorizonOverlay(
+                hctx, aladin, info, artificialHorizon, horizonTime,
+                container.clientWidth, container.clientHeight, stats,
+              );
+              if (stats.exceptions > 0 && retriesLeft > 0) {
+                horizonRetryRef.current = window.setTimeout(() => attempt(retriesLeft - 1), 200);
+              }
+            };
+            attempt(3);
+          } else {
+            hctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
+          }
+        }
+      }
+
+      const canvas = astrobinCanvasRef.current;
       if (canvas && container) {
         // Backing store at devicePixelRatio for crisp rendering on retina displays; draw calls
         // below stay in the same CSS-pixel units world2pix() already returns (setTransform, not
@@ -1116,6 +1414,64 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         }
       }
 
+      const terrainCanvas = terrainCanvasRef.current;
+      if (terrainCanvas && container) {
+        const dpr = window.devicePixelRatio || 1;
+        const targetW = Math.round(container.clientWidth * dpr);
+        const targetH = Math.round(container.clientHeight * dpr);
+        if (terrainCanvas.width !== targetW || terrainCanvas.height !== targetH) {
+          terrainCanvas.width = targetW;
+          terrainCanvas.height = targetH;
+          terrainCanvas.style.width = `${container.clientWidth}px`;
+          terrainCanvas.style.height = `${container.clientHeight}px`;
+        }
+        const tctx = terrainCanvas.getContext('2d');
+        if (tctx) {
+          tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          window.clearTimeout(terrainDebounceRef.current);
+          if (showHorizon && showTerrain && terrainImageLoaded && terrainImgRef.current && observatoryInfo && isValidLocation(observatoryInfo)) {
+            const img = terrainImgRef.current;
+            const info = observatoryInfo;
+
+            // Drawn every call (cheap, low-res) so the terrain visibly tracks the live gesture
+            // instead of staying frozen at the pre-gesture framing until it settles — see
+            // TERRAIN_LIVE_SAMPLE_COLS's own comment for the "sky map shrinks, ours doesn't" this
+            // fixes. Its own exceptions are ignored: a blurry frame skipping one bad sample or two
+            // isn't worth retrying when a sharper attempt is already scheduled below regardless.
+            tctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
+            drawTerrainOverlay(
+              tctx, aladin, container.clientWidth, container.clientHeight, img, info, horizonTime,
+              { exceptions: 0 }, TERRAIN_LIVE_SAMPLE_COLS,
+            );
+
+            // The high-res refinement stays debounced — walking TERRAIN_SAMPLE_COLS's much bigger
+            // grid on every single animation-frame tick of a pan/zoom visibly bogged down the tab,
+            // which the cheap live pass above doesn't. ~120ms after the gesture settles (same
+            // window SessionTimeline's hover debounce uses) redraws it sharp.
+            //
+            // A zoom/pan that brings fresh HiPS tiles into view can leave Aladin's own WebGL
+            // texture state transiently broken for a bit (see safePix2World's javadoc) — long
+            // enough, sometimes, to still be broken when this fires. Retrying a few times instead
+            // of accepting whatever this one attempt got means a zoom that lands in that window
+            // doesn't leave the terrain layer stuck on the blurry live-pass version forever.
+            const attempt = (retriesLeft: number) => {
+              const stats: ProjectionStats = { exceptions: 0 };
+              tctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
+              drawTerrainOverlay(
+                tctx, aladin, container.clientWidth, container.clientHeight, img, info, horizonTime,
+                stats, TERRAIN_SAMPLE_COLS,
+              );
+              if (stats.exceptions > 0 && retriesLeft > 0) {
+                terrainDebounceRef.current = window.setTimeout(() => attempt(retriesLeft - 1), 250);
+              }
+            };
+            terrainDebounceRef.current = window.setTimeout(() => attempt(3), 120);
+          } else {
+            tctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
+          }
+        }
+      }
+
       overlay.removeAll();
       if (!mountCoords || !fov) {
         if (overlayImgRef.current) overlayImgRef.current.style.display = 'none';
@@ -1138,6 +1494,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     mountCoords?.ra, mountCoords?.dec, fov?.widthArcmin, fov?.heightArcmin, pa, showLastImage, lastImageFilename,
     showAstrobin, astrobinFootprints, hiddenAstrobinUrls, astrobinPopover,
     planningFovEnabled, planningFovWidthArcmin, planningFovHeightArcmin, planningFovRotationDeg,
+    showHorizon, showTerrain, horizonTime, observatoryInfo, artificialHorizon, terrainImageLoaded,
   ]);
 
   useEffect(() => {
@@ -1157,17 +1514,147 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     // WebGL redraw Aladin is already doing at the same rate.
     let lastFov = aladin.getFov()[0];
     let lastRaDec = aladin.getRaDec();
-    let frameId = requestAnimationFrame(function poll() {
-      const fov = aladin.getFov()[0];
+    let fovSettleTimer: number | undefined;
+
+    // Aladin's own zoom-button handler can leave its rendered view visibly smaller than what
+    // world2pix reports (confirmed via screenshot diffing: same FOV, same RA/Dec, sometimes a
+    // full-canvas disc, sometimes a shrunken one with black margins on every side) — reachable at
+    // any FOV via repeated real zoom-button clicks, not reproducible through setFov() alone.
+    // Bisecting every axis by hand found it's specifically the view's declination sitting at 0°
+    // (the celestial equator) at a wide FOV — landing back on dec exactly 0 breaks it again every
+    // time, even after a 90° round trip; sitting a few degrees off 0 never breaks at all. But
+    // rather than hard-code that one broken case, measure it directly: project two points a known
+    // angular distance apart and compare the actual on-screen pixel gap to what that distance
+    // should measure at the reported FOV. If Aladin's own render is desynced from what it reports,
+    // this catches it regardless of which axis or FOV the next instance of this turns out to hinge
+    // on, and skips the resync entirely on the (overwhelming majority of) frames where nothing is
+    // actually wrong.
+    function measuredGapPx(deltaDeg: number, stats?: ProjectionStats): number | null {
       const [ra, dec] = aladin.getRaDec();
-      if (fov !== lastFov || ra !== lastRaDec[0] || dec !== lastRaDec[1]) {
-        lastFov = fov;
-        lastRaDec = [ra, dec];
+      const a = safeWorld2Pix(aladin, ra, dec, stats);
+      const b = safeWorld2Pix(aladin, ra, Math.max(-89, Math.min(89, dec + deltaDeg)), stats);
+      if (!a || !b) return null;
+      return Math.hypot(b[0] - a[0], b[1] - a[1]);
+    }
+
+    const SCALE_CHECK_DELTA_DEG = 1;
+    const SCALE_CHECK_MIN_RATIO = 0.5;
+    const EQUATOR_DODGE_DEG = 3;
+    const MAX_RESYNC_ATTEMPTS = 4;
+
+    // A round-trip nudge (there and immediately back) is enough to force Aladin to recompute its
+    // layout in the general case, but not for the dec-0 case above — that one has to end somewhere
+    // else, hence attempt > 0 dodging by a growing amount instead of undoing itself. Re-measures
+    // after giving the browser a couple of real animation frames (the "let our own rendering run
+    // for one more frame" this needs — a redraw fired the instant after gotoRaDec() reads Aladin's
+    // pre-update state) rather than assuming any single attempt worked. onDone always fires exactly
+    // once, whether or not anything actually needed fixing, so callers can track completion.
+    function attemptResync(attempt: number, onDone: () => void) {
+      const container = containerRef.current;
+      const fov = aladin.getFov()[0];
+      const expectedPx = container ? (SCALE_CHECK_DELTA_DEG / fov) * container.clientHeight : null;
+      const actualPx = measuredGapPx(SCALE_CHECK_DELTA_DEG);
+      const looksBroken = expectedPx != null && (actualPx == null || actualPx < expectedPx * SCALE_CHECK_MIN_RATIO);
+
+      if (!looksBroken || attempt > MAX_RESYNC_ATTEMPTS) {
+        lastRaDec = aladin.getRaDec();
         onChange();
+        onDone();
+        return;
       }
-      frameId = requestAnimationFrame(poll);
+
+      const [curRa, curDec] = aladin.getRaDec();
+      if (attempt === 0) {
+        aladin.gotoRaDec(curRa + 0.001, curDec);
+        aladin.gotoRaDec(curRa, curDec);
+      }
+      else {
+        const dodged = curDec + EQUATOR_DODGE_DEG * attempt;
+        aladin.gotoRaDec(curRa, Math.max(-89, Math.min(89, dodged)));
+      }
+      requestAnimationFrame(() => requestAnimationFrame(() => attemptResync(attempt + 1, onDone)));
+    }
+
+    // Debounced so a burst of clicks only pays for one resync, ~150ms after the last of them (not
+    // on every tick, to avoid fighting a live drag).
+    const scheduleResync = () => {
+      window.clearTimeout(fovSettleTimer);
+      fovSettleTimer = window.setTimeout(() => attemptResync(0, () => {}), 150);
+    };
+
+    // Clicking zoom-out again once already at the FOV ceiling (or zoom-in already at the floor)
+    // re-runs Aladin's own broken layout path without moving getFov()/getRaDec() at all — the poll
+    // loop below never sees a value change and so never schedules the resync above on its own, the
+    // exact case a real user hammering the zoom-out button at max zoom lands in. Listening for the
+    // click directly (capture phase — Aladin's own handler doesn't stop it) covers that regardless
+    // of whether anything the poller can observe actually moved.
+    function onZoomButtonClick(e: MouseEvent) {
+      if ((e.target as HTMLElement)?.closest?.('.aladin-zoom-in, .aladin-zoom-out')) {
+        scheduleResync();
+      }
+    }
+    containerRef.current?.addEventListener('click', onZoomButtonClick, true);
+
+    // Backstop for every other way this can happen — real usage kept finding fresh ones (dragging
+    // the timeline scrollbar, some sequence of clicks past the FOV ceiling, presumably others still
+    // unknown) faster than each could be isolated and special-cased individually. Rather than chase
+    // the next trigger, verify continuously: piggybacked on the poll loop below (own timer, not a
+    // separate setInterval) so it shares its lifecycle exactly — same cleanup, and it goes idle
+    // whenever rAF does (backgrounded tab), where a setInterval would keep firing regardless.
+    // guardBusy skips overlapping runs (attemptResync's own retries already span multiple animation
+    // frames) rather than piling up parallel gotoRaDec calls that would fight each other.
+    let guardBusy = false;
+    let lastGuardCheck = performance.now();
+    const GUARD_INTERVAL_MS = 600;
+
+    // Aladin's own 'positionChanged'/'zoomChanged' callbacks are throttled to 100ms internally
+    // (B.CALLBACKS_THROTTLE_TIME_MS in aladin.js) — and 'zoomChanged' specifically never fires at
+    // all during mouse-wheel zooming, since that animates the field of view frame-by-frame without
+    // ever going through the internal updateZoomState() that triggers it. Polling both fov and
+    // center RA/Dec every animation frame instead tracks pan/zoom at the browser's actual refresh
+    // rate rather than Aladin's throttled one, and is cheap (a few number compares) next to the
+    // WebGL redraw Aladin is already doing at the same rate.
+    let frameId = requestAnimationFrame(function poll() {
+      // getFov()/getRaDec() themselves — not just the pix2world/world2pix calls inside redraw()
+      // — can transiently throw right after a zoom/pan brings fresh HiPS tiles into view (same
+      // "Tex image ... lazy initialization" WebGL state as safePix2World's javadoc describes).
+      // Both are called unconditionally, every frame, before reaching our own try/catch-guarded
+      // code — so without this wrapper, that one throw skips the reschedule below and this whole
+      // polling loop (pan, zoom, every overlay) goes dead for the rest of the session, exactly
+      // matching "zooming out breaks all handling until you pan": a pan is just the next
+      // interaction big enough that *something* else happens to notice the view changed, not
+      // anything that actually revives this loop. try/finally guarantees the reschedule always
+      // happens, so a bad frame here costs at most one skipped frame, never the whole loop.
+      try {
+        const fov = aladin.getFov()[0];
+        const [ra, dec] = aladin.getRaDec();
+        if (fov !== lastFov || ra !== lastRaDec[0] || dec !== lastRaDec[1]) {
+          const fovChanged = fov !== lastFov;
+          lastFov = fov;
+          lastRaDec = [ra, dec];
+          onChange();
+          if (fovChanged) scheduleResync();
+        }
+
+        const now = performance.now();
+        if (!guardBusy && now - lastGuardCheck > GUARD_INTERVAL_MS) {
+          lastGuardCheck = now;
+          guardBusy = true;
+          attemptResync(0, () => { guardBusy = false; });
+        }
+      }
+      catch {
+        // Ignored — see comment above; next frame gets another chance.
+      }
+      finally {
+        frameId = requestAnimationFrame(poll);
+      }
     });
-    return () => cancelAnimationFrame(frameId);
+    return () => {
+      cancelAnimationFrame(frameId);
+      window.clearTimeout(fovSettleTimer);
+      containerRef.current?.removeEventListener('click', onZoomButtonClick, true);
+    };
   }, [ready]);
 
   // Keeps the view centered on the mount as it moves, instead of a one-shot "center now" click.
@@ -1219,6 +1706,33 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   useEffect(() => {
     writeStoredNumber(PLANNING_FOV_ROTATION_KEY, planningFovRotationDeg);
   }, [planningFovRotationDeg]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_HORIZON_KEY, showHorizon);
+  }, [showHorizon]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_TERRAIN_KEY, showTerrain);
+  }, [showTerrain]);
+
+  // Fetched at most once, lazily on first enable — location/artificial-horizon only ever change if
+  // the user reconfigures KStars itself, same reasoning as the NGC/Sh2 catalogs below.
+  useEffect(() => {
+    if (!showHorizon || observatoryFetchedRef.current) return;
+    observatoryFetchedRef.current = true;
+    fetchObservatoryInfo().then(setObservatoryInfo).catch(() => { /* no location configured — flat horizon/terrain just won't draw */ });
+    fetchArtificialHorizon().then(setArtificialHorizon).catch(() => { /* no artificial horizon defined — flat horizon still draws */ });
+  }, [showHorizon]);
+
+  // The Terrain panorama is an 8+MB image — only fetched once "Terrain photo" is actually turned
+  // on (not just because Horizon is), and only if KStars has one configured at all.
+  useEffect(() => {
+    if (!showHorizon || !showTerrain || !observatoryInfo?.hasTerrain || terrainImgRef.current) return;
+    const img = new Image();
+    img.onload = () => setTerrainImageLoaded(true);
+    img.src = TERRAIN_IMAGE_URL;
+    terrainImgRef.current = img;
+  }, [showHorizon, showTerrain, observatoryInfo?.hasTerrain]);
 
   // Both catalogs are fetched at most once (lazily, on first enable) and then just shown/hidden —
   // a 180° cone search already covers the whole sky regardless of where it's centered, so there's
@@ -1371,6 +1885,10 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             />
             Planning FOV
           </label>
+          <label className="sky-map-toggle">
+            <input type="checkbox" checked={showHorizon} onChange={(e) => setShowHorizon(e.target.checked)} />
+            Horizon
+          </label>
         </div>
       </div>
       {planningFovEnabled && (
@@ -1470,6 +1988,36 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
           </div>
         </div>
       )}
+      {showHorizon && (
+        <div className="sky-map-horizon">
+          <label>
+            Simulate at
+            <input
+              type="datetime-local"
+              value={toDatetimeLocalValue(horizonTime)}
+              onChange={(e) => {
+                const t = new Date(e.target.value).getTime();
+                if (!Number.isNaN(t)) setHorizonTime(t);
+              }}
+            />
+          </label>
+          <button type="button" onClick={() => setHorizonTime(Date.now())}>Now</button>
+          {observatoryInfo?.hasTerrain && (
+            <label className="sky-map-toggle">
+              <input type="checkbox" checked={showTerrain} onChange={(e) => setShowTerrain(e.target.checked)} />
+              Terrain photo
+            </label>
+          )}
+          {observatoryInfo && !isValidLocation(observatoryInfo) && (
+            <span className="sky-map-horizon-warning">No location configured in KStars</span>
+          )}
+          {artificialHorizon.length > 0 && (
+            <span className="sky-map-horizon-note">
+              + {artificialHorizon.length} artificial horizon region{artificialHorizon.length > 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+      )}
       <div
         ref={containerRef}
         className="sky-map"
@@ -1483,6 +2031,8 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             className="sky-map-last-image"
           />
         )}
+        <canvas ref={terrainCanvasRef} className="sky-map-terrain-canvas" />
+        <canvas ref={horizonCanvasRef} className="sky-map-horizon-canvas" />
         <canvas ref={astrobinCanvasRef} className="sky-map-astrobin-canvas" />
         {astrobinPopover && (
           <div className="sky-map-astrobin-popover" ref={astrobinPopoverRef}>

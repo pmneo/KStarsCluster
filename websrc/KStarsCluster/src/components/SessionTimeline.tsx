@@ -267,6 +267,10 @@ function TimelineScrollbar({ fullStart, fullEnd, viewStart, viewEnd, onChange }:
   function beginDrag(mode: DragMode) {
     return (e: React.PointerEvent) => {
       e.preventDefault();
+      // Without this, a touch drag that wanders off the (narrow) handle/band element mid-gesture
+      // stops delivering pointermove here — capturing keeps every subsequent event routed to this
+      // element regardless of where the finger actually is.
+      e.currentTarget.setPointerCapture(e.pointerId);
       dragRef.current = { mode, startClientX: e.clientX, startViewStart: viewStart, startViewEnd: viewEnd };
 
       function onMove(ev: PointerEvent) {
