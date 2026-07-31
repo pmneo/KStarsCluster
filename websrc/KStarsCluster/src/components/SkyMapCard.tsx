@@ -577,6 +577,8 @@ function drawAstrobinFootprints(
   selectedUrl: string | null,
   imagesCache: Map<string, HTMLImageElement>,
   onImageLoad: () => void,
+  containerW: number,
+  containerH: number,
 ): AstrobinHitRect[] {
   const rects: AstrobinHitRect[] = [];
   let selectedEntry: { footprint: AstrobinFootprint; rect: ScreenRect } | null = null;
@@ -585,6 +587,16 @@ function drawAstrobinFootprints(
     const hidden = hiddenUrls.has(footprint.url);
     const rect = computeScreenRect(aladin, footprintCorners(footprint), !footprint.corners);
     if (!rect) continue;
+    // world2pix returning non-null only means "this projection can map the point somewhere" — for
+    // an all-sky projection (ZEA, AIT, ...), unlike SIN's hemisphere, that's true for every point on
+    // the sky, including a footprint on the opposite side of it, which still projects to *some*
+    // (very far offscreen) pixel coordinate instead of null. Without this check every footprint in
+    // the whole gallery got drawn on every redraw regardless of projection or view (confirmed: 254
+    // draws for a 254-footprint gallery under ZEA, vs. the handful actually near the current view),
+    // which is both a real performance cost and can visually place an unrelated footprint's rotated
+    // rectangle back into the visible area purely from projection distortion at the extremes.
+    const halfDiag = Math.hypot(rect.w, rect.h) / 2;
+    if (rect.cx < -halfDiag || rect.cx > containerW + halfDiag || rect.cy < -halfDiag || rect.cy > containerH + halfDiag) continue;
     rects.push({ footprint, hidden, ...rect });
     if (footprint.url === selectedUrl && !hidden) {
       selectedEntry = { footprint, rect };
@@ -1415,7 +1427,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
           astrobinHitRectsRef.current = showAstrobin && astrobinFootprints
             ? drawAstrobinFootprints(
               ctx, aladin, astrobinFootprints, hiddenAstrobinUrls, astrobinPopover?.footprint.url ?? null,
-              astrobinImagesRef.current, () => redrawRef.current(),
+              astrobinImagesRef.current, () => redrawRef.current(), container.clientWidth, container.clientHeight,
             )
             : [];
         }
