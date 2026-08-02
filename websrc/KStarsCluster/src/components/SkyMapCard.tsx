@@ -2494,39 +2494,37 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         >
           {isFullscreen ? <CompressIcon /> : <ExpandIcon />}
         </button>
-        <div className="sky-map-toggles">
-          <IconToggleButton
-            active={followMount}
-            onToggle={() => setFollowMount((v) => !v)}
-            disabled={!mountCoords}
-            title="Follow mount"
-            icon={<CrosshairIcon />}
-          />
-          <IconToggleButton
-            active={zenithLock}
-            onToggle={() => setZenithLock((v) => !v)}
-            disabled={!observatoryInfo || !isValidLocation(observatoryInfo)}
-            title="Zenith lock — locks the view to zenith-up (Horizontal mode) instead of celestial-north-up, so the sky's actual drift during a session stays legible"
-            icon={<ZenithIcon />}
-          />
-          <IconToggleButton
-            active={showLastImage}
-            onToggle={() => setShowLastImage((v) => !v)}
-            disabled={!lastImageFilename}
-            title="Show last image"
-            icon={<LastImageIcon />}
-          />
-          <IconToggleButton active={showNgc} onToggle={() => setShowNgc((v) => !v)} title="NGC/IC" icon={<GalaxyIcon />} />
-          <IconToggleButton active={showSh2} onToggle={() => setShowSh2((v) => !v)} title="Sharpless (Sh2)" icon={<NebulaIcon />} />
-          <IconToggleButton active={showAstrobin} onToggle={() => setShowAstrobin((v) => !v)} title="My AstroBin" icon={<GalleryIcon />} />
-          <IconToggleButton
-            active={planningFovEnabled}
-            onToggle={() => setPlanningFovEnabled((v) => !v)}
-            title="Planning FOV"
-            icon={<ViewfinderIcon />}
-          />
-          <IconToggleButton active={showHorizon} onToggle={() => setShowHorizon((v) => !v)} title="Horizon" icon={<HorizonIcon />} />
-        </div>
+        <IconToggleButton
+          active={followMount}
+          onToggle={() => setFollowMount((v) => !v)}
+          disabled={!mountCoords}
+          title="Follow mount"
+          icon={<CrosshairIcon />}
+        />
+        <IconToggleButton
+          active={zenithLock}
+          onToggle={() => setZenithLock((v) => !v)}
+          disabled={!observatoryInfo || !isValidLocation(observatoryInfo)}
+          title="Zenith lock — locks the view to zenith-up (Horizontal mode) instead of celestial-north-up, so the sky's actual drift during a session stays legible"
+          icon={<ZenithIcon />}
+        />
+        <IconToggleButton
+          active={showLastImage}
+          onToggle={() => setShowLastImage((v) => !v)}
+          disabled={!lastImageFilename}
+          title="Show last image"
+          icon={<LastImageIcon />}
+        />
+        <IconToggleButton active={showNgc} onToggle={() => setShowNgc((v) => !v)} title="NGC/IC" icon={<GalaxyIcon />} />
+        <IconToggleButton active={showSh2} onToggle={() => setShowSh2((v) => !v)} title="Sharpless (Sh2)" icon={<NebulaIcon />} />
+        <IconToggleButton active={showAstrobin} onToggle={() => setShowAstrobin((v) => !v)} title="My AstroBin" icon={<GalleryIcon />} />
+        <IconToggleButton
+          active={planningFovEnabled}
+          onToggle={() => setPlanningFovEnabled((v) => !v)}
+          title="Planning FOV"
+          icon={<ViewfinderIcon />}
+        />
+        <IconToggleButton active={showHorizon} onToggle={() => setShowHorizon((v) => !v)} title="Horizon" icon={<HorizonIcon />} />
       </div>
       {planningFovEnabled && (
         <div className="sky-map-planning-fov">

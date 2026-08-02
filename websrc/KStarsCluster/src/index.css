@@ -506,23 +506,6 @@ table td:first-child {
   margin-bottom: 8px;
 }
 
-.sky-map-toggles {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-left: auto;
-  min-width: 0;
-}
-
-.sky-map-toggle {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
 .sky-map-icon-button {
   display: flex;
   align-items: center;
