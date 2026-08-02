@@ -615,6 +615,50 @@ table td:first-child {
   font-variant-numeric: tabular-nums;
 }
 
+.sky-map-visibility {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-basis: 100%;
+}
+
+.sky-map-visibility-chart {
+  flex-shrink: 0;
+  background: #10121a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.sky-map-visibility-chart-window {
+  fill: rgba(192, 132, 252, 0.15);
+}
+
+.sky-map-visibility-chart-zero {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.sky-map-visibility-chart-horizon {
+  stroke: #f97316;
+  stroke-width: 1.5;
+}
+
+.sky-map-visibility-chart-alt {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.sky-map-visibility-chart-now {
+  stroke: var(--text);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+}
+
+.sky-map-visibility-text {
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
 .sky-map-sensor-config {
   position: relative;
   display: flex;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { SchedulerJob } from '../api/types';
 import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
 import { altAzToRaDec, raDecToAltAz, getLocalSiderealTime } from '../api/coordinates';
@@ -316,6 +316,93 @@ function stepHorizonTime(current: number, step: HorizonStep, direction: 1 | -1):
     return d.getTime();
   }
   return current + direction * step.ms;
+}
+
+function formatVisibilityDateTime(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}. ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatVisibilityText(vw: VisibilityWindow): string {
+  switch (vw.kind) {
+    case 'always':
+      return 'Always above the horizon at this date';
+    case 'never':
+      return 'Never above the horizon at this date';
+    case 'window': {
+      const rise = formatVisibilityDateTime(vw.riseMs);
+      const set = formatVisibilityDateTime(vw.setMs);
+      if (vw.relation === 'current') return `Visible now — ${rise} to ${set}`;
+      if (vw.relation === 'future') return `Not visible now — next window ${rise} to ${set}`;
+      return `Not visible now — already set, was ${rise} to ${set}`;
+    }
+    case 'unknown':
+    default:
+      return '';
+  }
+}
+
+const VISIBILITY_CHART_WIDTH = 300;
+const VISIBILITY_CHART_HEIGHT = 90;
+const VISIBILITY_CHART_ALT_MIN = -30;
+const VISIBILITY_CHART_ALT_MAX = 90;
+
+/** Altitude-vs-time chart for the Planning FOV target: its own altitude curve, the effective
+ * horizon at whatever azimuth it's at at that moment (see effectiveHorizonAltDeg — not flat,
+ * since an artificial horizon varies with azimuth as the target moves through the sky over the
+ * day), the current simulated time, and the visible window (see findVisibilityWindow)
+ * highlighted. Y-axis is clamped to [-30°, 90°] rather than the full ±90° range — the interesting
+ * part is always near/above the horizon, and a target that's 80° below it doesn't need its own
+ * vertical space to communicate "nowhere close to visible". */
+function VisibilityChart({
+  samples, centerMs, window: visWindow,
+}: {
+  samples: VisibilitySample[];
+  centerMs: number;
+  window: VisibilityWindow;
+}) {
+  if (samples.length === 0) return null;
+  const t0 = samples[0].ms;
+  const t1 = samples[samples.length - 1].ms;
+  const x = (t: number) => ((t - t0) / (t1 - t0 || 1)) * VISIBILITY_CHART_WIDTH;
+  const y = (alt: number) => {
+    const clamped = Math.max(VISIBILITY_CHART_ALT_MIN, Math.min(VISIBILITY_CHART_ALT_MAX, alt));
+    const span = VISIBILITY_CHART_ALT_MAX - VISIBILITY_CHART_ALT_MIN;
+    return VISIBILITY_CHART_HEIGHT * (1 - (clamped - VISIBILITY_CHART_ALT_MIN) / span);
+  };
+  const path = (key: 'altDeg' | 'horizonAltDeg') => samples
+    .map((s, i) => `${i === 0 ? 'M' : 'L'} ${x(s.ms).toFixed(1)} ${y(s[key]).toFixed(1)}`)
+    .join(' ');
+
+  return (
+    <svg
+      className="sky-map-visibility-chart"
+      viewBox={`0 0 ${VISIBILITY_CHART_WIDTH} ${VISIBILITY_CHART_HEIGHT}`}
+      width={VISIBILITY_CHART_WIDTH}
+      height={VISIBILITY_CHART_HEIGHT}
+    >
+      {visWindow.kind === 'window' && (
+        <rect
+          className="sky-map-visibility-chart-window"
+          x={x(visWindow.riseMs)}
+          y={0}
+          width={Math.max(0, x(visWindow.setMs) - x(visWindow.riseMs))}
+          height={VISIBILITY_CHART_HEIGHT}
+        />
+      )}
+      <line className="sky-map-visibility-chart-zero" x1={0} y1={y(0)} x2={VISIBILITY_CHART_WIDTH} y2={y(0)} />
+      <path className="sky-map-visibility-chart-horizon" d={path('horizonAltDeg')} fill="none" />
+      <path className="sky-map-visibility-chart-alt" d={path('altDeg')} fill="none" />
+      <line
+        className="sky-map-visibility-chart-now"
+        x1={x(centerMs)}
+        y1={0}
+        x2={x(centerMs)}
+        y2={VISIBILITY_CHART_HEIGHT}
+      />
+    </svg>
+  );
 }
 
 interface SurveyOption {
@@ -1345,6 +1432,109 @@ function drawHorizonOverlay(
   });
 }
 
+/** One artificial-horizon region's own altitude boundary at a given azimuth, linearly interpolated
+ * between whichever pair of its own points straddle that azimuth — null if this region doesn't
+ * cover that azimuth at all (a region is typically an open profile over a limited az range, e.g. a
+ * treeline silhouette, not a full 360° loop). */
+function regionAltAtAzimuthDeg(region: ArtificialHorizonRegion, azDeg: number): number | null {
+  const pts = region.points;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a0 = pts[i].az;
+    const a1 = pts[i + 1].az;
+    const lo = Math.min(a0, a1);
+    const hi = Math.max(a0, a1);
+    if (hi <= lo || azDeg < lo || azDeg > hi) continue;
+    const t = (azDeg - a0) / (a1 - a0);
+    return pts[i].alt + t * (pts[i + 1].alt - pts[i].alt);
+  }
+  return null;
+}
+
+/** The real minimum altitude something needs to clear to count as visible at this azimuth: the
+ * flat 0° geometric horizon, or higher still wherever an artificial-horizon region covers this
+ * azimuth with a boundary above it — the most restrictive of any overlapping regions wins. */
+function effectiveHorizonAltDeg(azDeg: number, regions: ArtificialHorizonRegion[]): number {
+  let maxAlt = 0;
+  for (const region of regions) {
+    const alt = regionAltAtAzimuthDeg(region, azDeg);
+    if (alt !== null && alt > maxAlt) maxAlt = alt;
+  }
+  return maxAlt;
+}
+
+const VISIBILITY_WINDOW_HOURS = 24;
+const VISIBILITY_SAMPLE_MINUTES = 4;
+
+interface VisibilitySample {
+  ms: number;
+  altDeg: number;
+  horizonAltDeg: number;
+}
+
+/** Altitude and effective horizon (see effectiveHorizonAltDeg) for one sky point across a fixed
+ * window centered on `centerMs` — the raw data both the altitude/time chart and
+ * findVisibilityWindow are built from. 4-minute steps over 24h (360 samples) is fine enough to
+ * place a rise/set time within a couple of minutes without resampling on every chart repaint. */
+function sampleVisibility(
+  raDeg: number, decDeg: number, latDeg: number, lonDeg: number, centerMs: number,
+  regions: ArtificialHorizonRegion[],
+): VisibilitySample[] {
+  const halfSpanMs = (VISIBILITY_WINDOW_HOURS / 2) * 60 * 60_000;
+  const stepMs = VISIBILITY_SAMPLE_MINUTES * 60_000;
+  const samples: VisibilitySample[] = [];
+  for (let t = centerMs - halfSpanMs; t <= centerMs + halfSpanMs; t += stepMs) {
+    const { altDeg, azDeg } = raDecToAltAz(raDeg, decDeg, latDeg, lonDeg, t);
+    samples.push({ ms: t, altDeg, horizonAltDeg: effectiveHorizonAltDeg(azDeg, regions) });
+  }
+  return samples;
+}
+
+type VisibilityWindow =
+  | { kind: 'window'; riseMs: number; setMs: number; relation: 'current' | 'future' | 'past' }
+  | { kind: 'always' }
+  | { kind: 'never' }
+  | { kind: 'unknown' };
+
+/** The visibility window (see VisibilitySample) that matters right now: the one containing
+ * `centerMs` if it's currently above the effective horizon, otherwise the nearest one — preferring
+ * the next future window, falling back to the most recent past one only if nothing rises again
+ * within the sampled range. `relation` distinguishes those three cases for the caller's own
+ * wording ("visible now" vs. "next window" vs. "already set"). */
+function findVisibilityWindow(samples: VisibilitySample[], centerMs: number): VisibilityWindow {
+  if (samples.length === 0) return { kind: 'unknown' };
+  const visible = samples.map((s) => s.altDeg > s.horizonAltDeg);
+  if (visible.every(Boolean)) return { kind: 'always' };
+  if (visible.every((v) => !v)) return { kind: 'never' };
+
+  let centerIdx = 0;
+  for (let i = 1; i < samples.length; i++) {
+    if (Math.abs(samples[i].ms - centerMs) < Math.abs(samples[centerIdx].ms - centerMs)) centerIdx = i;
+  }
+
+  function windowAround(idx: number): { riseMs: number; setMs: number } {
+    let start = idx;
+    while (start > 0 && visible[start - 1]) start--;
+    let end = idx;
+    while (end < visible.length - 1 && visible[end + 1]) end++;
+    return { riseMs: samples[start].ms, setMs: samples[end].ms };
+  }
+
+  if (visible[centerIdx]) {
+    return { kind: 'window', ...windowAround(centerIdx), relation: 'current' };
+  }
+  let idx = centerIdx;
+  while (idx < visible.length && !visible[idx]) idx++;
+  if (idx < visible.length) {
+    return { kind: 'window', ...windowAround(idx), relation: 'future' };
+  }
+  idx = centerIdx;
+  while (idx >= 0 && !visible[idx]) idx--;
+  if (idx >= 0) {
+    return { kind: 'window', ...windowAround(idx), relation: 'past' };
+  }
+  return { kind: 'unknown' };
+}
+
 /** "YYYY-MM-DDTHH:mm" in local time, the string format <input type="datetime-local"> both
  * displays and expects back — new Date(dateString) parses that same format as local time too, so
  * this round-trips through the input without any UTC conversion drift. */
@@ -1476,6 +1666,10 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const targetCatalogRef = useRef<any>(null);
   const fovOverlayRef = useRef<any>(null);
   const planningFovOverlayRef = useRef<any>(null);
+  // The Planning FOV target's own diurnal path (its declination circle — every point sharing its
+  // declination, at every RA) — see planningFovCenter's own comment for why this is a separate,
+  // debounced overlay rather than being folded into planningFovOverlay above.
+  const planningFovPathOverlayRef = useRef<any>(null);
   const ngcCatalogRef = useRef<any>(null);
   const sh2CatalogRef = useRef<any>(null);
   const ngcBoundaryRef = useRef<any>(null);
@@ -1584,10 +1778,30 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const [pixelSizeUm, setPixelSizeUm] = useState(() => readStoredNumber(PLANNING_FOV_PIXEL_SIZE_KEY, DEFAULT_PIXEL_SIZE_UM));
   const [focalLengthMm, setFocalLengthMm] = useState(() => readStoredNumber(PLANNING_FOV_FOCAL_LENGTH_KEY, DEFAULT_FOCAL_LENGTH_MM));
   const [planningFovRotationDeg, setPlanningFovRotationDeg] = useState(() => readStoredNumber(PLANNING_FOV_ROTATION_KEY, 0));
+  // The Planning FOV's own view center (ra/dec), for the path overlay and the visibility chart —
+  // deliberately its own, debounced state rather than reading aladin.getRaDec() directly from
+  // those effects: the FOV rectangle itself is cheap to redraw every frame during a pan/zoom (see
+  // redraw() below), but the path overlay (a ~120-point polygon) and the visibility chart (360
+  // altitude samples across 24h) are not, so both only recompute once the view has settled.
+  const [planningFovCenter, setPlanningFovCenter] = useState<{ ra: number; dec: number } | null>(null);
+  const planningFovCenterDebounceRef = useRef<number | undefined>(undefined);
   const [sensorConfigOpen, setSensorConfigOpen] = useState(false);
   const sensorConfigRef = useRef<HTMLDivElement>(null);
   const planningFovWidthArcmin = sensorFovArcmin(sensorWidthPx, pixelSizeUm, focalLengthMm);
   const planningFovHeightArcmin = sensorFovArcmin(sensorHeightPx, pixelSizeUm, focalLengthMm);
+  // Recomputed only when the (already debounced) target center, the simulated time, or the
+  // location/artificial-horizon data actually change — 360 altitude samples is cheap once, not
+  // something worth redoing on every unrelated re-render.
+  const planningFovVisibility = useMemo(() => {
+    if (!planningFovEnabled || !planningFovCenter || !observatoryInfo || !isValidLocation(observatoryInfo)) {
+      return null;
+    }
+    const samples = sampleVisibility(
+      planningFovCenter.ra, planningFovCenter.dec,
+      observatoryInfo.latitude, observatoryInfo.longitude, horizonTime, artificialHorizon,
+    );
+    return { samples, window: findVisibilityWindow(samples, horizonTime) };
+  }, [planningFovEnabled, planningFovCenter, observatoryInfo, artificialHorizon, horizonTime]);
   // On-demand (not re-queried on every pan/zoom, unlike the FOV rectangles) — a SIMBAD conesearch
   // is a real network round-trip, and "what's in this exact framing" is naturally a "I've settled
   // on a spot, now check it" action rather than something to hammer continuously while dragging.
@@ -1821,6 +2035,12 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       aladin.addOverlay(planningFovOverlay);
       planningFovOverlayRef.current = planningFovOverlay;
 
+      // Thin/undashed so it doesn't compete visually with the FOV rectangle itself — see
+      // planningFovCenter's own comment for why this is updated separately (debounced).
+      const planningFovPathOverlay = window.A.graphicOverlay({ name: 'Planning FOV path', color: '#c084fc', lineWidth: 1 });
+      aladin.addOverlay(planningFovPathOverlay);
+      planningFovPathOverlayRef.current = planningFovPathOverlay;
+
       setReady(true);
     });
   }, []);
@@ -1889,6 +2109,11 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             planningFovRotationDeg,
           );
           planningOverlay.add(window.A.polygon(corners));
+
+          window.clearTimeout(planningFovCenterDebounceRef.current);
+          planningFovCenterDebounceRef.current = window.setTimeout(() => {
+            setPlanningFovCenter({ ra: centerRa, dec: centerDec });
+          }, 200);
         }
       }
 
@@ -2296,6 +2521,21 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     writeStoredBoolean(PLANNING_FOV_ENABLED_KEY, planningFovEnabled);
   }, [planningFovEnabled]);
 
+  // The Planning FOV target's diurnal path — every point sharing its declination, at every RA
+  // (Earth's rotation carries the target along this exact circle over the course of a day, even
+  // though its own RA/Dec never changes; what changes is which part of the circle is above the
+  // horizon — see the visibility chart for that side of it). ~120 points (3° steps) is enough for
+  // a visually smooth circle even right up against a pole, where it's tight and small.
+  useEffect(() => {
+    const overlay = planningFovPathOverlayRef.current;
+    if (!overlay) return;
+    overlay.removeAll();
+    if (!planningFovEnabled || !planningFovCenter) return;
+    const points: [number, number][] = [];
+    for (let ra = 0; ra <= 360; ra += 3) points.push([ra, planningFovCenter.dec]);
+    overlay.add(window.A.polygon(points));
+  }, [planningFovEnabled, planningFovCenter]);
+
   useEffect(() => {
     writeStoredNumber(PLANNING_FOV_SENSOR_WIDTH_KEY, sensorWidthPx);
   }, [sensorWidthPx]);
@@ -2621,6 +2861,19 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
               </div>
             )}
           </div>
+          {planningFovCenter && (!observatoryInfo || !isValidLocation(observatoryInfo)) && (
+            <span className="sky-map-horizon-warning">No location configured in KStars — can't compute visibility</span>
+          )}
+          {planningFovVisibility && (
+            <div className="sky-map-visibility">
+              <VisibilityChart
+                samples={planningFovVisibility.samples}
+                centerMs={horizonTime}
+                window={planningFovVisibility.window}
+              />
+              <span className="sky-map-visibility-text">{formatVisibilityText(planningFovVisibility.window)}</span>
+            </div>
+          )}
         </div>
       )}
       {showHorizon && (
