@@ -268,6 +268,35 @@ function TerrainIcon() {
   );
 }
 
+function GridIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M3 9h18M3 15h18M9 3v18M15 3v18" />
+    </svg>
+  );
+}
+
+function ConstellationLinesIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 6 12 4 19 9 14 14 7 18 14 14" />
+      <circle cx="5" cy="6" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="4" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="9" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="14" cy="14" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="7" cy="18" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function ConstellationBoundsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+      <path d="M4 8 10 4 20 7 18 17 8 19 3 14Z" strokeDasharray="3 2" />
+    </svg>
+  );
+}
+
 function ClockIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -548,6 +577,9 @@ const SHOW_SH2_KEY = 'skymap.showSh2';
 const SHOW_ASTROBIN_KEY = 'skymap.showAstrobin';
 const SHOW_HORIZON_KEY = 'skymap.showHorizon';
 const SHOW_TERRAIN_KEY = 'skymap.showTerrain';
+const SHOW_GRID_KEY = 'skymap.showGrid';
+const SHOW_CONSTELLATION_LINES_KEY = 'skymap.showConstellationLines';
+const SHOW_CONSTELLATION_BOUNDS_KEY = 'skymap.showConstellationBounds';
 const HORIZON_STEP_INDEX_KEY = 'skymap.horizonStepIndex';
 // Real width is CSS-defined (see .sky-map-astrobin-popover); the height is only an estimate since
 // the actual rendered height depends on title wrapping and isn't known until after it paints —
@@ -616,6 +648,62 @@ function buildBoundaryOverlay(aladin: any, cat: any, sizeField: string, color: s
     const radiusDeg = sizeArcminToRadiusDeg(source.data?.[sizeField]);
     overlay.add(window.A.circle(source.ra, source.dec, radiusDeg));
   });
+  return overlay;
+}
+
+/** One constellation's stick-figure line art — several independent strokes (`lines`), each a
+ * sequence of [ra,dec] vertices (degrees, J2000) to connect in order. Loaded from a static asset
+ * (see fetchConstellationLines) rather than a VizieR cone search like NGC/Sh2 above: unlike those,
+ * "which stars to connect for Orion" isn't an astronomical measurement with a canonical catalog,
+ * it's an artistic convention — this app bundles the widely-reused HYG-derived stick figures from
+ * ofrohn/d3-celestial (BSD-licensed, https://github.com/ofrohn/d3-celestial), converted from its
+ * GeoJSON (lon in [-180,180), i.e. RA mirrored into a signed range) to plain RA-in-[0,360) at
+ * websrc/KStarsCluster/public/constellations/lines.json. */
+interface ConstellationLineFeature {
+  id: string;
+  lines: [number, number][][];
+}
+
+/** One constellation's official IAU boundary polygon (Delporte 1930) — unlike the stick figures
+ * above, this *is* a fixed astronomical definition, but VizieR's own machine-readable edition
+ * (VI/49) is raw boundary *segments* shared between neighboring constellations, not one closed
+ * polygon per constellation ready to draw — reassembling that from scratch isn't worth it when
+ * ofrohn/d3-celestial already ships the same Delporte data pre-assembled into one closed ring per
+ * constellation. Converted the same way as the lines, to bounds.json alongside it. */
+interface ConstellationBoundaryFeature {
+  id: string;
+  polygon: [number, number][];
+}
+
+async function fetchConstellationLines(): Promise<ConstellationLineFeature[]> {
+  const res = await fetch('/constellations/lines.json');
+  if (!res.ok) throw new Error(`constellation lines request failed: ${res.status}`);
+  return res.json();
+}
+
+async function fetchConstellationBounds(): Promise<ConstellationBoundaryFeature[]> {
+  const res = await fetch('/constellations/bounds.json');
+  if (!res.ok) throw new Error(`constellation bounds request failed: ${res.status}`);
+  return res.json();
+}
+
+/** One open A.polyline per stroke (not one closed shape per constellation — most constellations'
+ * stick figures are a small tree/branching structure of strokes, not a single loop). */
+function buildConstellationLinesOverlay(aladin: any, features: ConstellationLineFeature[]): any {
+  const overlay = window.A.graphicOverlay({ name: 'Constellation lines', color: '#94a3b8', lineWidth: 1 });
+  aladin.addOverlay(overlay);
+  features.forEach((feature) => {
+    feature.lines.forEach((line) => overlay.add(window.A.polyline(line)));
+  });
+  return overlay;
+}
+
+function buildConstellationBoundsOverlay(aladin: any, features: ConstellationBoundaryFeature[]): any {
+  const overlay = window.A.graphicOverlay({
+    name: 'Constellation boundaries', color: '#64748b', lineWidth: 1, lineDash: [4, 4],
+  });
+  aladin.addOverlay(overlay);
+  features.forEach((feature) => overlay.add(window.A.polygon(feature.polygon)));
   return overlay;
 }
 
@@ -1405,6 +1493,40 @@ function strokeHorizonLoop(
   }
 }
 
+/** The four compass points, at the flat 0°-altitude horizon — reprojected in RA/Dec for the chosen
+ * simulation time exactly like the horizon circle itself (see drawHorizonOverlay), since a
+ * compass point's sky position drifts with sidereal time same as everything else drawn there. */
+const CARDINAL_POINTS: { label: string; azDeg: number }[] = [
+  { label: 'N', azDeg: 0 },
+  { label: 'E', azDeg: 90 },
+  { label: 'S', azDeg: 180 },
+  { label: 'W', azDeg: 270 },
+];
+
+function drawCardinalPoints(
+  ctx: CanvasRenderingContext2D,
+  aladin: any,
+  info: ObservatoryInfo,
+  dateMs: number,
+  stats?: ProjectionStats,
+) {
+  ctx.font = 'bold 12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  CARDINAL_POINTS.forEach(({ label, azDeg }) => {
+    const { raDeg, decDeg } = altAzToRaDec(0, azDeg, info.latitude, info.longitude, dateMs);
+    const p = safeWorld2Pix(aladin, raDeg, decDeg, stats);
+    if (!p) return;
+    // A small dark backing square behind the letter — same reasoning as drawGearButton's own
+    // translucent box — keeps it legible over a bright nebula/star field the plain orange text
+    // alone would wash out against.
+    ctx.fillStyle = 'rgba(15, 17, 26, 0.75)';
+    ctx.fillRect(p[0] - 9, p[1] - 9, 18, 18);
+    ctx.fillStyle = '#f97316';
+    ctx.fillText(label, p[0], p[1]);
+  });
+}
+
 /** Draws the flat geometric horizon (always available from lat/lon alone) plus any enabled
  * artificial-horizon regions, both reprojected in RA/Dec for the chosen simulation time. */
 function drawHorizonOverlay(
@@ -1439,6 +1561,8 @@ function drawHorizonOverlay(
     });
     strokeHorizonLoop(ctx, projectLoop(aladin, points, stats), '#dc2626', maxSegmentPx, 1);
   });
+
+  drawCardinalPoints(ctx, aladin, info, dateMs, stats);
 }
 
 /** One artificial-horizon region's own altitude boundary at a given azimuth, linearly interpolated
@@ -1683,6 +1807,8 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const sh2CatalogRef = useRef<any>(null);
   const ngcBoundaryRef = useRef<any>(null);
   const sh2BoundaryRef = useRef<any>(null);
+  const constellationLinesOverlayRef = useRef<any>(null);
+  const constellationBoundsOverlayRef = useRef<any>(null);
   // All AstroBin footprints share one canvas (see drawAstrobinFootprints) instead of one
   // absolutely-positioned DOM element each — a couple hundred images' worth of transform/size
   // recalculation on every pan/zoom frame was the actual performance cost, and canvas drawing
@@ -1730,6 +1856,13 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const horizonTimeRef = useRef(Date.now());
   const [showNgc, setShowNgc] = useState(() => readStoredBoolean(SHOW_NGC_KEY));
   const [showSh2, setShowSh2] = useState(() => readStoredBoolean(SHOW_SH2_KEY));
+  const [showGrid, setShowGrid] = useState(() => readStoredBoolean(SHOW_GRID_KEY));
+  const [showConstellationLines, setShowConstellationLines] = useState(
+    () => readStoredBoolean(SHOW_CONSTELLATION_LINES_KEY),
+  );
+  const [showConstellationBounds, setShowConstellationBounds] = useState(
+    () => readStoredBoolean(SHOW_CONSTELLATION_BOUNDS_KEY),
+  );
   const [showAstrobin, setShowAstrobin] = useState(() => readStoredBoolean(SHOW_ASTROBIN_KEY));
   const [astrobinFootprints, setAstrobinFootprints] = useState<AstrobinFootprint[] | null>(null);
   // Horizon simulation: the flat 0°-altitude circle plus (if defined) the user's own artificial
@@ -2536,6 +2669,24 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   }, [showSh2]);
 
   useEffect(() => {
+    writeStoredBoolean(SHOW_GRID_KEY, showGrid);
+  }, [showGrid]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_CONSTELLATION_LINES_KEY, showConstellationLines);
+  }, [showConstellationLines]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_CONSTELLATION_BOUNDS_KEY, showConstellationBounds);
+  }, [showConstellationBounds]);
+
+  // Aladin's own built-in coordinate grid — no data to fetch, just its own show/hide toggle.
+  useEffect(() => {
+    if (!ready || !aladinRef.current) return;
+    aladinRef.current.setCooGrid({ enabled: showGrid });
+  }, [ready, showGrid]);
+
+  useEffect(() => {
     writeStoredBoolean(SHOW_ASTROBIN_KEY, showAstrobin);
   }, [showAstrobin]);
 
@@ -2684,6 +2835,40 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     );
   }, [ready, showSh2]);
 
+  // Same "fetch once on first enable, then just show/hide" shape as NGC/Sh2 above, but the source
+  // is a bundled static asset (see fetchConstellationLines) rather than a VizieR cone search.
+  useEffect(() => {
+    if (!ready || !aladinRef.current) return;
+    if (constellationLinesOverlayRef.current) {
+      const action = showConstellationLines ? 'show' : 'hide';
+      constellationLinesOverlayRef.current[action]();
+      return;
+    }
+    if (!showConstellationLines) return;
+    const aladin = aladinRef.current;
+    fetchConstellationLines()
+      .then((features) => {
+        constellationLinesOverlayRef.current = buildConstellationLinesOverlay(aladin, features);
+      })
+      .catch(() => { /* asset unreachable — toggle stays on, nothing drawn, no retry loop */ });
+  }, [ready, showConstellationLines]);
+
+  useEffect(() => {
+    if (!ready || !aladinRef.current) return;
+    if (constellationBoundsOverlayRef.current) {
+      const action = showConstellationBounds ? 'show' : 'hide';
+      constellationBoundsOverlayRef.current[action]();
+      return;
+    }
+    if (!showConstellationBounds) return;
+    const aladin = aladinRef.current;
+    fetchConstellationBounds()
+      .then((features) => {
+        constellationBoundsOverlayRef.current = buildConstellationBoundsOverlay(aladin, features);
+      })
+      .catch(() => { /* asset unreachable — toggle stays on, nothing drawn, no retry loop */ });
+  }, [ready, showConstellationBounds]);
+
   // Fetched at most once (lazily, on first enable) from our own server-side cache — see
   // fetchAstrobinFootprints — then just shown/hidden via redraw()'s showAstrobin check.
   useEffect(() => {
@@ -2808,6 +2993,19 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         />
         <IconToggleButton active={showNgc} onToggle={() => setShowNgc((v) => !v)} title="NGC/IC" icon={<GalaxyIcon />} />
         <IconToggleButton active={showSh2} onToggle={() => setShowSh2((v) => !v)} title="Sharpless (Sh2)" icon={<NebulaIcon />} />
+        <IconToggleButton active={showGrid} onToggle={() => setShowGrid((v) => !v)} title="Coordinate grid" icon={<GridIcon />} />
+        <IconToggleButton
+          active={showConstellationLines}
+          onToggle={() => setShowConstellationLines((v) => !v)}
+          title="Constellation lines"
+          icon={<ConstellationLinesIcon />}
+        />
+        <IconToggleButton
+          active={showConstellationBounds}
+          onToggle={() => setShowConstellationBounds((v) => !v)}
+          title="Constellation boundaries"
+          icon={<ConstellationBoundsIcon />}
+        />
         <IconToggleButton active={showAstrobin} onToggle={() => setShowAstrobin((v) => !v)} title="My AstroBin" icon={<GalleryIcon />} />
         <IconToggleButton
           active={planningFovEnabled}
