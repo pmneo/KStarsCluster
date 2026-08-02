@@ -456,6 +456,47 @@ function footprintCorners(f: AstrobinFootprint): [number, number][] {
   return f.corners ?? fovCorners(f.ra, f.dec, f.widthDeg, f.heightDeg, f.orientationDeg);
 }
 
+/** Great-circle angular separation between two sky points, in degrees (haversine formula) — used
+ * only for the cheap "is this footprint anywhere near the current view" pre-filter below, not for
+ * anything that needs to account for the current projection (that's what world2pix is for). Orders
+ * of magnitude cheaper than a real projection call, which is the whole point: with a gallery in the
+ * hundreds, computeScreenRect's 4 world2pix calls per footprint (measured ~2000 calls/frame, ~2ms,
+ * during a real pan with this gallery) run for every footprint on every redraw, most of which are
+ * nowhere near the current view and were always going to be thrown away by the existing screen-
+ * bounds check further down — this lets most of them skip that work entirely. */
+function angularSeparationDeg(ra1Deg: number, dec1Deg: number, ra2Deg: number, dec2Deg: number): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dPhi = toRad(dec2Deg - dec1Deg);
+  const dLambda = toRad(ra2Deg - ra1Deg);
+  const sinDPhi2 = Math.sin(dPhi / 2);
+  const sinDLambda2 = Math.sin(dLambda / 2);
+  const phi1 = toRad(dec1Deg);
+  const phi2 = toRad(dec2Deg);
+  const h = sinDPhi2 * sinDPhi2 + Math.cos(phi1) * Math.cos(phi2) * sinDLambda2 * sinDLambda2;
+  return (2 * Math.asin(Math.min(1, Math.sqrt(h))) * 180) / Math.PI;
+}
+
+/** A rough (not tangent-plane-exact — doesn't need to be, see angularSeparationDeg's own comment)
+ * center and angular half-diagonal "radius" for the pre-filter below. Plain (a+b)/2 on the two
+ * diagonal corners, unwrapped across the RA=0/360 seam the same way tangentPlaneCenter's own
+ * comment describes — off by a similar small fraction of a degree near a pole, negligible next to
+ * the generous margin the pre-filter already applies. */
+function footprintCenterAndRadiusDeg(f: AstrobinFootprint): { ra: number; dec: number; radiusDeg: number } {
+  if (!f.corners) {
+    return { ra: f.ra, dec: f.dec, radiusDeg: Math.hypot(f.widthDeg, f.heightDeg) / 2 };
+  }
+  const [ra0, dec0] = f.corners[0];
+  let ra2 = f.corners[2][0];
+  if (ra2 - ra0 > 180) ra2 -= 360;
+  else if (ra0 - ra2 > 180) ra2 += 360;
+  const dec2 = f.corners[2][1];
+  return {
+    ra: ((ra0 + ra2) / 2 + 360) % 360,
+    dec: (dec0 + dec2) / 2,
+    radiusDeg: angularSeparationDeg(ra0, dec0, f.corners[2][0], dec2) / 2,
+  };
+}
+
 /** Shoelace formula on the footprint's own corners, treating RA/Dec as planar — inaccurate as a
  * real deg² figure (no cos(dec) scaling, breaks near the RA=0/360 wrap) but every image in this
  * gallery is a few degrees across at most, so it's more than good enough to rank "which of these
@@ -799,7 +840,19 @@ function drawAstrobinFootprints(
   const rects: AstrobinHitRect[] = [];
   let selectedEntry: { footprint: AstrobinFootprint; rect: ScreenRect } | null = null;
 
+  // Cheap pre-filter (see angularSeparationDeg's own comment) — generous on purpose (1.5x the
+  // reported FOV radius plus a flat 10° buffer, capped at 180° since nothing on a sphere is ever
+  // farther than that): the exact check a few lines down (post-world2pix, against the real screen
+  // bounds) is what actually decides what's drawn, this only skips the 4-world2pix-call
+  // computeScreenRect for footprints nowhere near being a candidate.
+  const [viewRa, viewDec] = aladin.getRaDec();
+  const [fovX, fovY] = aladin.getFov();
+  const viewRadiusDeg = Math.min(180, (Math.max(fovX, fovY) / 2) * 1.5 + 10);
+
   for (const footprint of footprints) {
+    const { ra: fRa, dec: fDec, radiusDeg: fRadiusDeg } = footprintCenterAndRadiusDeg(footprint);
+    if (angularSeparationDeg(viewRa, viewDec, fRa, fDec) > viewRadiusDeg + fRadiusDeg) continue;
+
     const hidden = hiddenUrls.has(footprint.url);
     const rect = computeScreenRect(aladin, footprintCorners(footprint), !footprint.corners);
     if (!rect) continue;
