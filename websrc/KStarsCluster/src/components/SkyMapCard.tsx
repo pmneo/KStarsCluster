@@ -194,21 +194,26 @@ interface Props {
 }
 
 /** Four corners of a centerRa/centerDec-centered rectangle, widthDeg x heightDeg, rotated by paDeg
- * (East of North). Corners are pre-divided by cos(dec) on the RA axis — Aladin's own projection
- * re-applies that scaling when rendering RA/DEC, so this cancels out to the correct on-sky size.
- * dx is flipped (+dx = West, not East) — verified empirically: RA increases to the left on an
- * unmirrored equatorial display, so a plain +East-is-right offset renders the overlay image
- * mirrored left-right. */
+ * (East of North). dx/dy are tangent-plane (xi,eta) offsets from the center (see invGnomonic),
+ * not flat RA/Dec degrees — a real spherical rotation around the center rather than a small-angle
+ * flat approximation, so this stays correct arbitrarily close to (or exactly at) a celestial pole.
+ * An earlier version instead divided the RA offset by cos(dec) to approximate the same thing,
+ * which is only valid for a small FOV far from the pole: near the pole cos(dec) collapses toward
+ * 0, blowing up that division, and a mount/Planning FOV rectangle centered near the pole rendered
+ * as a triangle (or two) instead of a rectangle — confirmed by reproducing a slew through the pole
+ * and inspecting the resulting corners. dx is flipped (+dx = West, not East) — verified
+ * empirically: RA increases to the left on an unmirrored equatorial display, so a plain
+ * +East-is-right offset renders the overlay image mirrored left-right; xi has the same "increasing
+ * = East" sign as a plain RA offset (see gnomonicXiEta), so the same flip applies here too. */
 function fovCorners(centerRa: number, centerDec: number, widthDeg: number, heightDeg: number, paDeg: number): [number, number][] {
   const paRad = (paDeg * Math.PI) / 180;
-  const cosDec = Math.max(0.01, Math.cos((centerDec * Math.PI) / 180));
   const halfW = widthDeg / 2;
   const halfH = heightDeg / 2;
   const offsets: [number, number][] = [[halfW, -halfH], [-halfW, -halfH], [-halfW, halfH], [halfW, halfH]];
   return offsets.map(([dx, dy]) => {
     const rx = dx * Math.cos(paRad) - dy * Math.sin(paRad);
     const ry = dx * Math.sin(paRad) + dy * Math.cos(paRad);
-    return [centerRa + rx / cosDec, centerDec + ry];
+    return invGnomonic(rx, ry, centerRa, centerDec);
   });
 }
 
@@ -338,8 +343,8 @@ function sizeArcminToRadiusDeg(sizeArcmin: string | undefined): number {
 /** Builds a circle-per-source graphic overlay sized by each source's real angular diameter,
  * alongside (not instead of) the small click-for-details catalog marker `cat` already carries —
  * the marker gives a precise, clickable center point; this overlay is the actual boundary. */
-function buildBoundaryOverlay(aladin: any, cat: any, sizeField: string, color: string): any {
-  const overlay = window.A.graphicOverlay({ color, lineWidth: 1 });
+function buildBoundaryOverlay(aladin: any, cat: any, sizeField: string, color: string, name: string): any {
+  const overlay = window.A.graphicOverlay({ name, color, lineWidth: 1 });
   aladin.addOverlay(overlay);
   cat.getSources().forEach((source: any) => {
     const radiusDeg = sizeArcminToRadiusDeg(source.data?.[sizeField]);
@@ -1589,13 +1594,13 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       mountCatalogRef.current = mountCat;
       targetCatalogRef.current = targetCat;
 
-      const fovOverlay = window.A.graphicOverlay({ color: '#38bdf8', lineWidth: 2 });
+      const fovOverlay = window.A.graphicOverlay({ name: 'Mount FOV', color: '#38bdf8', lineWidth: 2 });
       aladin.addOverlay(fovOverlay);
       fovOverlayRef.current = fovOverlay;
 
       // Dashed + a different hue than the live FOV overlay, so "planned framing" is never
       // mistaken for "where the camera is actually pointed right now".
-      const planningFovOverlay = window.A.graphicOverlay({ color: '#c084fc', lineWidth: 2, lineDash: [8, 6] });
+      const planningFovOverlay = window.A.graphicOverlay({ name: 'Planning FOV', color: '#c084fc', lineWidth: 2, lineDash: [8, 6] });
       aladin.addOverlay(planningFovOverlay);
       planningFovOverlayRef.current = planningFovOverlay;
 
@@ -2153,7 +2158,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       (cat: any) => {
         ngcCatalogRef.current = cat;
         aladin.addCatalog(cat);
-        ngcBoundaryRef.current = buildBoundaryOverlay(aladin, cat, 'size', '#facc15');
+        ngcBoundaryRef.current = buildBoundaryOverlay(aladin, cat, 'size', '#facc15', 'NGC/IC boundaries');
       },
     );
   }, [ready, showNgc]);
@@ -2177,7 +2182,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       (cat: any) => {
         sh2CatalogRef.current = cat;
         aladin.addCatalog(cat);
-        sh2BoundaryRef.current = buildBoundaryOverlay(aladin, cat, 'Diam', '#fb7185');
+        sh2BoundaryRef.current = buildBoundaryOverlay(aladin, cat, 'Diam', '#fb7185', 'Sharpless (Sh2) boundaries');
       },
     );
   }, [ready, showSh2]);
