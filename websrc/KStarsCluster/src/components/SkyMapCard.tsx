@@ -2681,9 +2681,11 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   }, [showConstellationBounds]);
 
   // Aladin's own built-in coordinate grid — no data to fetch, just its own show/hide toggle.
+  // showLabels off: the RA/Dec labels on every gridline clutter a frame this small far more than
+  // the lines themselves do.
   useEffect(() => {
     if (!ready || !aladinRef.current) return;
-    aladinRef.current.setCooGrid({ enabled: showGrid });
+    aladinRef.current.setCooGrid({ enabled: showGrid, showLabels: false });
   }, [ready, showGrid]);
 
   useEffect(() => {
