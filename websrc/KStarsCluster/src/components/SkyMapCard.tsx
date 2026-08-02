@@ -723,6 +723,7 @@ function drawTexturedTriangle(
 function drawImageMesh(
   ctx: CanvasRenderingContext2D, img: HTMLImageElement,
   mesh: ([number, number] | null)[][], gridSize: number,
+  maxSpanPx: number,
 ) {
   const { naturalWidth, naturalHeight } = img;
   for (let j = 0; j < gridSize; j++) {
@@ -732,6 +733,15 @@ function drawImageMesh(
       const p11 = mesh[j + 1][i + 1];
       const p01 = mesh[j + 1][i];
       if (!p00 || !p10 || !p11 || !p01) continue;
+      // Belt-and-suspenders against the same azimuthal-projection edge the pre-filter in
+      // drawAstrobinFootprints already guards against (see its own comment): a legitimate mesh
+      // cell never spans anywhere close to the whole visible canvas, so a cell whose own corners
+      // are farther apart than that is a sign world2pix stopped varying smoothly here, not a
+      // real (if extreme) piece of curvature — skip it rather than paint a degenerate triangle
+      // across most of the sky.
+      const xs = [p00[0], p10[0], p11[0], p01[0]];
+      const ys = [p00[1], p10[1], p11[1], p01[1]];
+      if (Math.max(...xs) - Math.min(...xs) > maxSpanPx || Math.max(...ys) - Math.min(...ys) > maxSpanPx) continue;
       const sx0 = (i / gridSize) * naturalWidth;
       const sx1 = ((i + 1) / gridSize) * naturalWidth;
       const sy0 = (j / gridSize) * naturalHeight;
@@ -768,6 +778,8 @@ function drawOneAstrobinFootprint(
   isSelected: boolean,
   imagesCache: Map<string, HTMLImageElement>,
   onImageLoad: () => void,
+  containerW: number,
+  containerH: number,
 ) {
   const { cx, cy, w, h, angleRad } = rect;
   if (hidden) {
@@ -802,7 +814,8 @@ function drawOneAstrobinFootprint(
     ? computeFootprintMesh(aladin, meshCorners, ASTROBIN_MESH_GRID_SIZE)
     : null;
   if (mesh) {
-    drawImageMesh(ctx, img, mesh, ASTROBIN_MESH_GRID_SIZE);
+    const maxSpanPx = Math.max(containerW, containerH) * 3;
+    drawImageMesh(ctx, img, mesh, ASTROBIN_MESH_GRID_SIZE, maxSpanPx);
     drawMeshOutline(ctx, mesh, ASTROBIN_MESH_GRID_SIZE);
   } else {
     ctx.save();
@@ -841,13 +854,25 @@ function drawAstrobinFootprints(
   let selectedEntry: { footprint: AstrobinFootprint; rect: ScreenRect } | null = null;
 
   // Cheap pre-filter (see angularSeparationDeg's own comment) — generous on purpose (1.5x the
-  // reported FOV radius plus a flat 10° buffer, capped at 180° since nothing on a sphere is ever
-  // farther than that): the exact check a few lines down (post-world2pix, against the real screen
-  // bounds) is what actually decides what's drawn, this only skips the 4-world2pix-call
-  // computeScreenRect for footprints nowhere near being a candidate.
+  // reported FOV radius plus a flat 10° buffer): the exact check a few lines down (post-world2pix,
+  // against the real screen bounds) is what actually decides what's drawn, this only skips the
+  // 4-world2pix-call computeScreenRect for footprints nowhere near being a candidate. Capped at
+  // 180° in general (nothing on a sphere is ever farther than that) but much tighter for Aladin's
+  // azimuthal projections (ZEA/SIN/STG/TAN): these stay mathematically defined out to (near) 180°,
+  // but well before that the projection's own derivative blows up, so world2pix stops varying
+  // smoothly with position — confirmed directly by inspecting a mesh near this boundary, where
+  // adjacent grid points (a few degrees apart on the sky) landed hundreds of pixels apart on
+  // screen. Rendering a footprint out there doesn't produce a recognizable (if distorted) image,
+  // it produces an enormous degenerate mesh triangle that paints over most of the visible sky.
+  const AZIMUTHAL_PROJECTIONS_MAX_RADIUS_DEG = 105;
+  const AZIMUTHAL_PROJECTIONS = new Set(['ZEA', 'SIN', 'STG', 'TAN']);
   const [viewRa, viewDec] = aladin.getRaDec();
   const [fovX, fovY] = aladin.getFov();
-  const viewRadiusDeg = Math.min(180, (Math.max(fovX, fovY) / 2) * 1.5 + 10);
+  const projectionName = typeof aladin.getProjectionName === 'function' ? aladin.getProjectionName() : null;
+  const maxViewRadiusDeg = projectionName && AZIMUTHAL_PROJECTIONS.has(projectionName)
+    ? AZIMUTHAL_PROJECTIONS_MAX_RADIUS_DEG
+    : 180;
+  const viewRadiusDeg = Math.min(maxViewRadiusDeg, (Math.max(fovX, fovY) / 2) * 1.5 + 10);
 
   for (const footprint of footprints) {
     const { ra: fRa, dec: fDec, radiusDeg: fRadiusDeg } = footprintCenterAndRadiusDeg(footprint);
@@ -871,10 +896,10 @@ function drawAstrobinFootprints(
       selectedEntry = { footprint, rect };
       continue;
     }
-    drawOneAstrobinFootprint(ctx, aladin, footprint, rect, hidden, false, imagesCache, onImageLoad);
+    drawOneAstrobinFootprint(ctx, aladin, footprint, rect, hidden, false, imagesCache, onImageLoad, containerW, containerH);
   }
   if (selectedEntry) {
-    drawOneAstrobinFootprint(ctx, aladin, selectedEntry.footprint, selectedEntry.rect, false, true, imagesCache, onImageLoad);
+    drawOneAstrobinFootprint(ctx, aladin, selectedEntry.footprint, selectedEntry.rect, false, true, imagesCache, onImageLoad, containerW, containerH);
   }
   return rects;
 }
