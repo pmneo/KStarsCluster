@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { SchedulerJob } from '../api/types';
 import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
 import { altAzToRaDec, raDecToAltAz, getLocalSiderealTime } from '../api/coordinates';
@@ -151,6 +151,173 @@ function SlidersIcon() {
   );
 }
 
+function CrosshairIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <circle cx="12" cy="12" r="6" />
+      <line x1="12" y1="1" x2="12" y2="6" />
+      <line x1="12" y1="18" x2="12" y2="23" />
+      <line x1="1" y1="12" x2="6" y2="12" />
+      <line x1="18" y1="12" x2="23" y2="12" />
+    </svg>
+  );
+}
+
+function ZenithIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="13" r="9" />
+      <path d="M12 8v8" />
+      <path d="M8.5 11.5 12 8l3.5 3.5" />
+    </svg>
+  );
+}
+
+function LastImageIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <circle cx="8.5" cy="9.5" r="1.5" fill="currentColor" stroke="none" />
+      <path d="m3 16 5-5 4 4 3-3 6 6" />
+    </svg>
+  );
+}
+
+function GalaxyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <path d="M12 12C15 9 20 9.5 20 6" />
+      <path d="M12 12C9 15 4 14.5 4 18" />
+      <path d="M12 12C16 13.5 17 18 13 20" />
+      <path d="M12 12C8 10.5 7 6 11 4" />
+    </svg>
+  );
+}
+
+function NebulaIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6.5 17a3.5 3.5 0 0 1-1-6.86 4.5 4.5 0 0 1 8.6-2.3A4 4 0 0 1 19 12a3.5 3.5 0 0 1-.5 5H6.5Z" />
+      <circle cx="9" cy="14" r="0.8" fill="currentColor" stroke="none" />
+      <circle cx="14" cy="15" r="0.6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function GalleryIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="6" y="6" width="15" height="14" rx="2" />
+      <path d="M3 15V5a2 2 0 0 1 2-2h10" />
+      <circle cx="11.5" cy="11.5" r="1.3" fill="currentColor" stroke="none" />
+      <path d="m6 18 3.5-4 3 3 2.5-3 4 3.5" />
+    </svg>
+  );
+}
+
+function ViewfinderIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 8V5a2 2 0 0 1 2-2h3" />
+      <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+      <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+      <path d="M21 16v3a2 2 0 0 1-2 2h-3" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function HorizonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M2 17h20" />
+      <path d="M5 17a7 7 0 0 1 14 0" />
+      <line x1="12" y1="3" x2="12" y2="5" />
+      <line x1="5.6" y1="6.6" x2="7" y2="8" />
+      <line x1="18.4" y1="6.6" x2="17" y2="8" />
+    </svg>
+  );
+}
+
+function PaletteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-1.2.9-2a1.6 1.6 0 0 1 1.1-2.7H16a5 5 0 0 0 5-5c0-4.6-4-8.3-9-8.3Z" />
+      <circle cx="7.5" cy="10.5" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="7.5" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="16.5" cy="10.5" r="1.2" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function TerrainIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m2 18 5-8 3.5 4L15 6l7 12Z" />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3.5 2" />
+    </svg>
+  );
+}
+
+/** Icon-only replacement for the old checkbox+label toggles — same on/off semantics, `active`
+ * driven by `data-active` (styled in index.css) rather than a native checkbox appearance, since an
+ * icon has no built-in checked state to show. */
+function IconToggleButton({
+  active, onToggle, disabled, title, icon,
+}: {
+  active: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+  title: string;
+  icon: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className="sky-map-icon-button"
+      data-active={active ? 'true' : undefined}
+      aria-pressed={active}
+      disabled={disabled}
+      onClick={onToggle}
+      title={title}
+      aria-label={title}
+    >
+      {icon}
+    </button>
+  );
+}
+
+/** The Horizon simulation's own fast forward/back stepper (see its +/- buttons below) — "1 month"
+ * is a real calendar-month step (see stepHorizonTime), not a fixed 30-day increment, since repeated
+ * fixed-length steps would drift the day-of-month; the others are exact, unambiguous durations. */
+type HorizonStep = { label: string } & ({ kind: 'ms'; ms: number } | { kind: 'month' });
+const HORIZON_STEPS: HorizonStep[] = [
+  { label: '1 min', kind: 'ms', ms: 60_000 },
+  { label: '5 min', kind: 'ms', ms: 5 * 60_000 },
+  { label: '30 min', kind: 'ms', ms: 30 * 60_000 },
+  { label: '1 hour', kind: 'ms', ms: 60 * 60_000 },
+  { label: '1 day', kind: 'ms', ms: 24 * 60 * 60_000 },
+  { label: '1 month', kind: 'month' },
+];
+
+function stepHorizonTime(current: number, step: HorizonStep, direction: 1 | -1): number {
+  if (step.kind === 'month') {
+    const d = new Date(current);
+    d.setMonth(d.getMonth() + direction);
+    return d.getTime();
+  }
+  return current + direction * step.ms;
+}
+
 interface SurveyOption {
   id: string;
   label: string;
@@ -277,12 +444,15 @@ function positionFootprintImage(img: HTMLElement, aladin: any, corners: [number,
 }
 
 const FOLLOW_MOUNT_KEY = 'skymap.followMount';
+const ZENITH_LOCK_KEY = 'skymap.zenithLock';
+const PROJECTION_KEY = 'skymap.projection';
 const SHOW_LAST_IMAGE_KEY = 'skymap.showLastImage';
 const SHOW_NGC_KEY = 'skymap.showNgc';
 const SHOW_SH2_KEY = 'skymap.showSh2';
 const SHOW_ASTROBIN_KEY = 'skymap.showAstrobin';
 const SHOW_HORIZON_KEY = 'skymap.showHorizon';
 const SHOW_TERRAIN_KEY = 'skymap.showTerrain';
+const HORIZON_STEP_INDEX_KEY = 'skymap.horizonStepIndex';
 // Real width is CSS-defined (see .sky-map-astrobin-popover); the height is only an estimate since
 // the actual rendered height depends on title wrapping and isn't known until after it paints —
 // good enough for clamping the popover to stay on-screen without needing a post-paint measurement.
@@ -1202,6 +1372,24 @@ function writeStoredBoolean(key: string, value: boolean) {
   }
 }
 
+function readStoredString(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  }
+  catch {
+    return null;
+  }
+}
+
+function writeStoredString(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  }
+  catch {
+    // storage unavailable (private browsing, quota, ...) — just don't persist
+  }
+}
+
 function readStoredNumber(key: string, fallback: number): number {
   try {
     const raw = localStorage.getItem(key);
@@ -1326,13 +1514,13 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const horizonRetryRef = useRef<number | undefined>(undefined);
   const [ready, setReady] = useState(false);
   const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const paletteRef = useRef<HTMLDivElement>(null);
   // Persisted across reloads (see FOLLOW_MOUNT_KEY/SHOW_LAST_IMAGE_KEY) — both are "set once,
   // forget about it" toggles, so a reload silently reverting them is more surprising than useful.
   const [showLastImage, setShowLastImage] = useState(() => readStoredBoolean(SHOW_LAST_IMAGE_KEY));
   const [followMount, setFollowMount] = useState(() => readStoredBoolean(FOLLOW_MOUNT_KEY));
-  // Not persisted — a stale zenith-locked view from a past session is more disorienting to reload
-  // into than starting back at the usual celestial-north-up default every time.
-  const [zenithLock, setZenithLock] = useState(false);
+  const [zenithLock, setZenithLock] = useState(() => readStoredBoolean(ZENITH_LOCK_KEY));
   const zenithLockRef = useRef(zenithLock);
   zenithLockRef.current = zenithLock;
   const observatoryInfoRef = useRef<ObservatoryInfo | null>(null);
@@ -1349,6 +1537,10 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const [showHorizon, setShowHorizon] = useState(() => readStoredBoolean(SHOW_HORIZON_KEY));
   const [showTerrain, setShowTerrain] = useState(() => readStoredBoolean(SHOW_TERRAIN_KEY));
   const [horizonTime, setHorizonTime] = useState(() => Date.now());
+  const [horizonStepIndex, setHorizonStepIndex] = useState(() => {
+    const stored = readStoredNumber(HORIZON_STEP_INDEX_KEY, 2);
+    return stored >= 0 && stored < HORIZON_STEPS.length ? stored : 2;
+  });
   const [observatoryInfo, setObservatoryInfo] = useState<ObservatoryInfo | null>(null);
   // Kept live for the poll-loop effect below (whose closure only runs once, deps [ready]) to read
   // without needing to be in that effect's own dependency array.
@@ -1485,6 +1677,26 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     };
   }, [sensorConfigOpen]);
 
+  // Same outside-click/Escape pattern as sensorConfigOpen above, for the survey/palette picker's
+  // own popup (see its own button below — replaces what used to be a plain <select>).
+  useEffect(() => {
+    if (!paletteOpen) return undefined;
+    function onPointerDown(e: PointerEvent) {
+      if (paletteRef.current && !paletteRef.current.contains(e.target as Node)) {
+        setPaletteOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setPaletteOpen(false);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [paletteOpen]);
+
   // Recorded on every mousedown regardless of target — a pan can start inside the sky map and end
   // outside it (or vice versa) — so both listeners below can tell a background drag-to-pan apart
   // from an actual click, which a plain 'click' listener can't do on its own (see
@@ -1581,11 +1793,16 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         fov: savedView?.fovDeg ?? DEFAULT_FOV_DEG,
         target: savedView ? `${savedView.ra} ${savedView.dec}` : '0 +0',
         cooFrame: 'equatorial',
+        projection: readStoredString(PROJECTION_KEY) ?? 'SIN',
         showFullscreenControl: false,
         log: false,
       });
       aladinRef.current = aladin;
       appliedSurveyIdRef.current = defaultSurvey.id;
+      // Aladin's own corner button changes the projection (SIN/ZEA/AIT/...) — persist whatever the
+      // user picks there the same way the view itself is persisted, so a reload doesn't silently
+      // reset back to SIN.
+      aladin.on('projectionChanged', (name: string) => writeStoredString(PROJECTION_KEY, name));
 
       const mountCat = window.A.catalog({ name: 'mount', sourceSize: 20, color: '#4ade80' });
       const targetCat = window.A.catalog({ name: 'target', sourceSize: 20, color: '#f59e0b' });
@@ -2052,6 +2269,14 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   }, [followMount]);
 
   useEffect(() => {
+    writeStoredBoolean(ZENITH_LOCK_KEY, zenithLock);
+  }, [zenithLock]);
+
+  useEffect(() => {
+    writeStoredNumber(HORIZON_STEP_INDEX_KEY, horizonStepIndex);
+  }, [horizonStepIndex]);
+
+  useEffect(() => {
     writeStoredBoolean(SHOW_LAST_IMAGE_KEY, showLastImage);
   }, [showLastImage]);
 
@@ -2234,11 +2459,32 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     <div ref={cardRef} className="card card--wide">
       <h3>Sky Map</h3>
       <div className="sky-map-controls">
-        <select value={surveyId} onChange={(e) => setSurveyId(e.target.value)}>
-          {SURVEYS.map((s) => (
-            <option key={s.id} value={s.id}>{s.label}</option>
-          ))}
-        </select>
+        <div className="sky-map-palette-picker" ref={paletteRef}>
+          <button
+            type="button"
+            className="sky-map-icon-button"
+            onClick={() => setPaletteOpen((open) => !open)}
+            title={`Palette: ${SURVEYS.find((s) => s.id === surveyId)?.label ?? ''}`}
+            aria-label="Choose palette"
+          >
+            <PaletteIcon />
+          </button>
+          {paletteOpen && (
+            <div className="sky-map-palette-popup">
+              {SURVEYS.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className="sky-map-palette-option"
+                  data-active={s.id === surveyId ? 'true' : undefined}
+                  onClick={() => { setSurveyId(s.id); setPaletteOpen(false); }}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           type="button"
           className="sky-map-icon-button"
@@ -2249,57 +2495,37 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
           {isFullscreen ? <CompressIcon /> : <ExpandIcon />}
         </button>
         <div className="sky-map-toggles">
-          <label className="sky-map-toggle">
-            <input
-              type="checkbox"
-              checked={followMount}
-              onChange={(e) => setFollowMount(e.target.checked)}
-              disabled={!mountCoords}
-            />
-            Follow mount
-          </label>
-          <label className="sky-map-toggle" title="Locks the view to zenith-up (Horizontal mode) instead of celestial-north-up, so the sky's actual drift during a session stays legible">
-            <input
-              type="checkbox"
-              checked={zenithLock}
-              onChange={(e) => setZenithLock(e.target.checked)}
-              disabled={!observatoryInfo || !isValidLocation(observatoryInfo)}
-            />
-            Zenith lock
-          </label>
-          <label className="sky-map-toggle">
-            <input
-              type="checkbox"
-              checked={showLastImage}
-              onChange={(e) => setShowLastImage(e.target.checked)}
-              disabled={!lastImageFilename}
-            />
-            Show last image
-          </label>
-          <label className="sky-map-toggle">
-            <input type="checkbox" checked={showNgc} onChange={(e) => setShowNgc(e.target.checked)} />
-            NGC/IC
-          </label>
-          <label className="sky-map-toggle">
-            <input type="checkbox" checked={showSh2} onChange={(e) => setShowSh2(e.target.checked)} />
-            Sharpless (Sh2)
-          </label>
-          <label className="sky-map-toggle">
-            <input type="checkbox" checked={showAstrobin} onChange={(e) => setShowAstrobin(e.target.checked)} />
-            My AstroBin
-          </label>
-          <label className="sky-map-toggle">
-            <input
-              type="checkbox"
-              checked={planningFovEnabled}
-              onChange={(e) => setPlanningFovEnabled(e.target.checked)}
-            />
-            Planning FOV
-          </label>
-          <label className="sky-map-toggle">
-            <input type="checkbox" checked={showHorizon} onChange={(e) => setShowHorizon(e.target.checked)} />
-            Horizon
-          </label>
+          <IconToggleButton
+            active={followMount}
+            onToggle={() => setFollowMount((v) => !v)}
+            disabled={!mountCoords}
+            title="Follow mount"
+            icon={<CrosshairIcon />}
+          />
+          <IconToggleButton
+            active={zenithLock}
+            onToggle={() => setZenithLock((v) => !v)}
+            disabled={!observatoryInfo || !isValidLocation(observatoryInfo)}
+            title="Zenith lock — locks the view to zenith-up (Horizontal mode) instead of celestial-north-up, so the sky's actual drift during a session stays legible"
+            icon={<ZenithIcon />}
+          />
+          <IconToggleButton
+            active={showLastImage}
+            onToggle={() => setShowLastImage((v) => !v)}
+            disabled={!lastImageFilename}
+            title="Show last image"
+            icon={<LastImageIcon />}
+          />
+          <IconToggleButton active={showNgc} onToggle={() => setShowNgc((v) => !v)} title="NGC/IC" icon={<GalaxyIcon />} />
+          <IconToggleButton active={showSh2} onToggle={() => setShowSh2((v) => !v)} title="Sharpless (Sh2)" icon={<NebulaIcon />} />
+          <IconToggleButton active={showAstrobin} onToggle={() => setShowAstrobin((v) => !v)} title="My AstroBin" icon={<GalleryIcon />} />
+          <IconToggleButton
+            active={planningFovEnabled}
+            onToggle={() => setPlanningFovEnabled((v) => !v)}
+            title="Planning FOV"
+            icon={<ViewfinderIcon />}
+          />
+          <IconToggleButton active={showHorizon} onToggle={() => setShowHorizon((v) => !v)} title="Horizon" icon={<HorizonIcon />} />
         </div>
       </div>
       {planningFovEnabled && (
@@ -2401,23 +2627,55 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       )}
       {showHorizon && (
         <div className="sky-map-horizon">
-          <label>
-            Simulate at
-            <input
-              type="datetime-local"
-              value={toDatetimeLocalValue(horizonTime)}
-              onChange={(e) => {
-                const t = new Date(e.target.value).getTime();
-                if (!Number.isNaN(t)) setHorizonTime(t);
-              }}
-            />
-          </label>
+          <span className="sky-map-horizon-clock" title="Simulated time">
+            <ClockIcon />
+          </span>
+          <input
+            type="datetime-local"
+            value={toDatetimeLocalValue(horizonTime)}
+            onChange={(e) => {
+              const t = new Date(e.target.value).getTime();
+              if (!Number.isNaN(t)) setHorizonTime(t);
+            }}
+          />
+          <div className="sky-map-horizon-stepper">
+            <button
+              type="button"
+              className="sky-map-icon-button"
+              onClick={() => setHorizonTime((t) => stepHorizonTime(t, HORIZON_STEPS[horizonStepIndex], -1))}
+              title={`Step back ${HORIZON_STEPS[horizonStepIndex].label}`}
+              aria-label="Step back"
+            >
+              −
+            </button>
+            <select
+              value={horizonStepIndex}
+              onChange={(e) => setHorizonStepIndex(Number(e.target.value))}
+              title="Step size"
+              aria-label="Step size"
+            >
+              {HORIZON_STEPS.map((step, i) => (
+                <option key={step.label} value={i}>{step.label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="sky-map-icon-button"
+              onClick={() => setHorizonTime((t) => stepHorizonTime(t, HORIZON_STEPS[horizonStepIndex], 1))}
+              title={`Step forward ${HORIZON_STEPS[horizonStepIndex].label}`}
+              aria-label="Step forward"
+            >
+              +
+            </button>
+          </div>
           <button type="button" onClick={() => setHorizonTime(Date.now())}>Now</button>
           {observatoryInfo?.hasTerrain && (
-            <label className="sky-map-toggle">
-              <input type="checkbox" checked={showTerrain} onChange={(e) => setShowTerrain(e.target.checked)} />
-              Terrain photo
-            </label>
+            <IconToggleButton
+              active={showTerrain}
+              onToggle={() => setShowTerrain((v) => !v)}
+              title="Terrain photo"
+              icon={<TerrainIcon />}
+            />
           )}
           {observatoryInfo && !isValidLocation(observatoryInfo) && (
             <span className="sky-map-horizon-warning">No location configured in KStars</span>

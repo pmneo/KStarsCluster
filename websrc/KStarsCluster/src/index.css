@@ -506,19 +506,11 @@ table td:first-child {
   margin-bottom: 8px;
 }
 
-.sky-map-controls select {
-  background: #10121a;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  padding: 4px 8px;
-}
-
 .sky-map-toggles {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 6px;
   margin-left: auto;
   min-width: 0;
 }
@@ -541,8 +533,73 @@ table td:first-child {
   background: #10121a;
   border: 1px solid var(--border);
   border-radius: 6px;
-  color: var(--text);
+  color: var(--muted);
   cursor: pointer;
+}
+
+.sky-map-icon-button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.sky-map-icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Icon toggles have no native checked appearance of their own (see IconToggleButton) — an "on"
+ * state is instead read off this data attribute, set whenever the underlying boolean is true. */
+.sky-map-icon-button[data-active='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0b0d14;
+}
+
+.sky-map-icon-button[data-active='true']:hover:not(:disabled) {
+  color: #0b0d14;
+}
+
+.sky-map-palette-picker {
+  position: relative;
+  display: flex;
+}
+
+.sky-map-palette-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 220px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.sky-map-palette-option {
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.sky-map-palette-option:hover {
+  background: #10121a;
+}
+
+.sky-map-palette-option[data-active='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .sky-map-planning-fov {
@@ -633,6 +690,32 @@ table td:first-child {
   border-radius: 6px;
   color: var(--text);
   padding: 2px 6px;
+}
+
+.sky-map-horizon-clock {
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+}
+
+.sky-map-horizon-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sky-map-horizon-stepper .sky-map-icon-button {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.sky-map-horizon-stepper select {
+  background: #10121a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 4px 6px;
+  font-size: 0.8rem;
 }
 
 .sky-map-horizon-warning {
