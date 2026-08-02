@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { SchedulerJob } from '../api/types';
+import { getJobStateLabel, type SchedulerJob } from '../api/types';
 import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
+import { fetchScheduleFileJobs } from '../api/actions';
 import { altAzToRaDec, raDecToAltAz, getLocalSiderealTime } from '../api/coordinates';
 import {
   fetchObservatoryInfo, fetchArtificialHorizon, isValidLocation, TERRAIN_IMAGE_URL,
@@ -297,6 +298,16 @@ function ConstellationBoundsIcon() {
   );
 }
 
+function OpenTargetsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="8" />
+      <circle cx="12" cy="12" r="3.5" />
+      <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 function ClockIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -480,6 +491,8 @@ const SURVEYS: SurveyOption[] = [
 interface Props {
   mountCoords?: { ra: number; dec: number };
   activeJob: SchedulerJob | null;
+  jobs?: SchedulerJob[];
+  ekosReady?: boolean;
   fov?: { widthArcmin: number; heightArcmin: number };
   pa?: number;
   lastImageFilename?: string;
@@ -580,6 +593,7 @@ const SHOW_TERRAIN_KEY = 'skymap.showTerrain';
 const SHOW_GRID_KEY = 'skymap.showGrid';
 const SHOW_CONSTELLATION_LINES_KEY = 'skymap.showConstellationLines';
 const SHOW_CONSTELLATION_BOUNDS_KEY = 'skymap.showConstellationBounds';
+const SHOW_OPEN_TARGETS_KEY = 'skymap.showOpenTargets';
 const HORIZON_STEP_INDEX_KEY = 'skymap.horizonStepIndex';
 // Real width is CSS-defined (see .sky-map-astrobin-popover); the height is only an estimate since
 // the actual rendered height depends on title wrapping and isn't known until after it paints —
@@ -1790,7 +1804,49 @@ function buildImageSurvey(survey: SurveyOption) {
   return survey.builtin;
 }
 
-export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename }: Props) {
+/** "Open" = hasn't finished all its required captures yet — a live job that's already
+ * JOB_COMPLETE is done, and JOB_INVALID means the scheduler itself rejected it (unreachable
+ * constraints etc.), so neither is worth marking on the sky. A job freshly parsed from an .esl
+ * file (see fetchScheduleFileJobs) has no run history and always comes back JOB_IDLE, which
+ * passes this check same as it would for any live not-yet-finished job — there's no way (and no
+ * need) to tell "not started" apart from "in progress" for a target marker. */
+function isOpenSchedulerJob(job: SchedulerJob): boolean {
+  const label = getJobStateLabel(job.state);
+  return label !== 'JOB_COMPLETE' && label !== 'JOB_INVALID';
+}
+
+/** Small target/bullseye marker plus name label for each still-open scheduler job — same "dark
+ * backing box behind the text" legibility trick as drawCardinalPoints/drawGearButton use. */
+function drawOpenTargets(
+  ctx: CanvasRenderingContext2D,
+  aladin: any,
+  targets: SchedulerJob[],
+  stats?: ProjectionStats,
+) {
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  targets.forEach((job) => {
+    const p = safeWorld2Pix(aladin, job.targetRA * 15, job.targetDEC, stats);
+    if (!p) return;
+    const [x, y] = p;
+    ctx.strokeStyle = '#4ade80';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.stroke();
+
+    const labelWidth = ctx.measureText(job.name).width;
+    ctx.fillStyle = 'rgba(15, 17, 26, 0.75)';
+    ctx.fillRect(x + 9, y - 8, labelWidth + 6, 16);
+    ctx.fillStyle = '#4ade80';
+    ctx.fillText(job.name, x + 12, y);
+  });
+}
+
+export function SkyMapCard({
+  mountCoords, activeJob, jobs, ekosReady, fov, pa, lastImageFilename,
+}: Props) {
   const cardRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayImgRef = useRef<HTMLImageElement>(null);
@@ -1863,6 +1919,11 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const [showConstellationBounds, setShowConstellationBounds] = useState(
     () => readStoredBoolean(SHOW_CONSTELLATION_BOUNDS_KEY),
   );
+  const [showOpenTargets, setShowOpenTargets] = useState(() => readStoredBoolean(SHOW_OPEN_TARGETS_KEY));
+  // Only populated when the toggle is on AND Ekos isn't up (see openTargetJobs below) — while
+  // Ekos IS up, the live `jobs` prop is used directly and this stays null.
+  const [diskJobs, setDiskJobs] = useState<SchedulerJob[] | null>(null);
+  const targetsCanvasRef = useRef<HTMLCanvasElement>(null);
   const [showAstrobin, setShowAstrobin] = useState(() => readStoredBoolean(SHOW_ASTROBIN_KEY));
   const [astrobinFootprints, setAstrobinFootprints] = useState<AstrobinFootprint[] | null>(null);
   // Horizon simulation: the flat 0°-altitude circle plus (if defined) the user's own artificial
@@ -2235,6 +2296,28 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   // multi-hour session that accumulated thousands of stale callbacks on the same long-lived Aladin
   // instance, and the next positionChanged/zoomChanged (e.g. one last mount update as Ekos stops)
   // fired all of them synchronously, which was enough to freeze the tab or lose the WebGL context.
+  // Only needed for the Ekos-off path (see openTargetJobs below) — refetched every time the
+  // toggle turns on rather than cached like the AstroBin/NGC/Sh2 "fetch once" lazy loads
+  // elsewhere: unlike those, the .esl file on disk can change between one enable and the next
+  // (someone edited the schedule in KStars while the toggle happened to be off), so a stale disk
+  // snapshot sitting around would be actively misleading here in a way a stale NGC catalog never is.
+  useEffect(() => {
+    if (!showOpenTargets || ekosReady) {
+      setDiskJobs(null);
+      return;
+    }
+    fetchScheduleFileJobs().then(setDiskJobs).catch(() => setDiskJobs([]));
+  }, [showOpenTargets, ekosReady]);
+
+  // Live Ekos: use its own jobs list, filtered to what isn't finished yet. Ekos off: the jobs
+  // list parsed straight off the configured .esl file (see fetchScheduleFileJobs) — every job in
+  // there is "open" by construction, since a freshly-parsed file has no run history at all.
+  const openTargetJobs = useMemo(() => {
+    if (!showOpenTargets) return [];
+    if (ekosReady) return (jobs ?? []).filter(isOpenSchedulerJob);
+    return diskJobs ?? [];
+  }, [showOpenTargets, ekosReady, jobs, diskJobs]);
+
   const redrawRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -2442,6 +2525,25 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         }
       }
 
+      const targetsCanvas = targetsCanvasRef.current;
+      if (targetsCanvas && container) {
+        const dpr = window.devicePixelRatio || 1;
+        const targetW = Math.round(container.clientWidth * dpr);
+        const targetH = Math.round(container.clientHeight * dpr);
+        if (targetsCanvas.width !== targetW || targetsCanvas.height !== targetH) {
+          targetsCanvas.width = targetW;
+          targetsCanvas.height = targetH;
+          targetsCanvas.style.width = `${container.clientWidth}px`;
+          targetsCanvas.style.height = `${container.clientHeight}px`;
+        }
+        const tgCtx = targetsCanvas.getContext('2d');
+        if (tgCtx) {
+          tgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          tgCtx.clearRect(0, 0, container.clientWidth, container.clientHeight);
+          if (openTargetJobs.length > 0) drawOpenTargets(tgCtx, aladin, openTargetJobs);
+        }
+      }
+
       overlay.removeAll();
       if (!mountCoords || !fov) {
         if (overlayImgRef.current) overlayImgRef.current.style.display = 'none';
@@ -2465,6 +2567,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     showAstrobin, astrobinFootprints, hiddenAstrobinUrls, astrobinPopover,
     planningFovEnabled, planningFovWidthArcmin, planningFovHeightArcmin, planningFovRotationDeg,
     showHorizon, showTerrain, horizonTime, observatoryInfo, artificialHorizon, terrainImageLoaded,
+    openTargetJobs,
   ]);
 
   useEffect(() => {
@@ -2679,6 +2782,10 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   useEffect(() => {
     writeStoredBoolean(SHOW_CONSTELLATION_BOUNDS_KEY, showConstellationBounds);
   }, [showConstellationBounds]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_OPEN_TARGETS_KEY, showOpenTargets);
+  }, [showOpenTargets]);
 
   // Aladin's own built-in coordinate grid — no data to fetch, just its own show/hide toggle.
   // showLabels off: the RA/Dec labels on every gridline clutter a frame this small far more than
@@ -3010,6 +3117,12 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         />
         <IconToggleButton active={showAstrobin} onToggle={() => setShowAstrobin((v) => !v)} title="My AstroBin" icon={<GalleryIcon />} />
         <IconToggleButton
+          active={showOpenTargets}
+          onToggle={() => setShowOpenTargets((v) => !v)}
+          title={ekosReady ? 'Open targets — from the running Ekos scheduler' : 'Open targets — from the configured sequence file'}
+          icon={<OpenTargetsIcon />}
+        />
+        <IconToggleButton
           active={planningFovEnabled}
           onToggle={() => setPlanningFovEnabled((v) => !v)}
           title="Planning FOV"
@@ -3214,6 +3327,9 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             and artificial-horizon shading are always visible, not hidden under the terrain overlay
             or a wide AstroBin footprint. */}
         <canvas ref={horizonCanvasRef} className="sky-map-horizon-canvas" />
+        {/* Topmost of the plain-canvas overlays — a handful of small marker+label pairs, never
+            wide enough to meaningfully hide anything underneath the way the terrain photo can. */}
+        <canvas ref={targetsCanvasRef} className="sky-map-targets-canvas" />
         {astrobinPopover && (
           <div className="sky-map-astrobin-popover" ref={astrobinPopoverRef}>
             <button type="button" className="sky-map-astrobin-popover-close" onClick={() => setAstrobinPopover(null)} aria-label="Close">×</button>

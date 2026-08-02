@@ -593,5 +593,24 @@ public class KStarsClusterServer extends KStarsCluster {
             }
             return roofStatus.get().indiStatus;
 		} );
+
+        // Read straight off the configured .esl file (see loadSchedule/setLoadSchedule) rather
+        // than the live D-Bus jobs list — for the web UI's Sky Map "open targets" overlay when
+        // Ekos isn't running (and so there's no live scheduler to ask), this is "the sequence we'd
+        // load" if Ekos were started right now. A freshly-parsed job has no run history, so every
+        // job comes back JOB_IDLE (state 0) — the frontend treats that as "still open" same as it
+        // would treat any live job that hasn't reached JOB_COMPLETE yet.
+        actions.put( "scheduleFile", ( parts, req, resp ) -> {
+            if( loadSchedule == null || loadSchedule.isEmpty() ) {
+                return List.of();
+            }
+            try {
+                return SchedulerJob.parseEslFile( new File( loadSchedule ) );
+            }
+            catch( Throwable t ) {
+                logError( "Failed to parse configured schedule file for the web UI", t );
+                return List.of();
+            }
+        } );
     }
 }

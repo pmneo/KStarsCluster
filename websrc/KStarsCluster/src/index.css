@@ -898,6 +898,14 @@ table td:first-child {
   pointer-events: none;
 }
 
+/* Open scheduler-job targets (drawOpenTargets) — last in DOM order, on top of everything else
+ * plain-canvas-drawn, same reasoning as the horizon canvas's own comment. */
+.sky-map-targets-canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
 /* One canvas for every footprint (see drawAstrobinFootprints in SkyMapCard.tsx) instead of one
  * absolutely-positioned element each — pointer-events: none so Aladin's own drag/zoom handling
  * underneath keeps receiving mouse events; clicks are resolved by hand in SkyMapCard's own click

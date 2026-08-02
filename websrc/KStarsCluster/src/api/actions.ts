@@ -1,3 +1,5 @@
+import type { SchedulerJob } from './types';
+
 export async function runAction(path: string): Promise<unknown> {
   const res = await fetch(`/cmd/${path}`);
   const text = await res.text();
@@ -6,6 +8,15 @@ export async function runAction(path: string): Promise<unknown> {
   } catch {
     return text;
   }
+}
+
+/** Parses the .esl file KStarsClusterServer is configured to load (see its own loadSchedule
+ * field) straight off disk, rather than asking a running Ekos scheduler — used by the Sky Map's
+ * "open targets" overlay when Ekos isn't up to ask live (see StatusSnapshot.ekosReady). A
+ * freshly-parsed job has no run history, so every job comes back state 0 (JOB_IDLE). */
+export async function fetchScheduleFileJobs(): Promise<SchedulerJob[]> {
+  const jobs = await runAction('scheduleFile');
+  return Array.isArray(jobs) ? (jobs as SchedulerJob[]) : [];
 }
 
 export const actions = {

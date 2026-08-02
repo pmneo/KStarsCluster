@@ -133,6 +133,8 @@ export function App() {
             <SkyMapCard
               mountCoords={status.mountCoords}
               activeJob={status.activeJob}
+              jobs={status.jobs}
+              ekosReady={status.ekosReady}
               fov={status.fov}
               pa={status.alignment?.pa}
               lastImageFilename={getLastImageFilename(status)}
