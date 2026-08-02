@@ -14,11 +14,15 @@ declare global {
   }
 }
 
-/** The parallactic angle — the angle at a sky point between the direction to the north celestial
- * pole and the direction to the zenith, standard spherical-astronomy formula (e.g. Meeus,
- * "Astronomical Algorithms" ch.14). Feeding `-parallacticAngleDeg(...)` into aladin.setRotation()
- * turns Aladin's default celestial-north-up view into a zenith-up one, frame by frame — see the
- * "Zenith lock" checkbox and its own effect below. */
+/** EXPERIMENTAL (see SkyMapCardExperiment's own top-of-file note): the parallactic angle — the
+ * angle at a sky point between the direction to the north celestial pole and the direction to the
+ * zenith, standard spherical-astronomy formula (e.g. Meeus, "Astronomical Algorithms" ch.14).
+ * Feeding `-parallacticAngleDeg(...)` into aladin.setRotation() (confirmed present in the vendored
+ * build — see AGENT_NOTES/session context) is the untested hypothesis this experiment exists to
+ * verify: that it turns Aladin's default celestial-north-up view into a zenith-up one, frame by
+ * frame, without needing to fork Aladin at all. Sign/offset needs empirical confirmation (see the
+ * "Zenith lock" checkbox and its own effect below) — this is deliberately kept local to the
+ * experiment rather than promoted to coordinates.ts until that's verified. */
 function parallacticAngleDeg(raDeg: number, decDeg: number, latDeg: number, lonDeg: number, dateMs: number): number {
   const toRad = (d: number) => (d * Math.PI) / 180;
   const toDeg = (r: number) => (r * 180) / Math.PI;
@@ -33,9 +37,9 @@ function parallacticAngleDeg(raDeg: number, decDeg: number, latDeg: number, lonD
   return toDeg(q);
 }
 
-/** Standard tangent-plane (gnomonic/TAN) coordinates of (ra,dec) relative to a projection center
- * (ra0,dec0), in degrees — flat there even though RA/Dec itself isn't, which is what makes it
- * useful as an interpolation space (see tangentPlaneCenter and computeFootprintMesh below).
+/** EXPERIMENTAL (see "AstroBin as WCS images" checkbox below): standard tangent-plane (gnomonic/
+ * TAN) coordinates of (ra,dec) relative to a projection center (ra0,dec0), in degrees — the
+ * intermediate "xi,eta" used to build a WCS header from known sky corners (see wcsFromCorners).
  * Standard formula, e.g. Calabretta & Greisen 2002 ("Representations of celestial coordinates in
  * FITS"), eq. for the gnomonic (TAN) projection. */
 function gnomonicXiEta(raDeg: number, decDeg: number, ra0Deg: number, dec0Deg: number): [number, number] {
@@ -53,7 +57,7 @@ function gnomonicXiEta(raDeg: number, decDeg: number, ra0Deg: number, dec0Deg: n
 
 /** Inverse of gnomonicXiEta: recovers (ra,dec) from tangent-plane offsets (xi,eta, in degrees)
  * relative to a projection center (ra0,dec0). Standard TAN-projection inverse (Calabretta &
- * Greisen 2002). */
+ * Greisen 2002). Used only to re-derive a corrected projection center below — see its call site. */
 function invGnomonic(xiDeg: number, etaDeg: number, ra0Deg: number, dec0Deg: number): [number, number] {
   const toRad = (d: number) => (d * Math.PI) / 180;
   const toDeg = (r: number) => (r * 180) / Math.PI;
@@ -69,16 +73,83 @@ function invGnomonic(xiDeg: number, etaDeg: number, ra0Deg: number, dec0Deg: num
   return [((toDeg(ra) % 360) + 360) % 360, toDeg(dec)];
 }
 
+/** EXPERIMENTAL: builds a TAN WCS header (the format aladin.js's A.image({wcs: ...}) expects) from
+ * 4 known sky corners — same order footprintCorners() already returns (top-left/top-right/
+ * bottom-right/bottom-left) — and the loaded thumbnail's own pixel dimensions. Solved directly
+ * from the corner correspondences (pixel <-> tangent-plane degrees) rather than separately
+ * extracting a center/width/height/rotation and re-deriving a CD matrix from those: the 4
+ * thumbnail pixel corners are, by construction, an axis-aligned rectangle in the image's own pixel
+ * space regardless of how the sky rectangle they depict is rotated, so TL→TR gives column 1 of
+ * the CD matrix and TL→BL gives column 2 directly, no general least-squares needed. Works
+ * uniformly for both AstrobinFootprint shapes (real per-corner solves and the ra/dec/width/height/
+ * orientation fallback) since both already funnel through the same footprintCorners(). */
 // The true rectangle center is the midpoint of the TL-BR diagonal — but only in the tangent
-// (xi,eta) plane, not in plain RA/Dec: naive (a+b)/2 on RA/Dec breaks across the RA=0/360 wrap
-// (common near a celestial pole, where a modest physical FOV can span most of the RA range), and
-// is measurably off even after unwrapping, since RA/Dec isn't a flat coordinate system. Fixed by
-// projecting the TL/BR corners relative to one of them (an arbitrary nearby reference), averaging
-// *there* (a flat plane, so plain averaging is correct), then inverting back to RA/Dec.
+// (xi,eta) plane, not in plain RA/Dec: naive (a+b)/2 on RA/Dec doesn't just break across the
+// RA=0/360 wrap (it does — confirmed near this celestial pole, where a modest physical FOV spans
+// most of the RA range), it's also measurably off *even after* unwrapping, since RA/Dec isn't a
+// flat coordinate system. Confirmed empirically on a real footprint: naive averaging placed the
+// projection center ~0.35° of RA (~0.1° on the sky at this corner's declination) from the true
+// tangent-plane center, which alone accounted for the whole "orientation's right, but it's shifted
+// by a few pixels" symptom — exactly matching the predicted pixel offset at this footprint's plate
+// scale. Fixed by projecting the TL/BR corners relative to one of them (an arbitrary nearby
+// reference), averaging *there* (a flat plane, so plain averaging is correct), then inverting back
+// to RA/Dec to get the real center.
 function tangentPlaneCenter(aDeg: [number, number], cDeg: [number, number]): [number, number] {
   const [xiA, etaA] = gnomonicXiEta(aDeg[0], aDeg[1], aDeg[0], aDeg[1]);
   const [xiC, etaC] = gnomonicXiEta(cDeg[0], cDeg[1], aDeg[0], aDeg[1]);
   return invGnomonic((xiA + xiC) / 2, (etaA + etaC) / 2, aDeg[0], aDeg[1]);
+}
+
+function wcsFromCorners(corners: [number, number][], naturalWidth: number, naturalHeight: number) {
+  const [ra0, dec0] = tangentPlaneCenter(corners[0], corners[2]);
+  const [xiTL, etaTL] = gnomonicXiEta(corners[0][0], corners[0][1], ra0, dec0);
+  const [xiTR, etaTR] = gnomonicXiEta(corners[1][0], corners[1][1], ra0, dec0);
+  const [xiBL, etaBL] = gnomonicXiEta(corners[3][0], corners[3][1], ra0, dec0);
+
+  // FITS pixel convention: 1-indexed, row 1 at the *bottom* of the image (unlike a raster image's
+  // own top-down row order) — confirmed empirically: without negating this column, a real
+  // registered image came out horizontally mirrored (verified via side-by-side pixel crop against
+  // the known-correct canvas rendering; the footprint under test happened to be rotated close to
+  // 90° on the sky, which turns a pixel-row/Y-axis convention mismatch into what reads on screen as
+  // a left-right flip rather than the up-down one it actually is). So pixel row 1 is the thumbnail's
+  // own BOTTOM edge (this footprint's BL/TL corners, not TL/BL) — TL sits at (-halfW, +halfH).
+  const crpix1 = (naturalWidth + 1) / 2;
+  const crpix2 = (naturalHeight + 1) / 2;
+  // The sky corners are the image's true outer edge, not the *center* of its edge pixels — FITS
+  // pixel N is centered at coordinate N and spans [N-0.5, N+0.5], so the whole image spans [0.5,
+  // width+0.5], not [1, width]. Using the latter (as an earlier version of this did) put every
+  // corner half a pixel short of the true edge on both sides, small enough to read as "close but a
+  // few pixels off" rather than grossly wrong — confirmed by the residual offset against stars
+  // visible through the (now correctly un-mirrored) image not lining up with the survey underneath.
+  const halfW = naturalWidth / 2;
+  const halfH = naturalHeight / 2;
+
+  return {
+    CTYPE1: 'RA---TAN',
+    CTYPE2: 'DEC--TAN',
+    CRVAL1: ra0,
+    CRVAL2: dec0,
+    CRPIX1: crpix1,
+    CRPIX2: crpix2,
+    CD1_1: (xiTR - xiTL) / (2 * halfW),
+    CD2_1: (etaTR - etaTL) / (2 * halfW),
+    CD1_2: -(xiBL - xiTL) / (2 * halfH),
+    CD2_2: -(etaBL - etaTL) / (2 * halfH),
+    NAXIS: 2,
+    NAXIS1: naturalWidth,
+    NAXIS2: naturalHeight,
+    // Tested aladin-lite issue #342 ("Scale issue with setOverlayImageLayer") as the cause of a
+    // ~20-25% uniform render-size shrink by omitting NAXIS1/2 here (letting Aladin's own decoded
+    // img.width/height fill in via its `wcs.NAXIS1 = wcs.NAXIS1 || img.width`) — no change in the
+    // rendered size resulted, so that issue isn't what's happening here; still unresolved.
+  };
+}
+
+/** EXPERIMENTAL: A.image's imgFormat option ('jpeg'|'png') from the thumbnail URL's own extension
+ * — AstroBin's CDN serves both (see the real thumbnailUrl values fetched from /astrobin/footprints),
+ * ignoring any `?v=...` cache-busting query string. */
+function guessImgFormat(url: string): 'jpeg' | 'png' {
+  return new URL(url).pathname.toLowerCase().endsWith('.png') ? 'png' : 'jpeg';
 }
 
 /** Shared by a single grid/loop pass — counts how many projection calls actually threw (as
@@ -593,19 +664,19 @@ function drawGearButton(ctx: CanvasRenderingContext2D, gx: number, gy: number, s
 // 4x4 (16-cell, 32-triangle) mesh per footprint — enough to make the curvature a real WCS
 // reprojection would show visible at these field sizes, cheap enough that even a few dozen
 // simultaneously-visible footprints (the realistic case — off-screen ones are already filtered
-// out by drawAstrobinFootprints before this runs) stays well under a frame budget.
+// out by drawAstrobinFootprints before this runs) stays well under a frame budget. Contrast with
+// registering every footprint as its own Aladin image layer (see wcsImageTest's own comment): that
+// scaled with the *total* registered count, O(n²) and unusable past ~50; this scales with however
+// many are on screen right now times a fixed 32 triangles, however large the gallery gets.
 const ASTROBIN_MESH_GRID_SIZE = 4;
 
 /** Bilinearly interpolates within the sky-tangent-plane (xi,eta) coordinates of a footprint's 4
- * corners — flat there even though RA/Dec itself isn't, same reasoning as tangentPlaneCenter's own
+ * corners — flat there even though RA/Dec itself isn't, same reasoning as wcsFromCorners's own
  * comment — then projects each interpolated point to screen via world2pix. An NxN grid built this
  * way closely tracks the true curve a real per-pixel WCS reprojection would show for a field this
- * small, without needing Aladin's own image-layer pipeline at all (registering every footprint as
- * its own Aladin image layer scales O(n²) with the total registered count and becomes unusable
- * past ~50 simultaneous layers; this scales with however many are on screen right now times a
- * fixed 32 triangles, however large the gallery gets). Returns null wholesale only if the
- * tangent-plane center itself is degenerate; individual unprojectable grid points (e.g. right at
- * an all-sky projection's edge) instead leave a null hole in the returned grid, which
+ * small, without needing Aladin's own image-layer pipeline at all. Returns null wholesale only if
+ * the tangent-plane center itself is degenerate; individual unprojectable grid points (e.g. right
+ * at an all-sky projection's edge) instead leave a null hole in the returned grid, which
  * drawImageMesh/drawMeshOutline skip over rather than failing the whole footprint. */
 function computeFootprintMesh(
   aladin: any, corners: [number, number][], gridSize: number,
@@ -1196,7 +1267,7 @@ function buildImageSurvey(survey: SurveyOption) {
   return survey.builtin;
 }
 
-export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename }: Props) {
+export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImageFilename }: Props) {
   const cardRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayImgRef = useRef<HTMLImageElement>(null);
@@ -1247,13 +1318,24 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   // forget about it" toggles, so a reload silently reverting them is more surprising than useful.
   const [showLastImage, setShowLastImage] = useState(() => readStoredBoolean(SHOW_LAST_IMAGE_KEY));
   const [followMount, setFollowMount] = useState(() => readStoredBoolean(FOLLOW_MOUNT_KEY));
-  // Not persisted — a stale zenith-locked view from a past session is more disorienting to reload
-  // into than starting back at the usual celestial-north-up default every time.
+  // EXPERIMENTAL — not persisted, this whole feature is a throwaway test of whether
+  // aladin.setRotation() can fake a zenith-up ("Horizontal mode") view. See parallacticAngleDeg's
+  // own comment.
   const [zenithLock, setZenithLock] = useState(false);
   const zenithLockRef = useRef(zenithLock);
   zenithLockRef.current = zenithLock;
   const observatoryInfoRef = useRef<ObservatoryInfo | null>(null);
   const horizonTimeRef = useRef(Date.now());
+  // EXPERIMENTAL — see wcsFromCorners's own comment: registers a handful of AstroBin thumbnails as
+  // real WCS-projected Aladin image layers (properly warped by Aladin's own sky-sphere renderer)
+  // instead of the production canvas's rigid rotated rectangles, to test both whether that curves
+  // correctly and whether many simultaneous image layers stay performant.
+  const [wcsImageTest, setWcsImageTest] = useState(false);
+  const wcsImageLayerNamesRef = useRef<Set<string>>(new Set());
+  // A graphic overlay drawing each WCS test image's own real sky corners as a polygon — unlike the
+  // canvas rectangle border, this is projected by Aladin itself alongside the image, so it bends
+  // the same way the image does under non-gnomonic projections instead of staying a rigid rectangle.
+  const wcsImageBorderOverlayRef = useRef<any>(null);
   const [showNgc, setShowNgc] = useState(() => readStoredBoolean(SHOW_NGC_KEY));
   const [showSh2, setShowSh2] = useState(() => readStoredBoolean(SHOW_SH2_KEY));
   const [showAstrobin, setShowAstrobin] = useState(() => readStoredBoolean(SHOW_ASTROBIN_KEY));
@@ -1268,7 +1350,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   const [horizonTime, setHorizonTime] = useState(() => Date.now());
   const [observatoryInfo, setObservatoryInfo] = useState<ObservatoryInfo | null>(null);
   // Kept live for the poll-loop effect below (whose closure only runs once, deps [ready]) to read
-  // without needing to be in that effect's own dependency array.
+  // without needing to be in that effect's own dependency array — see zenithLock's own comment.
   horizonTimeRef.current = horizonTime;
   observatoryInfoRef.current = observatoryInfo;
   const [artificialHorizon, setArtificialHorizon] = useState<ArtificialHorizonRegion[]>([]);
@@ -1502,6 +1584,7 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
         log: false,
       });
       aladinRef.current = aladin;
+      (window as any).__debugAladin = aladin;
       appliedSurveyIdRef.current = defaultSurvey.id;
 
       const mountCat = window.A.catalog({ name: 'mount', sourceSize: 20, color: '#4ade80' });
@@ -1926,11 +2009,11 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
           if (fovChanged) scheduleResync();
         }
 
-        // Zenith-lock: recomputed every frame the view actually has a center (cheap: one
-        // setRotation() matrix update), not gated on the ra/dec-changed branch above, since the
-        // parallactic angle also drifts with time alone even while the view sits still (real
-        // sidereal motion) — though horizonTime here only advances when the user moves "Simulate
-        // at"/clicks "Now", not on a real-time clock.
+        // EXPERIMENTAL zenith-lock — see parallacticAngleDeg's own comment. Recomputed every frame
+        // the view actually has a center (cheap: one setRotation() matrix update), not gated on the
+        // ra/dec-changed branch above, since the parallactic angle also drifts with time alone even
+        // while the view sits still (real sidereal motion) — though horizonTime here only advances
+        // when the user moves "Simulate at"/clicks "Now", not on a real-time clock.
         const info = observatoryInfoRef.current;
         if (zenithLockRef.current && info && isValidLocation(info)) {
           const q = parallacticAngleDeg(ra, dec, info.latitude, info.longitude, horizonTimeRef.current);
@@ -2016,11 +2099,11 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     writeStoredBoolean(SHOW_TERRAIN_KEY, showTerrain);
   }, [showTerrain]);
 
-  // Fetched at most once, unconditionally on mount rather than gated behind showHorizon — the
-  // zenith-lock toggle also needs observatoryInfo's lat/lon, and shouldn't require enabling
-  // "Horizon" just to unlock it. Cheap, small, one-time fetch either way (location/artificial-
-  // horizon only ever change if the user reconfigures KStars itself), same reasoning as the
-  // NGC/Sh2 catalogs below.
+  // Fetched at most once, unconditionally on mount rather than gated behind showHorizon (unlike
+  // the production SkyMapCard) — the EXPERIMENTAL zenith-lock toggle also needs observatoryInfo's
+  // lat/lon, and shouldn't require enabling "Horizon" just to unlock it. Cheap, small, one-time
+  // fetch either way (location/artificial-horizon only ever change if the user reconfigures KStars
+  // itself), same reasoning as the NGC/Sh2 catalogs below.
   useEffect(() => {
     if (observatoryFetchedRef.current) return;
     observatoryFetchedRef.current = true;
@@ -2118,6 +2201,54 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       .catch(() => { /* AstroBin unreachable — leave the toggle checked but nothing drawn, no retry loop */ });
   }, [showAstrobin]);
 
+  // EXPERIMENTAL — see wcsImageTest's own declaration comment. Deliberately capped (WCS_IMAGE_TEST_
+  // COUNT) rather than trying all ~250 footprints: this is a first spike to see whether Aladin's
+  // own image-layer rendering (a) actually curves the thumbnail with the projection the way a rigid
+  // canvas rectangle can't, and (b) stays responsive with many simultaneous layers, before deciding
+  // whether to push further. Registers once footprints are loaded and doesn't re-run per redraw —
+  // each layer is genuinely a persistent Aladin object (like a HiPS survey layer), not something
+  // this repaints by hand every frame the way the canvas approach does.
+  useEffect(() => {
+    const aladin = aladinRef.current;
+    if (!wcsImageTest || !ready || !aladin || !astrobinFootprints) return;
+
+    // Dropped from 20 to 3 after 20 simultaneous layers crashed the whole browser tab in testing —
+    // start small and work back up once it's clear what the real ceiling is.
+    const WCS_IMAGE_TEST_COUNT = 3;
+    let cancelled = false;
+
+    // Real sky-projected border (see wcsImageBorderOverlayRef's own comment) — one overlay shared
+    // by all test images, cleared and rebuilt alongside them rather than per-image, since Aladin
+    // has no per-shape removal API (only whole-overlay .hide()/.removeAll(), see below).
+    const borderOverlay = window.A.graphicOverlay({ color: '#22d3ee', lineWidth: 2 });
+    aladin.addOverlay(borderOverlay);
+    wcsImageBorderOverlayRef.current = borderOverlay;
+
+    const targets = astrobinFootprints.slice(0, WCS_IMAGE_TEST_COUNT);
+    targets.forEach((f, i) => {
+      const img = new Image();
+      img.onload = () => {
+        if (cancelled) return;
+        const corners = footprintCorners(f);
+        const wcs = wcsFromCorners(corners, img.naturalWidth, img.naturalHeight);
+        const layerName = `wcs-test-${i}-${f.hash}`;
+        const aladinImage = window.A.image(f.thumbnailUrl, { name: layerName, imgFormat: guessImgFormat(f.thumbnailUrl), wcs });
+        aladin.setOverlayImageLayer(aladinImage, layerName);
+        wcsImageLayerNamesRef.current.add(layerName);
+        borderOverlay.add(window.A.polygon(corners));
+      };
+      img.src = f.thumbnailUrl;
+    });
+
+    return () => {
+      cancelled = true;
+      wcsImageLayerNamesRef.current.forEach((name) => aladin.removeImageLayer(name));
+      wcsImageLayerNamesRef.current.clear();
+      borderOverlay.removeAll();
+      wcsImageBorderOverlayRef.current = null;
+    };
+  }, [wcsImageTest, astrobinFootprints, ready]);
+
   useEffect(() => {
     function onFullscreenChange() {
       setIsFullscreen(document.fullscreenElement === cardRef.current);
@@ -2175,14 +2306,23 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             />
             Follow mount
           </label>
-          <label className="sky-map-toggle" title="Locks the view to zenith-up (Horizontal mode) instead of celestial-north-up, so the sky's actual drift during a session stays legible">
+          <label className="sky-map-toggle" title="Experimental: aladin.setRotation() to fake a zenith-up view">
             <input
               type="checkbox"
               checked={zenithLock}
               onChange={(e) => setZenithLock(e.target.checked)}
               disabled={!observatoryInfo || !isValidLocation(observatoryInfo)}
             />
-            Zenith lock
+            Zenith lock (exp.)
+          </label>
+          <label className="sky-map-toggle" title="Experimental: register a handful of AstroBin thumbnails as real WCS image layers instead of rigid canvas rectangles">
+            <input
+              type="checkbox"
+              checked={wcsImageTest}
+              onChange={(e) => setWcsImageTest(e.target.checked)}
+              disabled={!astrobinFootprints}
+            />
+            AstroBin as WCS images (exp.)
           </label>
           <label className="sky-map-toggle">
             <input
