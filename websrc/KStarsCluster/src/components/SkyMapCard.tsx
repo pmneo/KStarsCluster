@@ -151,6 +151,15 @@ function SlidersIcon() {
   );
 }
 
+function LockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="11" width="14" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </svg>
+  );
+}
+
 function CrosshairIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -1785,6 +1794,11 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
   // altitude samples across 24h) are not, so both only recompute once the view has settled.
   const [planningFovCenter, setPlanningFovCenter] = useState<{ ra: number; dec: number } | null>(null);
   const planningFovCenterDebounceRef = useRef<number | undefined>(undefined);
+  // Not persisted — like hiddenAstrobinUrls, this is a per-session pin on a specific spot rather
+  // than a durable preference, and a stale locked target reappearing on a future, unrelated
+  // session would be more confusing than useful.
+  const [planningFovLocked, setPlanningFovLocked] = useState(false);
+  const planningFovLockedCenterRef = useRef<{ ra: number; dec: number } | null>(null);
   const [sensorConfigOpen, setSensorConfigOpen] = useState(false);
   const sensorConfigRef = useRef<HTMLDivElement>(null);
   const planningFovWidthArcmin = sensorFovArcmin(sensorWidthPx, pixelSizeUm, focalLengthMm);
@@ -2100,7 +2114,20 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
       if (planningOverlay) {
         planningOverlay.removeAll();
         if (planningFovEnabled) {
-          const [centerRa, centerDec] = aladin.getRaDec();
+          // Locked: stays wherever it was pinned (see togglePlanningFovLock) instead of following
+          // the view — panning/zooming around a locked framing to check what's nearby no longer
+          // drags the framing itself along.
+          let centerRa: number;
+          let centerDec: number;
+          if (planningFovLockedCenterRef.current) {
+            ({ ra: centerRa, dec: centerDec } = planningFovLockedCenterRef.current);
+          } else {
+            [centerRa, centerDec] = aladin.getRaDec();
+            window.clearTimeout(planningFovCenterDebounceRef.current);
+            planningFovCenterDebounceRef.current = window.setTimeout(() => {
+              setPlanningFovCenter({ ra: centerRa, dec: centerDec });
+            }, 200);
+          }
           const corners = fovCorners(
             centerRa,
             centerDec,
@@ -2109,11 +2136,6 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
             planningFovRotationDeg,
           );
           planningOverlay.add(window.A.polygon(corners));
-
-          window.clearTimeout(planningFovCenterDebounceRef.current);
-          planningFovCenterDebounceRef.current = window.setTimeout(() => {
-            setPlanningFovCenter({ ra: centerRa, dec: centerDec });
-          }, 200);
         }
       }
 
@@ -2521,6 +2543,16 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     writeStoredBoolean(PLANNING_FOV_ENABLED_KEY, planningFovEnabled);
   }, [planningFovEnabled]);
 
+  // Turning Planning FOV off and back on starts fresh (following the view again) rather than
+  // silently resuming at whatever spot was locked last time — the lock is a "working on this one
+  // right now" pin, not a setting that should survive the feature itself being toggled off.
+  useEffect(() => {
+    if (!planningFovEnabled) {
+      setPlanningFovLocked(false);
+      planningFovLockedCenterRef.current = null;
+    }
+  }, [planningFovEnabled]);
+
   // The Planning FOV target's diurnal path — every point sharing its declination, at every RA
   // (Earth's rotation carries the target along this exact circle over the course of a day, even
   // though its own RA/Dec never changes; what changes is which part of the circle is above the
@@ -2682,6 +2714,25 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
     }
   }
 
+  // Locking pins the framing at whatever the view center happens to be right now (captured
+  // immediately, not waiting for the usual 200ms debounce — the user just asked for this exact
+  // spot); unlocking clears the pin so redraw() goes back to reading aladin.getRaDec() live.
+  function togglePlanningFovLock() {
+    setPlanningFovLocked((locked) => {
+      if (locked) {
+        planningFovLockedCenterRef.current = null;
+        return false;
+      }
+      const aladin = aladinRef.current;
+      if (aladin) {
+        const [ra, dec] = aladin.getRaDec();
+        planningFovLockedCenterRef.current = { ra, dec };
+        setPlanningFovCenter({ ra, dec });
+      }
+      return true;
+    });
+  }
+
   // The overlay used DEFAULT_STRETCH (a no-op linear passthrough) unconditionally, so "last
   // image" always rendered essentially unstretched instead of matching what the image strip
   // shows for the same file. Cached per filename like ImageStrip's own requests — a 404 (e.g. a
@@ -2812,6 +2863,12 @@ export function SkyMapCard({ mountCoords, activeJob, fov, pa, lastImageFilename 
               </div>
             )}
           </div>
+          <IconToggleButton
+            active={planningFovLocked}
+            onToggle={togglePlanningFovLock}
+            title={planningFovLocked ? 'Unlock — resume following the view center' : 'Lock — pin the framing here instead of following the view center'}
+            icon={<LockIcon />}
+          />
           <label>
             Rotation
             <input
