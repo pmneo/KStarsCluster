@@ -1,0 +1,161 @@
+package de.pmneo.kstars;
+
+import java.net.URI;
+import java.net.URL;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.Callable;
+
+import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.servlet.DefaultServlet;
+import org.eclipse.jetty.servlet.ServletContextHandler;
+import org.eclipse.jetty.util.resource.Resource;
+import org.eclipse.jetty.util.thread.QueuedThreadPool;
+import org.eclipse.jetty.websocket.jakarta.server.config.JakartaWebSocketServletContainerInitializer;
+
+import com.sampullara.cli.Args;
+import com.sampullara.cli.Argument;
+
+import de.pmneo.kstars.web.AllskyProxyServlet;
+import de.pmneo.kstars.web.AstrobinProxyServlet;
+import de.pmneo.kstars.web.CommandServlet;
+import de.pmneo.kstars.web.HipsProxyServlet;
+import de.pmneo.kstars.web.ImageServlet;
+import de.pmneo.kstars.web.ObservatoryServlet;
+import de.pmneo.kstars.web.LoggingSocket;
+import de.pmneo.kstars.web.StatusSocket;
+
+
+public class ServerRunner {
+		
+	@Argument(alias = "wp", required = false)
+	public static int webPort = 9080;
+	
+	@Argument(alias = "p", required = false)
+	public static int port = 8888;
+
+	@Argument(alias = "pc", required = false)
+	public static int preCoolTemp = -15;
+
+	@Argument(alias = "rc", required = false)
+	public static int requiredCameras = 2;
+
+	@Argument(alias = "rfw", required = false)
+	public static int requiredFilterWheels = 1;
+
+	@Argument(alias = "rr", required = false)
+	public static int requiredRotators = 2;
+
+	@Argument(alias = "rcap", required = false)
+	public static int requiredCaps = 2;
+
+	@Argument(alias = "rlb", required = false)
+	public static int requiredLightBoxes = 2;
+
+	@Argument(alias = "ls", required = false )
+	public static String loadSchedule = "~/current_schedule.esl";
+
+	@Argument(alias = "lc", required = false )
+	public static String loadSequence = "~/current_sequence.esq";
+
+	public static class BooleanProvider implements Callable< List<String> > {
+		@Override
+		public List<String> call() throws Exception {
+			return Arrays.asList( "true", "false" );
+		}
+	}
+	
+	@Argument(alias = "h", required = false)
+	public static String host;
+		
+	@Argument(alias = "a", required = false, valuesProvider = BooleanProvider.class )
+	public static String autoFocus = "true";
+	
+	public static void main(String[] args) throws Exception {
+		Args.parseOrExit(ServerRunner.class, args);
+		
+		KStarsCluster cluster = null;
+
+		if( host != null && host.isEmpty() == false ) {
+			KStarsClusterClient client = new KStarsClusterClient( host, port );
+			client.setAutoFocuseEnabled( Boolean.valueOf(autoFocus).booleanValue() );
+			client.setCaptureSequence( loadSequence );
+			cluster = client;
+		}
+		else {
+			KStarsClusterServer server = new KStarsClusterServer(port);
+			server.setLoadSchedule( loadSchedule );
+			cluster = server;
+		}
+
+		cluster.setPreCoolTemp(preCoolTemp);
+		cluster.setRequiredCameras(requiredCameras);
+		cluster.setRequiredFilterWheels(requiredFilterWheels);
+		cluster.setRequiredRotators(requiredRotators);
+		cluster.setRequiredCaps(requiredCaps);
+		cluster.setRequiredLightBoxes(requiredLightBoxes);
+		cluster.start();
+
+		startServer( cluster );
+
+		cluster.listen();
+	}
+
+	public static void startServer( KStarsCluster cluster ) throws Exception
+    {
+        // Jetty's bare default (new Server(port)) keeps only 8 threads warm — a burst of
+        // requests that each block on outbound I/O (sky map tile proxying, the allsky camera
+        // widgets) forces it to spin up more on demand, showing up as latency spikes. 200 max
+        // is still Jetty's own default (already generous for this app); just keeping more
+        // threads warm by default.
+        QueuedThreadPool threadPool = new QueuedThreadPool( 200, 20 );
+        Server server = new Server( threadPool );
+
+        ServerConnector connector = new ServerConnector( server );
+        connector.setPort( webPort );
+        server.addConnector( connector );
+
+        // The web UI (websrc/KStarsCluster, a Vite/React app) builds straight into this
+        // classpath location — see its vite.config.ts. Iterate on it with `npm run dev`
+        // (proxies /cmd, /logging, /status to this server) instead of rebuilding the jar.
+        URL webRootLocation = ServerRunner.class.getResource("/web/index.html");
+        if (webRootLocation == null)
+        {
+            throw new IllegalStateException("Unable to determine webroot URL location");
+        }
+
+        URI webRootUri = URI.create( webRootLocation.toURI().toASCIIString().replaceFirst("/index.html$", "/") );
+        System.err.printf("Web Root URI: %s%n", webRootUri);
+
+        ServletContextHandler contextHandler = new ServletContextHandler();
+        contextHandler.setContextPath("/");
+        contextHandler.setBaseResource(Resource.newResource(webRootUri));
+        contextHandler.setWelcomeFiles(new String[]{"index.html"});
+
+		contextHandler.setAttribute( "cluster", cluster );
+
+        contextHandler.getMimeTypes().addMimeMapping("txt", "text/plain;charset=utf-8");
+
+        server.setHandler(contextHandler);
+
+        // Add WebSocket endpoints
+        JakartaWebSocketServletContainerInitializer.configure(contextHandler, (context, wsContainer) -> {
+            wsContainer.addEndpoint(LoggingSocket.class);
+            wsContainer.addEndpoint(StatusSocket.class);
+        } );
+
+        // Add Servlet endpoints
+
+		contextHandler.addServlet(CommandServlet.class, "/cmd/*");
+        contextHandler.addServlet(HipsProxyServlet.class, "/hips/*");
+        contextHandler.addServlet(AstrobinProxyServlet.class, "/astrobin/*");
+        contextHandler.addServlet(AllskyProxyServlet.class, "/allsky/*");
+        contextHandler.addServlet(ImageServlet.class, "/images/*");
+        contextHandler.addServlet(ObservatoryServlet.class, "/observatory/*");
+        contextHandler.addServlet(DefaultServlet.class, "/");
+
+        // Start Server
+        server.start();
+    }
+}
