@@ -1,6 +1,6 @@
 import type { SchedulerJob } from '../api/types';
 import type {
-  ObservatoryInfo, ArtificialHorizonRegion, AstrobinFootprint, AstrobinImageDetail,
+  ObservatoryInfo, ArtificialHorizonRegion, AstrobinFootprint, AstrobinImageDetail, SurveyOption,
 } from './types';
 
 /** Everything SkyMapCard needs that's specific to *where it's deployed* — a live KStarsCluster
@@ -20,4 +20,9 @@ export interface SkyMapDataSource {
   /** The "open targets" overlay's Ekos-off path — see isOpenSchedulerJob's own comment in
    * SkyMapCard.tsx for why every job returned here counts as open by construction. */
   getScheduleFileJobs(): Promise<SchedulerJob[]>;
+  /** The palette picker's own list — static config, not a fetch, but still deployment-specific:
+   * every custom entry's URL only makes sense relative to wherever its own HiPS tiles actually
+   * live (see buildImageSurvey in SkyMapCard.tsx, which resolves it relative to the current
+   * origin). */
+  getSurveys(): SurveyOption[];
 }

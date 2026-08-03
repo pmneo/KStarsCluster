@@ -11,6 +11,16 @@ export interface ArtificialHorizonRegion {
   points: { az: number; alt: number }[];
 }
 
+/** One entry in the palette picker — either a real public HiPS survey (`builtin`, an ID Aladin's
+ * own CDS registry already knows) or a custom HiPS tree at `custom.url` (resolved relative to
+ * wherever the app is hosted — see buildImageSurvey). */
+export interface SurveyOption {
+  id: string;
+  label: string;
+  builtin?: string;
+  custom?: { url: string; frame: string; order: number };
+}
+
 export interface AstrobinFootprintBase {
   title: string;
   hash: string;

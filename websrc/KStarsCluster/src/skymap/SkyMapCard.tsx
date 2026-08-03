@@ -5,7 +5,7 @@ import { altAzToRaDec, raDecToAltAz, getLocalSiderealTime } from './coordinates'
 import { isValidLocation } from './horizonApi';
 import type { SkyMapDataSource } from './dataSource';
 import type {
-  ObservatoryInfo, ArtificialHorizonRegion, AstrobinFootprint,
+  ObservatoryInfo, ArtificialHorizonRegion, AstrobinFootprint, SurveyOption,
   ConstellationLineFeature, ConstellationBoundaryFeature,
 } from './types';
 import './SkyMap.css';
@@ -455,40 +455,6 @@ function VisibilityChart({
     </svg>
   );
 }
-
-interface SurveyOption {
-  id: string;
-  label: string;
-  builtin?: string;
-  custom?: { url: string; frame: string; order: number };
-}
-
-/** Custom entries verified against each survey's own HiPS `properties` file (frame/order/tile format).
- * None of the NSNS palette entries are real simg.de surveys — simg.de only publishes single-channel
- * Hα/[OIII]/[SII] HiPS (starless) and its own fixed-mapping combos (ohs8/hbr8/rgb8, not starless).
- * Our own backend (HipsProxyServlet, /hips/*) builds the palettes two different ways depending on
- * which of those two source kinds it starts from — see the servlet's javadoc:
- *  - "sho"/"hso" re-permute ohs8's own channels, so they keep ohs8's stars.
- *  - "sho-sl"/"hso-sl"/"ohs-sl" recombine the starless single-channel surveys from scratch, so
- *    they're starless too (the "-sl" suffix).
- * Every other NSNS entry also goes through our backend (/hips/{survey}/*, straight passthrough)
- * rather than simg.de directly — same HipsProxyServlet, just caching each tile instead of
- * recombining it, so repeat pans/zooms don't keep re-hitting simg.de's server.
- * SHO is listed first — it's the default survey (see surveyId's initial state below). */
-const SURVEYS: SurveyOption[] = [
-  { id: 'nsns-sho', label: 'NSNS SHO (Hubble palette)', custom: { url: '/hips/sho', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-hso', label: 'NSNS HSO (Hα/[SII]/[OIII])', custom: { url: '/hips/hso', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-sho-sl', label: 'NSNS SHO (starless)', custom: { url: '/hips/sho-sl', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-hso-sl', label: 'NSNS HSO (starless)', custom: { url: '/hips/hso-sl', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-ohs-sl', label: 'NSNS OHS (starless)', custom: { url: '/hips/ohs-sl', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-ohs8', label: 'NSNS [OIII]+Hα+[SII]', custom: { url: '/hips/ohs8', frame: 'equatorial', order: 6 } },
-  { id: 'dss2-color', label: 'DSS2 (color)', builtin: 'P/DSS2/color' },
-  { id: 'nsns-rgb8', label: 'NSNS RGB continuum', custom: { url: '/hips/rgb8', frame: 'equatorial', order: 5 } },
-  { id: 'nsns-hbr8', label: 'NSNS Hα + continuum (color)', custom: { url: '/hips/hbr8', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-halpha8', label: 'NSNS Hα (8-bit)', custom: { url: '/hips/halpha8', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-oiii8', label: 'NSNS [OIII] (8-bit)', custom: { url: '/hips/oiii8', frame: 'equatorial', order: 6 } },
-  { id: 'nsns-sii8', label: 'NSNS [SII] (8-bit)', custom: { url: '/hips/sii8', frame: 'equatorial', order: 6 } },
-];
 
 interface Props {
   /** Where observatory info, artificial horizon, the terrain image, AstroBin footprints, and the
@@ -1725,7 +1691,8 @@ function saveCurrentView(aladin: any) {
   }
 }
 
-/** Builds the Aladin image-survey object for a SURVEYS entry. Used both for the initial aladin()
+/** Builds the Aladin image-survey object for a survey list entry (see SkyMapDataSource.getSurveys).
+ * Used both for the initial aladin()
  * call and for later switches, so the default survey never has to be swapped in after an initial
  * builtin one — that would otherwise briefly hit alasky/CDS for properties/MocServer/tiles before
  * being replaced. `A.imageHiPS` works without an aladin instance.
@@ -1788,6 +1755,9 @@ function drawOpenTargets(
 export function SkyMapCard({
   dataSource, mountCoords, activeJob, jobs, ekosReady, fov, pa, lastImageFilename,
 }: Props) {
+  // Static for the component's lifetime (a deployment's palette list doesn't change at runtime),
+  // so this is called once here rather than re-invoked at each of its few call sites below.
+  const surveys = dataSource.getSurveys();
   const cardRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayImgRef = useRef<HTMLImageElement>(null);
@@ -1839,7 +1809,7 @@ export function SkyMapCard({
   const lastTerrainViewKeyRef = useRef<string | null>(null);
   const horizonRetryRef = useRef<number | undefined>(undefined);
   const [ready, setReady] = useState(false);
-  const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
+  const [surveyId, setSurveyId] = useState(surveys[0].id);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const paletteRef = useRef<HTMLDivElement>(null);
   // Persisted across reloads (see FOLLOW_MOUNT_KEY/SHOW_LAST_IMAGE_KEY) — both are "set once,
@@ -2149,7 +2119,7 @@ export function SkyMapCard({
   useEffect(() => {
     if (!window.A || !containerRef.current) return;
     window.A.init.then(() => {
-      const defaultSurvey = SURVEYS[0];
+      const defaultSurvey = surveys[0];
       const savedView = readStoredView();
       const aladin = window.A.aladin(containerRef.current, {
         survey: buildImageSurvey(defaultSurvey),
@@ -2197,7 +2167,7 @@ export function SkyMapCard({
   useEffect(() => {
     if (!ready || !aladinRef.current || appliedSurveyIdRef.current === surveyId) return;
     appliedSurveyIdRef.current = surveyId;
-    const survey = SURVEYS.find((s) => s.id === surveyId) ?? SURVEYS[0];
+    const survey = surveys.find((s) => s.id === surveyId) ?? surveys[0];
     aladinRef.current.setImageSurvey(buildImageSurvey(survey));
   }, [ready, surveyId]);
 
@@ -2995,14 +2965,14 @@ export function SkyMapCard({
             type="button"
             className="sky-map-icon-button"
             onClick={() => setPaletteOpen((open) => !open)}
-            title={`Palette: ${SURVEYS.find((s) => s.id === surveyId)?.label ?? ''}`}
+            title={`Palette: ${surveys.find((s) => s.id === surveyId)?.label ?? ''}`}
             aria-label="Choose palette"
           >
             <PaletteIcon />
           </button>
           {paletteOpen && (
             <div className="sky-map-palette-popup">
-              {SURVEYS.map((s) => (
+              {surveys.map((s) => (
                 <button
                   key={s.id}
                   type="button"
