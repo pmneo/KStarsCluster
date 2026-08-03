@@ -2789,10 +2789,14 @@ export function SkyMapCard({
 
   // Aladin's own built-in coordinate grid — no data to fetch, just its own show/hide toggle.
   // showLabels off: the RA/Dec labels on every gridline clutter a frame this small far more than
-  // the lines themselves do.
+  // the lines themselves do. thickness:1 is Aladin's own thinnest supported line (its default —
+  // there's no sub-1 option), and a neutral mid-gray reads as a measuring aid rather than a
+  // colored overlay competing with the actual sky content.
   useEffect(() => {
     if (!ready || !aladinRef.current) return;
-    aladinRef.current.setCooGrid({ enabled: showGrid, showLabels: false });
+    aladinRef.current.setCooGrid({
+      enabled: showGrid, showLabels: false, color: '#888888', thickness: 1,
+    });
   }, [ready, showGrid]);
 
   useEffect(() => {
