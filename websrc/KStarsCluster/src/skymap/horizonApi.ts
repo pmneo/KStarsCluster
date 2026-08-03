@@ -1,15 +1,6 @@
-export interface ObservatoryInfo {
-  latitude: number;
-  longitude: number;
-  terrainCorrectAz: number;
-  terrainCorrectAlt: number;
-  hasTerrain: boolean;
-}
+import type { ObservatoryInfo, ArtificialHorizonRegion } from './types';
 
-export interface ArtificialHorizonRegion {
-  label: string;
-  points: { az: number; alt: number }[];
-}
+export type { ObservatoryInfo, ArtificialHorizonRegion };
 
 /** -999/-999 is KStarsConfig's own "never configured" sentinel (see KStarsConfig.getLatitude). */
 export function isValidLocation(info: ObservatoryInfo): boolean {

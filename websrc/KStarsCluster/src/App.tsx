@@ -11,7 +11,8 @@ import { ObservatoryCard } from './components/ObservatoryCard';
 import { CurrentStatusCard } from './components/CurrentStatusCard';
 import { LogPanel } from './components/LogPanel';
 import { DeviceList } from './components/DeviceList';
-import { SkyMapCard } from './components/SkyMapCard';
+import { SkyMapCard } from './skymap/SkyMapCard';
+import { liveSkyMapDataSource } from './skymap/liveDataSource';
 import { GuideCard } from './components/GuideCard';
 import { AllskySection } from './components/AllskySection';
 import { SessionTimeline } from './components/SessionTimeline';
@@ -131,6 +132,7 @@ export function App() {
              * whatever wide card happens to be next in the list. */}
             <SchedulerCard schedulerState={status.schedulerState} activeJob={status.activeJob} jobs={status.jobs} />
             <SkyMapCard
+              dataSource={liveSkyMapDataSource}
               mountCoords={status.mountCoords}
               activeJob={status.activeJob}
               jobs={status.jobs}

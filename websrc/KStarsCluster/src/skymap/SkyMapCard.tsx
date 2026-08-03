@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
-import type { SchedulerJob } from '../api/types';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { getJobStateLabel, type SchedulerJob } from '../api/types';
 import { imageUrl, fetchAutoStretch, DEFAULT_STRETCH, type StretchSettings } from '../api/imageApi';
-import { altAzToRaDec, raDecToAltAz, getLocalSiderealTime } from '../api/coordinates';
-import {
-  fetchObservatoryInfo, fetchArtificialHorizon, isValidLocation, TERRAIN_IMAGE_URL,
-  type ObservatoryInfo, type ArtificialHorizonRegion,
-} from '../api/horizonApi';
+import { altAzToRaDec, raDecToAltAz, getLocalSiderealTime } from './coordinates';
+import { isValidLocation } from './horizonApi';
+import type { SkyMapDataSource } from './dataSource';
+import type {
+  ObservatoryInfo, ArtificialHorizonRegion, AstrobinFootprint,
+  ConstellationLineFeature, ConstellationBoundaryFeature,
+} from './types';
+import './SkyMap.css';
 
 // Aladin Lite v3 is loaded via <script> in index.html, not bundled — it ships no official types.
 declare global {
@@ -14,15 +17,11 @@ declare global {
   }
 }
 
-/** EXPERIMENTAL (see SkyMapCardExperiment's own top-of-file note): the parallactic angle — the
- * angle at a sky point between the direction to the north celestial pole and the direction to the
- * zenith, standard spherical-astronomy formula (e.g. Meeus, "Astronomical Algorithms" ch.14).
- * Feeding `-parallacticAngleDeg(...)` into aladin.setRotation() (confirmed present in the vendored
- * build — see AGENT_NOTES/session context) is the untested hypothesis this experiment exists to
- * verify: that it turns Aladin's default celestial-north-up view into a zenith-up one, frame by
- * frame, without needing to fork Aladin at all. Sign/offset needs empirical confirmation (see the
- * "Zenith lock" checkbox and its own effect below) — this is deliberately kept local to the
- * experiment rather than promoted to coordinates.ts until that's verified. */
+/** The parallactic angle — the angle at a sky point between the direction to the north celestial
+ * pole and the direction to the zenith, standard spherical-astronomy formula (e.g. Meeus,
+ * "Astronomical Algorithms" ch.14). Feeding `-parallacticAngleDeg(...)` into aladin.setRotation()
+ * turns Aladin's default celestial-north-up view into a zenith-up one, frame by frame — see the
+ * "Zenith lock" checkbox and its own effect below. */
 function parallacticAngleDeg(raDeg: number, decDeg: number, latDeg: number, lonDeg: number, dateMs: number): number {
   const toRad = (d: number) => (d * Math.PI) / 180;
   const toDeg = (r: number) => (r * 180) / Math.PI;
@@ -37,9 +36,9 @@ function parallacticAngleDeg(raDeg: number, decDeg: number, latDeg: number, lonD
   return toDeg(q);
 }
 
-/** EXPERIMENTAL (see "AstroBin as WCS images" checkbox below): standard tangent-plane (gnomonic/
- * TAN) coordinates of (ra,dec) relative to a projection center (ra0,dec0), in degrees — the
- * intermediate "xi,eta" used to build a WCS header from known sky corners (see wcsFromCorners).
+/** Standard tangent-plane (gnomonic/TAN) coordinates of (ra,dec) relative to a projection center
+ * (ra0,dec0), in degrees — flat there even though RA/Dec itself isn't, which is what makes it
+ * useful as an interpolation space (see tangentPlaneCenter and computeFootprintMesh below).
  * Standard formula, e.g. Calabretta & Greisen 2002 ("Representations of celestial coordinates in
  * FITS"), eq. for the gnomonic (TAN) projection. */
 function gnomonicXiEta(raDeg: number, decDeg: number, ra0Deg: number, dec0Deg: number): [number, number] {
@@ -57,7 +56,7 @@ function gnomonicXiEta(raDeg: number, decDeg: number, ra0Deg: number, dec0Deg: n
 
 /** Inverse of gnomonicXiEta: recovers (ra,dec) from tangent-plane offsets (xi,eta, in degrees)
  * relative to a projection center (ra0,dec0). Standard TAN-projection inverse (Calabretta &
- * Greisen 2002). Used only to re-derive a corrected projection center below — see its call site. */
+ * Greisen 2002). */
 function invGnomonic(xiDeg: number, etaDeg: number, ra0Deg: number, dec0Deg: number): [number, number] {
   const toRad = (d: number) => (d * Math.PI) / 180;
   const toDeg = (r: number) => (r * 180) / Math.PI;
@@ -73,83 +72,16 @@ function invGnomonic(xiDeg: number, etaDeg: number, ra0Deg: number, dec0Deg: num
   return [((toDeg(ra) % 360) + 360) % 360, toDeg(dec)];
 }
 
-/** EXPERIMENTAL: builds a TAN WCS header (the format aladin.js's A.image({wcs: ...}) expects) from
- * 4 known sky corners — same order footprintCorners() already returns (top-left/top-right/
- * bottom-right/bottom-left) — and the loaded thumbnail's own pixel dimensions. Solved directly
- * from the corner correspondences (pixel <-> tangent-plane degrees) rather than separately
- * extracting a center/width/height/rotation and re-deriving a CD matrix from those: the 4
- * thumbnail pixel corners are, by construction, an axis-aligned rectangle in the image's own pixel
- * space regardless of how the sky rectangle they depict is rotated, so TL→TR gives column 1 of
- * the CD matrix and TL→BL gives column 2 directly, no general least-squares needed. Works
- * uniformly for both AstrobinFootprint shapes (real per-corner solves and the ra/dec/width/height/
- * orientation fallback) since both already funnel through the same footprintCorners(). */
 // The true rectangle center is the midpoint of the TL-BR diagonal — but only in the tangent
-// (xi,eta) plane, not in plain RA/Dec: naive (a+b)/2 on RA/Dec doesn't just break across the
-// RA=0/360 wrap (it does — confirmed near this celestial pole, where a modest physical FOV spans
-// most of the RA range), it's also measurably off *even after* unwrapping, since RA/Dec isn't a
-// flat coordinate system. Confirmed empirically on a real footprint: naive averaging placed the
-// projection center ~0.35° of RA (~0.1° on the sky at this corner's declination) from the true
-// tangent-plane center, which alone accounted for the whole "orientation's right, but it's shifted
-// by a few pixels" symptom — exactly matching the predicted pixel offset at this footprint's plate
-// scale. Fixed by projecting the TL/BR corners relative to one of them (an arbitrary nearby
-// reference), averaging *there* (a flat plane, so plain averaging is correct), then inverting back
-// to RA/Dec to get the real center.
+// (xi,eta) plane, not in plain RA/Dec: naive (a+b)/2 on RA/Dec breaks across the RA=0/360 wrap
+// (common near a celestial pole, where a modest physical FOV can span most of the RA range), and
+// is measurably off even after unwrapping, since RA/Dec isn't a flat coordinate system. Fixed by
+// projecting the TL/BR corners relative to one of them (an arbitrary nearby reference), averaging
+// *there* (a flat plane, so plain averaging is correct), then inverting back to RA/Dec.
 function tangentPlaneCenter(aDeg: [number, number], cDeg: [number, number]): [number, number] {
   const [xiA, etaA] = gnomonicXiEta(aDeg[0], aDeg[1], aDeg[0], aDeg[1]);
   const [xiC, etaC] = gnomonicXiEta(cDeg[0], cDeg[1], aDeg[0], aDeg[1]);
   return invGnomonic((xiA + xiC) / 2, (etaA + etaC) / 2, aDeg[0], aDeg[1]);
-}
-
-function wcsFromCorners(corners: [number, number][], naturalWidth: number, naturalHeight: number) {
-  const [ra0, dec0] = tangentPlaneCenter(corners[0], corners[2]);
-  const [xiTL, etaTL] = gnomonicXiEta(corners[0][0], corners[0][1], ra0, dec0);
-  const [xiTR, etaTR] = gnomonicXiEta(corners[1][0], corners[1][1], ra0, dec0);
-  const [xiBL, etaBL] = gnomonicXiEta(corners[3][0], corners[3][1], ra0, dec0);
-
-  // FITS pixel convention: 1-indexed, row 1 at the *bottom* of the image (unlike a raster image's
-  // own top-down row order) — confirmed empirically: without negating this column, a real
-  // registered image came out horizontally mirrored (verified via side-by-side pixel crop against
-  // the known-correct canvas rendering; the footprint under test happened to be rotated close to
-  // 90° on the sky, which turns a pixel-row/Y-axis convention mismatch into what reads on screen as
-  // a left-right flip rather than the up-down one it actually is). So pixel row 1 is the thumbnail's
-  // own BOTTOM edge (this footprint's BL/TL corners, not TL/BL) — TL sits at (-halfW, +halfH).
-  const crpix1 = (naturalWidth + 1) / 2;
-  const crpix2 = (naturalHeight + 1) / 2;
-  // The sky corners are the image's true outer edge, not the *center* of its edge pixels — FITS
-  // pixel N is centered at coordinate N and spans [N-0.5, N+0.5], so the whole image spans [0.5,
-  // width+0.5], not [1, width]. Using the latter (as an earlier version of this did) put every
-  // corner half a pixel short of the true edge on both sides, small enough to read as "close but a
-  // few pixels off" rather than grossly wrong — confirmed by the residual offset against stars
-  // visible through the (now correctly un-mirrored) image not lining up with the survey underneath.
-  const halfW = naturalWidth / 2;
-  const halfH = naturalHeight / 2;
-
-  return {
-    CTYPE1: 'RA---TAN',
-    CTYPE2: 'DEC--TAN',
-    CRVAL1: ra0,
-    CRVAL2: dec0,
-    CRPIX1: crpix1,
-    CRPIX2: crpix2,
-    CD1_1: (xiTR - xiTL) / (2 * halfW),
-    CD2_1: (etaTR - etaTL) / (2 * halfW),
-    CD1_2: -(xiBL - xiTL) / (2 * halfH),
-    CD2_2: -(etaBL - etaTL) / (2 * halfH),
-    NAXIS: 2,
-    NAXIS1: naturalWidth,
-    NAXIS2: naturalHeight,
-    // Tested aladin-lite issue #342 ("Scale issue with setOverlayImageLayer") as the cause of a
-    // ~20-25% uniform render-size shrink by omitting NAXIS1/2 here (letting Aladin's own decoded
-    // img.width/height fill in via its `wcs.NAXIS1 = wcs.NAXIS1 || img.width`) — no change in the
-    // rendered size resulted, so that issue isn't what's happening here; still unresolved.
-  };
-}
-
-/** EXPERIMENTAL: A.image's imgFormat option ('jpeg'|'png') from the thumbnail URL's own extension
- * — AstroBin's CDN serves both (see the real thumbnailUrl values fetched from /astrobin/footprints),
- * ignoring any `?v=...` cache-busting query string. */
-function guessImgFormat(url: string): 'jpeg' | 'png' {
-  return new URL(url).pathname.toLowerCase().endsWith('.png') ? 'png' : 'jpeg';
 }
 
 /** Shared by a single grid/loop pass — counts how many projection calls actually threw (as
@@ -222,6 +154,308 @@ function SlidersIcon() {
   );
 }
 
+function LockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="11" width="14" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </svg>
+  );
+}
+
+function CrosshairIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <circle cx="12" cy="12" r="6" />
+      <line x1="12" y1="1" x2="12" y2="6" />
+      <line x1="12" y1="18" x2="12" y2="23" />
+      <line x1="1" y1="12" x2="6" y2="12" />
+      <line x1="18" y1="12" x2="23" y2="12" />
+    </svg>
+  );
+}
+
+function ZenithIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="13" r="9" />
+      <path d="M12 8v8" />
+      <path d="M8.5 11.5 12 8l3.5 3.5" />
+    </svg>
+  );
+}
+
+function LastImageIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <circle cx="8.5" cy="9.5" r="1.5" fill="currentColor" stroke="none" />
+      <path d="m3 16 5-5 4 4 3-3 6 6" />
+    </svg>
+  );
+}
+
+function GalaxyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <path d="M12 12C15 9 20 9.5 20 6" />
+      <path d="M12 12C9 15 4 14.5 4 18" />
+      <path d="M12 12C16 13.5 17 18 13 20" />
+      <path d="M12 12C8 10.5 7 6 11 4" />
+    </svg>
+  );
+}
+
+function NebulaIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6.5 17a3.5 3.5 0 0 1-1-6.86 4.5 4.5 0 0 1 8.6-2.3A4 4 0 0 1 19 12a3.5 3.5 0 0 1-.5 5H6.5Z" />
+      <circle cx="9" cy="14" r="0.8" fill="currentColor" stroke="none" />
+      <circle cx="14" cy="15" r="0.6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function GalleryIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="6" y="6" width="15" height="14" rx="2" />
+      <path d="M3 15V5a2 2 0 0 1 2-2h10" />
+      <circle cx="11.5" cy="11.5" r="1.3" fill="currentColor" stroke="none" />
+      <path d="m6 18 3.5-4 3 3 2.5-3 4 3.5" />
+    </svg>
+  );
+}
+
+function ViewfinderIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 8V5a2 2 0 0 1 2-2h3" />
+      <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+      <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+      <path d="M21 16v3a2 2 0 0 1-2 2h-3" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function HorizonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M2 17h20" />
+      <path d="M5 17a7 7 0 0 1 14 0" />
+      <line x1="12" y1="3" x2="12" y2="5" />
+      <line x1="5.6" y1="6.6" x2="7" y2="8" />
+      <line x1="18.4" y1="6.6" x2="17" y2="8" />
+    </svg>
+  );
+}
+
+function PaletteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-1.2.9-2a1.6 1.6 0 0 1 1.1-2.7H16a5 5 0 0 0 5-5c0-4.6-4-8.3-9-8.3Z" />
+      <circle cx="7.5" cy="10.5" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="7.5" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="16.5" cy="10.5" r="1.2" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function TerrainIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m2 18 5-8 3.5 4L15 6l7 12Z" />
+    </svg>
+  );
+}
+
+function GridIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M3 9h18M3 15h18M9 3v18M15 3v18" />
+    </svg>
+  );
+}
+
+function ConstellationLinesIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 6 12 4 19 9 14 14 7 18 14 14" />
+      <circle cx="5" cy="6" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="4" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="9" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="14" cy="14" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="7" cy="18" r="1.4" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function ConstellationBoundsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
+      <path d="M4 8 10 4 20 7 18 17 8 19 3 14Z" strokeDasharray="3 2" />
+    </svg>
+  );
+}
+
+function OpenTargetsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="8" />
+      <circle cx="12" cy="12" r="3.5" />
+      <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3.5 2" />
+    </svg>
+  );
+}
+
+/** Icon-only replacement for the old checkbox+label toggles — same on/off semantics, `active`
+ * driven by `data-active` (styled in index.css) rather than a native checkbox appearance, since an
+ * icon has no built-in checked state to show. */
+function IconToggleButton({
+  active, onToggle, disabled, title, icon,
+}: {
+  active: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+  title: string;
+  icon: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className="sky-map-icon-button"
+      data-active={active ? 'true' : undefined}
+      aria-pressed={active}
+      disabled={disabled}
+      onClick={onToggle}
+      title={title}
+      aria-label={title}
+    >
+      {icon}
+    </button>
+  );
+}
+
+/** The Horizon simulation's own fast forward/back stepper (see its +/- buttons below) — "1 month"
+ * is a real calendar-month step (see stepHorizonTime), not a fixed 30-day increment, since repeated
+ * fixed-length steps would drift the day-of-month; the others are exact, unambiguous durations. */
+type HorizonStep = { label: string } & ({ kind: 'ms'; ms: number } | { kind: 'month' });
+const HORIZON_STEPS: HorizonStep[] = [
+  { label: '1 min', kind: 'ms', ms: 60_000 },
+  { label: '5 min', kind: 'ms', ms: 5 * 60_000 },
+  { label: '30 min', kind: 'ms', ms: 30 * 60_000 },
+  { label: '1 hour', kind: 'ms', ms: 60 * 60_000 },
+  { label: '1 day', kind: 'ms', ms: 24 * 60 * 60_000 },
+  { label: '1 month', kind: 'month' },
+];
+
+function stepHorizonTime(current: number, step: HorizonStep, direction: 1 | -1): number {
+  if (step.kind === 'month') {
+    const d = new Date(current);
+    d.setMonth(d.getMonth() + direction);
+    return d.getTime();
+  }
+  return current + direction * step.ms;
+}
+
+function formatVisibilityDateTime(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}. ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatVisibilityText(vw: VisibilityWindow): string {
+  switch (vw.kind) {
+    case 'always':
+      return 'Always above the horizon at this date';
+    case 'never':
+      return 'Never above the horizon at this date';
+    case 'window': {
+      const rise = formatVisibilityDateTime(vw.riseMs);
+      const set = formatVisibilityDateTime(vw.setMs);
+      if (vw.relation === 'current') return `Visible now — ${rise} to ${set}`;
+      if (vw.relation === 'future') return `Not visible now — next window ${rise} to ${set}`;
+      return `Not visible now — already set, was ${rise} to ${set}`;
+    }
+    case 'unknown':
+    default:
+      return '';
+  }
+}
+
+const VISIBILITY_CHART_WIDTH = 300;
+const VISIBILITY_CHART_HEIGHT = 90;
+const VISIBILITY_CHART_ALT_MIN = -30;
+const VISIBILITY_CHART_ALT_MAX = 90;
+
+/** Altitude-vs-time chart for the Planning FOV target: its own altitude curve, the effective
+ * horizon at whatever azimuth it's at at that moment (see effectiveHorizonAltDeg — not flat,
+ * since an artificial horizon varies with azimuth as the target moves through the sky over the
+ * day), the current simulated time, and the visible window (see findVisibilityWindow)
+ * highlighted. Y-axis is clamped to [-30°, 90°] rather than the full ±90° range — the interesting
+ * part is always near/above the horizon, and a target that's 80° below it doesn't need its own
+ * vertical space to communicate "nowhere close to visible". */
+function VisibilityChart({
+  samples, centerMs, window: visWindow,
+}: {
+  samples: VisibilitySample[];
+  centerMs: number;
+  window: VisibilityWindow;
+}) {
+  if (samples.length === 0) return null;
+  const t0 = samples[0].ms;
+  const t1 = samples[samples.length - 1].ms;
+  const x = (t: number) => ((t - t0) / (t1 - t0 || 1)) * VISIBILITY_CHART_WIDTH;
+  const y = (alt: number) => {
+    const clamped = Math.max(VISIBILITY_CHART_ALT_MIN, Math.min(VISIBILITY_CHART_ALT_MAX, alt));
+    const span = VISIBILITY_CHART_ALT_MAX - VISIBILITY_CHART_ALT_MIN;
+    return VISIBILITY_CHART_HEIGHT * (1 - (clamped - VISIBILITY_CHART_ALT_MIN) / span);
+  };
+  const path = (key: 'altDeg' | 'horizonAltDeg') => samples
+    .map((s, i) => `${i === 0 ? 'M' : 'L'} ${x(s.ms).toFixed(1)} ${y(s[key]).toFixed(1)}`)
+    .join(' ');
+
+  return (
+    <svg
+      className="sky-map-visibility-chart"
+      viewBox={`0 0 ${VISIBILITY_CHART_WIDTH} ${VISIBILITY_CHART_HEIGHT}`}
+      width={VISIBILITY_CHART_WIDTH}
+      height={VISIBILITY_CHART_HEIGHT}
+    >
+      {visWindow.kind === 'window' && (
+        <rect
+          className="sky-map-visibility-chart-window"
+          x={x(visWindow.riseMs)}
+          y={0}
+          width={Math.max(0, x(visWindow.setMs) - x(visWindow.riseMs))}
+          height={VISIBILITY_CHART_HEIGHT}
+        />
+      )}
+      <line className="sky-map-visibility-chart-zero" x1={0} y1={y(0)} x2={VISIBILITY_CHART_WIDTH} y2={y(0)} />
+      <path className="sky-map-visibility-chart-horizon" d={path('horizonAltDeg')} fill="none" />
+      <path className="sky-map-visibility-chart-alt" d={path('altDeg')} fill="none" />
+      <line
+        className="sky-map-visibility-chart-now"
+        x1={x(centerMs)}
+        y1={0}
+        x2={x(centerMs)}
+        y2={VISIBILITY_CHART_HEIGHT}
+      />
+    </svg>
+  );
+}
+
 interface SurveyOption {
   id: string;
   label: string;
@@ -257,29 +491,40 @@ const SURVEYS: SurveyOption[] = [
 ];
 
 interface Props {
+  /** Where observatory info, artificial horizon, the terrain image, AstroBin footprints, and the
+   * "open targets" schedule-file jobs come from — a live KStarsCluster backend today, potentially
+   * a static JSON config dump for a future public-site deployment. See dataSource.ts. */
+  dataSource: SkyMapDataSource;
   mountCoords?: { ra: number; dec: number };
   activeJob: SchedulerJob | null;
+  jobs?: SchedulerJob[];
+  ekosReady?: boolean;
   fov?: { widthArcmin: number; heightArcmin: number };
   pa?: number;
   lastImageFilename?: string;
 }
 
 /** Four corners of a centerRa/centerDec-centered rectangle, widthDeg x heightDeg, rotated by paDeg
- * (East of North). Corners are pre-divided by cos(dec) on the RA axis — Aladin's own projection
- * re-applies that scaling when rendering RA/DEC, so this cancels out to the correct on-sky size.
- * dx is flipped (+dx = West, not East) — verified empirically: RA increases to the left on an
- * unmirrored equatorial display, so a plain +East-is-right offset renders the overlay image
- * mirrored left-right. */
+ * (East of North). dx/dy are tangent-plane (xi,eta) offsets from the center (see invGnomonic),
+ * not flat RA/Dec degrees — a real spherical rotation around the center rather than a small-angle
+ * flat approximation, so this stays correct arbitrarily close to (or exactly at) a celestial pole.
+ * An earlier version instead divided the RA offset by cos(dec) to approximate the same thing,
+ * which is only valid for a small FOV far from the pole: near the pole cos(dec) collapses toward
+ * 0, blowing up that division, and a mount/Planning FOV rectangle centered near the pole rendered
+ * as a triangle (or two) instead of a rectangle — confirmed by reproducing a slew through the pole
+ * and inspecting the resulting corners. dx is flipped (+dx = West, not East) — verified
+ * empirically: RA increases to the left on an unmirrored equatorial display, so a plain
+ * +East-is-right offset renders the overlay image mirrored left-right; xi has the same "increasing
+ * = East" sign as a plain RA offset (see gnomonicXiEta), so the same flip applies here too. */
 function fovCorners(centerRa: number, centerDec: number, widthDeg: number, heightDeg: number, paDeg: number): [number, number][] {
   const paRad = (paDeg * Math.PI) / 180;
-  const cosDec = Math.max(0.01, Math.cos((centerDec * Math.PI) / 180));
   const halfW = widthDeg / 2;
   const halfH = heightDeg / 2;
   const offsets: [number, number][] = [[halfW, -halfH], [-halfW, -halfH], [-halfW, halfH], [halfW, halfH]];
   return offsets.map(([dx, dy]) => {
     const rx = dx * Math.cos(paRad) - dy * Math.sin(paRad);
     const ry = dx * Math.sin(paRad) + dy * Math.cos(paRad);
-    return [centerRa + rx / cosDec, centerDec + ry];
+    return invGnomonic(rx, ry, centerRa, centerDec);
   });
 }
 
@@ -343,12 +588,19 @@ function positionFootprintImage(img: HTMLElement, aladin: any, corners: [number,
 }
 
 const FOLLOW_MOUNT_KEY = 'skymap.followMount';
+const ZENITH_LOCK_KEY = 'skymap.zenithLock';
+const PROJECTION_KEY = 'skymap.projection';
 const SHOW_LAST_IMAGE_KEY = 'skymap.showLastImage';
 const SHOW_NGC_KEY = 'skymap.showNgc';
 const SHOW_SH2_KEY = 'skymap.showSh2';
 const SHOW_ASTROBIN_KEY = 'skymap.showAstrobin';
 const SHOW_HORIZON_KEY = 'skymap.showHorizon';
 const SHOW_TERRAIN_KEY = 'skymap.showTerrain';
+const SHOW_GRID_KEY = 'skymap.showGrid';
+const SHOW_CONSTELLATION_LINES_KEY = 'skymap.showConstellationLines';
+const SHOW_CONSTELLATION_BOUNDS_KEY = 'skymap.showConstellationBounds';
+const SHOW_OPEN_TARGETS_KEY = 'skymap.showOpenTargets';
+const HORIZON_STEP_INDEX_KEY = 'skymap.horizonStepIndex';
 // Real width is CSS-defined (see .sky-map-astrobin-popover); the height is only an estimate since
 // the actual rendered height depends on title wrapping and isn't known until after it paints —
 // good enough for clamping the popover to stay on-screen without needing a post-paint measurement.
@@ -409,13 +661,45 @@ function sizeArcminToRadiusDeg(sizeArcmin: string | undefined): number {
 /** Builds a circle-per-source graphic overlay sized by each source's real angular diameter,
  * alongside (not instead of) the small click-for-details catalog marker `cat` already carries —
  * the marker gives a precise, clickable center point; this overlay is the actual boundary. */
-function buildBoundaryOverlay(aladin: any, cat: any, sizeField: string, color: string): any {
-  const overlay = window.A.graphicOverlay({ color, lineWidth: 1 });
+function buildBoundaryOverlay(aladin: any, cat: any, sizeField: string, color: string, name: string): any {
+  const overlay = window.A.graphicOverlay({ name, color, lineWidth: 1 });
   aladin.addOverlay(overlay);
   cat.getSources().forEach((source: any) => {
     const radiusDeg = sizeArcminToRadiusDeg(source.data?.[sizeField]);
     overlay.add(window.A.circle(source.ra, source.dec, radiusDeg));
   });
+  return overlay;
+}
+
+async function fetchConstellationLines(): Promise<ConstellationLineFeature[]> {
+  const res = await fetch('/constellations/lines.json');
+  if (!res.ok) throw new Error(`constellation lines request failed: ${res.status}`);
+  return res.json();
+}
+
+async function fetchConstellationBounds(): Promise<ConstellationBoundaryFeature[]> {
+  const res = await fetch('/constellations/bounds.json');
+  if (!res.ok) throw new Error(`constellation bounds request failed: ${res.status}`);
+  return res.json();
+}
+
+/** One open A.polyline per stroke (not one closed shape per constellation — most constellations'
+ * stick figures are a small tree/branching structure of strokes, not a single loop). */
+function buildConstellationLinesOverlay(aladin: any, features: ConstellationLineFeature[]): any {
+  const overlay = window.A.graphicOverlay({ name: 'Constellation lines', color: '#94a3b8', lineWidth: 1 });
+  aladin.addOverlay(overlay);
+  features.forEach((feature) => {
+    feature.lines.forEach((line) => overlay.add(window.A.polyline(line)));
+  });
+  return overlay;
+}
+
+function buildConstellationBoundsOverlay(aladin: any, features: ConstellationBoundaryFeature[]): any {
+  const overlay = window.A.graphicOverlay({
+    name: 'Constellation boundaries', color: '#64748b', lineWidth: 1, lineDash: [4, 4],
+  });
+  aladin.addOverlay(overlay);
+  features.forEach((feature) => overlay.add(window.A.polygon(feature.polygon)));
   return overlay;
 }
 
@@ -506,25 +790,49 @@ function astrobinSearchUrl(name: string): string {
   return `https://www.astrobin.com/search/?q=${encodeURIComponent(name)}`;
 }
 
-interface AstrobinFootprintBase {
-  title: string;
-  hash: string;
-  url: string;
-  thumbnailUrl: string;
-}
-
-/** The backend prefers real corner RA/Dec pairs (AstroBin's own advanced-plate-solve output) when
- * available — that sidesteps rotation-angle sign/handedness guessing entirely, which turned out to
- * be genuinely ambiguous (both the raw "basic" orientation field and a fixed basic-vs-advanced
- * preference were each confirmed wrong on different real images). `corners` is only absent for
- * images that were never advanced-solved, the rarer case — see footprintCorners below. */
-type AstrobinFootprint = AstrobinFootprintBase & (
-  | { corners: [number, number][]; ra?: undefined }
-  | { corners?: undefined; ra: number; dec: number; widthDeg: number; heightDeg: number; orientationDeg: number }
-);
-
 function footprintCorners(f: AstrobinFootprint): [number, number][] {
   return f.corners ?? fovCorners(f.ra, f.dec, f.widthDeg, f.heightDeg, f.orientationDeg);
+}
+
+/** Great-circle angular separation between two sky points, in degrees (haversine formula) — used
+ * only for the cheap "is this footprint anywhere near the current view" pre-filter below, not for
+ * anything that needs to account for the current projection (that's what world2pix is for). Orders
+ * of magnitude cheaper than a real projection call, which is the whole point: with a gallery in the
+ * hundreds, computeScreenRect's 4 world2pix calls per footprint (measured ~2000 calls/frame, ~2ms,
+ * during a real pan with this gallery) run for every footprint on every redraw, most of which are
+ * nowhere near the current view and were always going to be thrown away by the existing screen-
+ * bounds check further down — this lets most of them skip that work entirely. */
+function angularSeparationDeg(ra1Deg: number, dec1Deg: number, ra2Deg: number, dec2Deg: number): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dPhi = toRad(dec2Deg - dec1Deg);
+  const dLambda = toRad(ra2Deg - ra1Deg);
+  const sinDPhi2 = Math.sin(dPhi / 2);
+  const sinDLambda2 = Math.sin(dLambda / 2);
+  const phi1 = toRad(dec1Deg);
+  const phi2 = toRad(dec2Deg);
+  const h = sinDPhi2 * sinDPhi2 + Math.cos(phi1) * Math.cos(phi2) * sinDLambda2 * sinDLambda2;
+  return (2 * Math.asin(Math.min(1, Math.sqrt(h))) * 180) / Math.PI;
+}
+
+/** A rough (not tangent-plane-exact — doesn't need to be, see angularSeparationDeg's own comment)
+ * center and angular half-diagonal "radius" for the pre-filter below. Plain (a+b)/2 on the two
+ * diagonal corners, unwrapped across the RA=0/360 seam the same way tangentPlaneCenter's own
+ * comment describes — off by a similar small fraction of a degree near a pole, negligible next to
+ * the generous margin the pre-filter already applies. */
+function footprintCenterAndRadiusDeg(f: AstrobinFootprint): { ra: number; dec: number; radiusDeg: number } {
+  if (!f.corners) {
+    return { ra: f.ra, dec: f.dec, radiusDeg: Math.hypot(f.widthDeg, f.heightDeg) / 2 };
+  }
+  const [ra0, dec0] = f.corners[0];
+  let ra2 = f.corners[2][0];
+  if (ra2 - ra0 > 180) ra2 -= 360;
+  else if (ra0 - ra2 > 180) ra2 += 360;
+  const dec2 = f.corners[2][1];
+  return {
+    ra: ((ra0 + ra2) / 2 + 360) % 360,
+    dec: (dec0 + dec2) / 2,
+    radiusDeg: angularSeparationDeg(ra0, dec0, f.corners[2][0], dec2) / 2,
+  };
 }
 
 /** Shoelace formula on the footprint's own corners, treating RA/Dec as planar — inaccurate as a
@@ -664,19 +972,19 @@ function drawGearButton(ctx: CanvasRenderingContext2D, gx: number, gy: number, s
 // 4x4 (16-cell, 32-triangle) mesh per footprint — enough to make the curvature a real WCS
 // reprojection would show visible at these field sizes, cheap enough that even a few dozen
 // simultaneously-visible footprints (the realistic case — off-screen ones are already filtered
-// out by drawAstrobinFootprints before this runs) stays well under a frame budget. Contrast with
-// registering every footprint as its own Aladin image layer (see wcsImageTest's own comment): that
-// scaled with the *total* registered count, O(n²) and unusable past ~50; this scales with however
-// many are on screen right now times a fixed 32 triangles, however large the gallery gets.
+// out by drawAstrobinFootprints before this runs) stays well under a frame budget.
 const ASTROBIN_MESH_GRID_SIZE = 4;
 
 /** Bilinearly interpolates within the sky-tangent-plane (xi,eta) coordinates of a footprint's 4
- * corners — flat there even though RA/Dec itself isn't, same reasoning as wcsFromCorners's own
+ * corners — flat there even though RA/Dec itself isn't, same reasoning as tangentPlaneCenter's own
  * comment — then projects each interpolated point to screen via world2pix. An NxN grid built this
  * way closely tracks the true curve a real per-pixel WCS reprojection would show for a field this
- * small, without needing Aladin's own image-layer pipeline at all. Returns null wholesale only if
- * the tangent-plane center itself is degenerate; individual unprojectable grid points (e.g. right
- * at an all-sky projection's edge) instead leave a null hole in the returned grid, which
+ * small, without needing Aladin's own image-layer pipeline at all (registering every footprint as
+ * its own Aladin image layer scales O(n²) with the total registered count and becomes unusable
+ * past ~50 simultaneous layers; this scales with however many are on screen right now times a
+ * fixed 32 triangles, however large the gallery gets). Returns null wholesale only if the
+ * tangent-plane center itself is degenerate; individual unprojectable grid points (e.g. right at
+ * an all-sky projection's edge) instead leave a null hole in the returned grid, which
  * drawImageMesh/drawMeshOutline skip over rather than failing the whole footprint. */
 function computeFootprintMesh(
   aladin: any, corners: [number, number][], gridSize: number,
@@ -753,6 +1061,7 @@ function drawTexturedTriangle(
 function drawImageMesh(
   ctx: CanvasRenderingContext2D, img: HTMLImageElement,
   mesh: ([number, number] | null)[][], gridSize: number,
+  maxSpanPx: number,
 ) {
   const { naturalWidth, naturalHeight } = img;
   for (let j = 0; j < gridSize; j++) {
@@ -762,6 +1071,15 @@ function drawImageMesh(
       const p11 = mesh[j + 1][i + 1];
       const p01 = mesh[j + 1][i];
       if (!p00 || !p10 || !p11 || !p01) continue;
+      // Belt-and-suspenders against the same azimuthal-projection edge the pre-filter in
+      // drawAstrobinFootprints already guards against (see its own comment): a legitimate mesh
+      // cell never spans anywhere close to the whole visible canvas, so a cell whose own corners
+      // are farther apart than that is a sign world2pix stopped varying smoothly here, not a
+      // real (if extreme) piece of curvature — skip it rather than paint a degenerate triangle
+      // across most of the sky.
+      const xs = [p00[0], p10[0], p11[0], p01[0]];
+      const ys = [p00[1], p10[1], p11[1], p01[1]];
+      if (Math.max(...xs) - Math.min(...xs) > maxSpanPx || Math.max(...ys) - Math.min(...ys) > maxSpanPx) continue;
       const sx0 = (i / gridSize) * naturalWidth;
       const sx1 = ((i + 1) / gridSize) * naturalWidth;
       const sy0 = (j / gridSize) * naturalHeight;
@@ -798,6 +1116,8 @@ function drawOneAstrobinFootprint(
   isSelected: boolean,
   imagesCache: Map<string, HTMLImageElement>,
   onImageLoad: () => void,
+  containerW: number,
+  containerH: number,
 ) {
   const { cx, cy, w, h, angleRad } = rect;
   if (hidden) {
@@ -832,7 +1152,8 @@ function drawOneAstrobinFootprint(
     ? computeFootprintMesh(aladin, meshCorners, ASTROBIN_MESH_GRID_SIZE)
     : null;
   if (mesh) {
-    drawImageMesh(ctx, img, mesh, ASTROBIN_MESH_GRID_SIZE);
+    const maxSpanPx = Math.max(containerW, containerH) * 3;
+    drawImageMesh(ctx, img, mesh, ASTROBIN_MESH_GRID_SIZE, maxSpanPx);
     drawMeshOutline(ctx, mesh, ASTROBIN_MESH_GRID_SIZE);
   } else {
     ctx.save();
@@ -870,7 +1191,31 @@ function drawAstrobinFootprints(
   const rects: AstrobinHitRect[] = [];
   let selectedEntry: { footprint: AstrobinFootprint; rect: ScreenRect } | null = null;
 
+  // Cheap pre-filter (see angularSeparationDeg's own comment) — generous on purpose (1.5x the
+  // reported FOV radius plus a flat 10° buffer): the exact check a few lines down (post-world2pix,
+  // against the real screen bounds) is what actually decides what's drawn, this only skips the
+  // 4-world2pix-call computeScreenRect for footprints nowhere near being a candidate. Capped at
+  // 180° in general (nothing on a sphere is ever farther than that) but much tighter for Aladin's
+  // azimuthal projections (ZEA/SIN/STG/TAN): these stay mathematically defined out to (near) 180°,
+  // but well before that the projection's own derivative blows up, so world2pix stops varying
+  // smoothly with position — confirmed directly by inspecting a mesh near this boundary, where
+  // adjacent grid points (a few degrees apart on the sky) landed hundreds of pixels apart on
+  // screen. Rendering a footprint out there doesn't produce a recognizable (if distorted) image,
+  // it produces an enormous degenerate mesh triangle that paints over most of the visible sky.
+  const AZIMUTHAL_PROJECTIONS_MAX_RADIUS_DEG = 105;
+  const AZIMUTHAL_PROJECTIONS = new Set(['ZEA', 'SIN', 'STG', 'TAN']);
+  const [viewRa, viewDec] = aladin.getRaDec();
+  const [fovX, fovY] = aladin.getFov();
+  const projectionName = typeof aladin.getProjectionName === 'function' ? aladin.getProjectionName() : null;
+  const maxViewRadiusDeg = projectionName && AZIMUTHAL_PROJECTIONS.has(projectionName)
+    ? AZIMUTHAL_PROJECTIONS_MAX_RADIUS_DEG
+    : 180;
+  const viewRadiusDeg = Math.min(maxViewRadiusDeg, (Math.max(fovX, fovY) / 2) * 1.5 + 10);
+
   for (const footprint of footprints) {
+    const { ra: fRa, dec: fDec, radiusDeg: fRadiusDeg } = footprintCenterAndRadiusDeg(footprint);
+    if (angularSeparationDeg(viewRa, viewDec, fRa, fDec) > viewRadiusDeg + fRadiusDeg) continue;
+
     const hidden = hiddenUrls.has(footprint.url);
     const rect = computeScreenRect(aladin, footprintCorners(footprint), !footprint.corners);
     if (!rect) continue;
@@ -889,36 +1234,12 @@ function drawAstrobinFootprints(
       selectedEntry = { footprint, rect };
       continue;
     }
-    drawOneAstrobinFootprint(ctx, aladin, footprint, rect, hidden, false, imagesCache, onImageLoad);
+    drawOneAstrobinFootprint(ctx, aladin, footprint, rect, hidden, false, imagesCache, onImageLoad, containerW, containerH);
   }
   if (selectedEntry) {
-    drawOneAstrobinFootprint(ctx, aladin, selectedEntry.footprint, selectedEntry.rect, false, true, imagesCache, onImageLoad);
+    drawOneAstrobinFootprint(ctx, aladin, selectedEntry.footprint, selectedEntry.rect, false, true, imagesCache, onImageLoad, containerW, containerH);
   }
   return rects;
-}
-
-/** Server-proxied (see AstrobinProxyServlet — the underlying AstroBin endpoints send no
- * Access-Control-Allow-Origin, so the browser can't call them directly) and cached for an hour
- * there, so this itself is cheap and doesn't need its own client-side caching beyond "already
- * fetched once this page session" (see astrobinFetchedRef below). */
-async function fetchAstrobinFootprints(): Promise<AstrobinFootprint[]> {
-  const res = await fetch('/astrobin/footprints');
-  if (!res.ok) throw new Error(`astrobin footprints request failed: ${res.status}`);
-  return res.json();
-}
-
-interface AstrobinImageDetail {
-  title: string;
-  url: string;
-  date: string | null;
-}
-
-/** Unlike the bulk footprint listing, capture date isn't worth fetching for every image up
- * front — it's only ever shown for the one footprint someone actually clicks open. */
-async function fetchAstrobinImageDetail(hash: string): Promise<AstrobinImageDetail> {
-  const res = await fetch(`/astrobin/image-detail?hash=${encodeURIComponent(hash)}`);
-  if (!res.ok) throw new Error(`astrobin image detail request failed: ${res.status}`);
-  return res.json();
 }
 
 /** AstroBin's coordinate search (RA/Dec-Koordinaten, an AstroBin Ultimate feature) encodes its
@@ -1127,6 +1448,40 @@ function strokeHorizonLoop(
   }
 }
 
+/** The four compass points, at the flat 0°-altitude horizon — reprojected in RA/Dec for the chosen
+ * simulation time exactly like the horizon circle itself (see drawHorizonOverlay), since a
+ * compass point's sky position drifts with sidereal time same as everything else drawn there. */
+const CARDINAL_POINTS: { label: string; azDeg: number }[] = [
+  { label: 'N', azDeg: 0 },
+  { label: 'E', azDeg: 90 },
+  { label: 'S', azDeg: 180 },
+  { label: 'W', azDeg: 270 },
+];
+
+function drawCardinalPoints(
+  ctx: CanvasRenderingContext2D,
+  aladin: any,
+  info: ObservatoryInfo,
+  dateMs: number,
+  stats?: ProjectionStats,
+) {
+  ctx.font = 'bold 12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  CARDINAL_POINTS.forEach(({ label, azDeg }) => {
+    const { raDeg, decDeg } = altAzToRaDec(0, azDeg, info.latitude, info.longitude, dateMs);
+    const p = safeWorld2Pix(aladin, raDeg, decDeg, stats);
+    if (!p) return;
+    // A small dark backing square behind the letter — same reasoning as drawGearButton's own
+    // translucent box — keeps it legible over a bright nebula/star field the plain orange text
+    // alone would wash out against.
+    ctx.fillStyle = 'rgba(15, 17, 26, 0.75)';
+    ctx.fillRect(p[0] - 9, p[1] - 9, 18, 18);
+    ctx.fillStyle = '#f97316';
+    ctx.fillText(label, p[0], p[1]);
+  });
+}
+
 /** Draws the flat geometric horizon (always available from lat/lon alone) plus any enabled
  * artificial-horizon regions, both reprojected in RA/Dec for the chosen simulation time. */
 function drawHorizonOverlay(
@@ -1161,6 +1516,111 @@ function drawHorizonOverlay(
     });
     strokeHorizonLoop(ctx, projectLoop(aladin, points, stats), '#dc2626', maxSegmentPx, 1);
   });
+
+  drawCardinalPoints(ctx, aladin, info, dateMs, stats);
+}
+
+/** One artificial-horizon region's own altitude boundary at a given azimuth, linearly interpolated
+ * between whichever pair of its own points straddle that azimuth — null if this region doesn't
+ * cover that azimuth at all (a region is typically an open profile over a limited az range, e.g. a
+ * treeline silhouette, not a full 360° loop). */
+function regionAltAtAzimuthDeg(region: ArtificialHorizonRegion, azDeg: number): number | null {
+  const pts = region.points;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a0 = pts[i].az;
+    const a1 = pts[i + 1].az;
+    const lo = Math.min(a0, a1);
+    const hi = Math.max(a0, a1);
+    if (hi <= lo || azDeg < lo || azDeg > hi) continue;
+    const t = (azDeg - a0) / (a1 - a0);
+    return pts[i].alt + t * (pts[i + 1].alt - pts[i].alt);
+  }
+  return null;
+}
+
+/** The real minimum altitude something needs to clear to count as visible at this azimuth: the
+ * flat 0° geometric horizon, or higher still wherever an artificial-horizon region covers this
+ * azimuth with a boundary above it — the most restrictive of any overlapping regions wins. */
+function effectiveHorizonAltDeg(azDeg: number, regions: ArtificialHorizonRegion[]): number {
+  let maxAlt = 0;
+  for (const region of regions) {
+    const alt = regionAltAtAzimuthDeg(region, azDeg);
+    if (alt !== null && alt > maxAlt) maxAlt = alt;
+  }
+  return maxAlt;
+}
+
+const VISIBILITY_WINDOW_HOURS = 24;
+const VISIBILITY_SAMPLE_MINUTES = 4;
+
+interface VisibilitySample {
+  ms: number;
+  altDeg: number;
+  horizonAltDeg: number;
+}
+
+/** Altitude and effective horizon (see effectiveHorizonAltDeg) for one sky point across a fixed
+ * window centered on `centerMs` — the raw data both the altitude/time chart and
+ * findVisibilityWindow are built from. 4-minute steps over 24h (360 samples) is fine enough to
+ * place a rise/set time within a couple of minutes without resampling on every chart repaint. */
+function sampleVisibility(
+  raDeg: number, decDeg: number, latDeg: number, lonDeg: number, centerMs: number,
+  regions: ArtificialHorizonRegion[],
+): VisibilitySample[] {
+  const halfSpanMs = (VISIBILITY_WINDOW_HOURS / 2) * 60 * 60_000;
+  const stepMs = VISIBILITY_SAMPLE_MINUTES * 60_000;
+  const samples: VisibilitySample[] = [];
+  for (let t = centerMs - halfSpanMs; t <= centerMs + halfSpanMs; t += stepMs) {
+    const { altDeg, azDeg } = raDecToAltAz(raDeg, decDeg, latDeg, lonDeg, t);
+    samples.push({ ms: t, altDeg, horizonAltDeg: effectiveHorizonAltDeg(azDeg, regions) });
+  }
+  return samples;
+}
+
+type VisibilityWindow =
+  | { kind: 'window'; riseMs: number; setMs: number; relation: 'current' | 'future' | 'past' }
+  | { kind: 'always' }
+  | { kind: 'never' }
+  | { kind: 'unknown' };
+
+/** The visibility window (see VisibilitySample) that matters right now: the one containing
+ * `centerMs` if it's currently above the effective horizon, otherwise the nearest one — preferring
+ * the next future window, falling back to the most recent past one only if nothing rises again
+ * within the sampled range. `relation` distinguishes those three cases for the caller's own
+ * wording ("visible now" vs. "next window" vs. "already set"). */
+function findVisibilityWindow(samples: VisibilitySample[], centerMs: number): VisibilityWindow {
+  if (samples.length === 0) return { kind: 'unknown' };
+  const visible = samples.map((s) => s.altDeg > s.horizonAltDeg);
+  if (visible.every(Boolean)) return { kind: 'always' };
+  if (visible.every((v) => !v)) return { kind: 'never' };
+
+  let centerIdx = 0;
+  for (let i = 1; i < samples.length; i++) {
+    if (Math.abs(samples[i].ms - centerMs) < Math.abs(samples[centerIdx].ms - centerMs)) centerIdx = i;
+  }
+
+  function windowAround(idx: number): { riseMs: number; setMs: number } {
+    let start = idx;
+    while (start > 0 && visible[start - 1]) start--;
+    let end = idx;
+    while (end < visible.length - 1 && visible[end + 1]) end++;
+    return { riseMs: samples[start].ms, setMs: samples[end].ms };
+  }
+
+  if (visible[centerIdx]) {
+    return { kind: 'window', ...windowAround(centerIdx), relation: 'current' };
+  }
+  let idx = centerIdx;
+  while (idx < visible.length && !visible[idx]) idx++;
+  if (idx < visible.length) {
+    return { kind: 'window', ...windowAround(idx), relation: 'future' };
+  }
+  idx = centerIdx;
+  while (idx >= 0 && !visible[idx]) idx--;
+  if (idx >= 0) {
+    return { kind: 'window', ...windowAround(idx), relation: 'past' };
+  }
+  return { kind: 'unknown' };
 }
 
 /** "YYYY-MM-DDTHH:mm" in local time, the string format <input type="datetime-local"> both
@@ -1184,6 +1644,24 @@ function readStoredBoolean(key: string): boolean {
 function writeStoredBoolean(key: string, value: boolean) {
   try {
     localStorage.setItem(key, String(value));
+  }
+  catch {
+    // storage unavailable (private browsing, quota, ...) — just don't persist
+  }
+}
+
+function readStoredString(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  }
+  catch {
+    return null;
+  }
+}
+
+function writeStoredString(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
   }
   catch {
     // storage unavailable (private browsing, quota, ...) — just don't persist
@@ -1267,7 +1745,49 @@ function buildImageSurvey(survey: SurveyOption) {
   return survey.builtin;
 }
 
-export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImageFilename }: Props) {
+/** "Open" = hasn't finished all its required captures yet — a live job that's already
+ * JOB_COMPLETE is done, and JOB_INVALID means the scheduler itself rejected it (unreachable
+ * constraints etc.), so neither is worth marking on the sky. A job freshly parsed from an .esl
+ * file (see fetchScheduleFileJobs) has no run history and always comes back JOB_IDLE, which
+ * passes this check same as it would for any live not-yet-finished job — there's no way (and no
+ * need) to tell "not started" apart from "in progress" for a target marker. */
+function isOpenSchedulerJob(job: SchedulerJob): boolean {
+  const label = getJobStateLabel(job.state);
+  return label !== 'JOB_COMPLETE' && label !== 'JOB_INVALID';
+}
+
+/** Small target/bullseye marker plus name label for each still-open scheduler job — same "dark
+ * backing box behind the text" legibility trick as drawCardinalPoints/drawGearButton use. */
+function drawOpenTargets(
+  ctx: CanvasRenderingContext2D,
+  aladin: any,
+  targets: SchedulerJob[],
+  stats?: ProjectionStats,
+) {
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  targets.forEach((job) => {
+    const p = safeWorld2Pix(aladin, job.targetRA * 15, job.targetDEC, stats);
+    if (!p) return;
+    const [x, y] = p;
+    ctx.strokeStyle = '#4ade80';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.stroke();
+
+    const labelWidth = ctx.measureText(job.name).width;
+    ctx.fillStyle = 'rgba(15, 17, 26, 0.75)';
+    ctx.fillRect(x + 9, y - 8, labelWidth + 6, 16);
+    ctx.fillStyle = '#4ade80';
+    ctx.fillText(job.name, x + 12, y);
+  });
+}
+
+export function SkyMapCard({
+  dataSource, mountCoords, activeJob, jobs, ekosReady, fov, pa, lastImageFilename,
+}: Props) {
   const cardRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayImgRef = useRef<HTMLImageElement>(null);
@@ -1276,10 +1796,16 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
   const targetCatalogRef = useRef<any>(null);
   const fovOverlayRef = useRef<any>(null);
   const planningFovOverlayRef = useRef<any>(null);
+  // The Planning FOV target's own diurnal path (its declination circle — every point sharing its
+  // declination, at every RA) — see planningFovCenter's own comment for why this is a separate,
+  // debounced overlay rather than being folded into planningFovOverlay above.
+  const planningFovPathOverlayRef = useRef<any>(null);
   const ngcCatalogRef = useRef<any>(null);
   const sh2CatalogRef = useRef<any>(null);
   const ngcBoundaryRef = useRef<any>(null);
   const sh2BoundaryRef = useRef<any>(null);
+  const constellationLinesOverlayRef = useRef<any>(null);
+  const constellationBoundsOverlayRef = useRef<any>(null);
   // All AstroBin footprints share one canvas (see drawAstrobinFootprints) instead of one
   // absolutely-positioned DOM element each — a couple hundred images' worth of transform/size
   // recalculation on every pan/zoom frame was the actual performance cost, and canvas drawing
@@ -1314,30 +1840,31 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
   const horizonRetryRef = useRef<number | undefined>(undefined);
   const [ready, setReady] = useState(false);
   const [surveyId, setSurveyId] = useState(SURVEYS[0].id);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const paletteRef = useRef<HTMLDivElement>(null);
   // Persisted across reloads (see FOLLOW_MOUNT_KEY/SHOW_LAST_IMAGE_KEY) — both are "set once,
   // forget about it" toggles, so a reload silently reverting them is more surprising than useful.
   const [showLastImage, setShowLastImage] = useState(() => readStoredBoolean(SHOW_LAST_IMAGE_KEY));
   const [followMount, setFollowMount] = useState(() => readStoredBoolean(FOLLOW_MOUNT_KEY));
-  // EXPERIMENTAL — not persisted, this whole feature is a throwaway test of whether
-  // aladin.setRotation() can fake a zenith-up ("Horizontal mode") view. See parallacticAngleDeg's
-  // own comment.
-  const [zenithLock, setZenithLock] = useState(false);
+  const [zenithLock, setZenithLock] = useState(() => readStoredBoolean(ZENITH_LOCK_KEY));
   const zenithLockRef = useRef(zenithLock);
   zenithLockRef.current = zenithLock;
   const observatoryInfoRef = useRef<ObservatoryInfo | null>(null);
   const horizonTimeRef = useRef(Date.now());
-  // EXPERIMENTAL — see wcsFromCorners's own comment: registers a handful of AstroBin thumbnails as
-  // real WCS-projected Aladin image layers (properly warped by Aladin's own sky-sphere renderer)
-  // instead of the production canvas's rigid rotated rectangles, to test both whether that curves
-  // correctly and whether many simultaneous image layers stay performant.
-  const [wcsImageTest, setWcsImageTest] = useState(false);
-  const wcsImageLayerNamesRef = useRef<Set<string>>(new Set());
-  // A graphic overlay drawing each WCS test image's own real sky corners as a polygon — unlike the
-  // canvas rectangle border, this is projected by Aladin itself alongside the image, so it bends
-  // the same way the image does under non-gnomonic projections instead of staying a rigid rectangle.
-  const wcsImageBorderOverlayRef = useRef<any>(null);
   const [showNgc, setShowNgc] = useState(() => readStoredBoolean(SHOW_NGC_KEY));
   const [showSh2, setShowSh2] = useState(() => readStoredBoolean(SHOW_SH2_KEY));
+  const [showGrid, setShowGrid] = useState(() => readStoredBoolean(SHOW_GRID_KEY));
+  const [showConstellationLines, setShowConstellationLines] = useState(
+    () => readStoredBoolean(SHOW_CONSTELLATION_LINES_KEY),
+  );
+  const [showConstellationBounds, setShowConstellationBounds] = useState(
+    () => readStoredBoolean(SHOW_CONSTELLATION_BOUNDS_KEY),
+  );
+  const [showOpenTargets, setShowOpenTargets] = useState(() => readStoredBoolean(SHOW_OPEN_TARGETS_KEY));
+  // Only populated when the toggle is on AND Ekos isn't up (see openTargetJobs below) — while
+  // Ekos IS up, the live `jobs` prop is used directly and this stays null.
+  const [diskJobs, setDiskJobs] = useState<SchedulerJob[] | null>(null);
+  const targetsCanvasRef = useRef<HTMLCanvasElement>(null);
   const [showAstrobin, setShowAstrobin] = useState(() => readStoredBoolean(SHOW_ASTROBIN_KEY));
   const [astrobinFootprints, setAstrobinFootprints] = useState<AstrobinFootprint[] | null>(null);
   // Horizon simulation: the flat 0°-altitude circle plus (if defined) the user's own artificial
@@ -1348,9 +1875,13 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
   const [showHorizon, setShowHorizon] = useState(() => readStoredBoolean(SHOW_HORIZON_KEY));
   const [showTerrain, setShowTerrain] = useState(() => readStoredBoolean(SHOW_TERRAIN_KEY));
   const [horizonTime, setHorizonTime] = useState(() => Date.now());
+  const [horizonStepIndex, setHorizonStepIndex] = useState(() => {
+    const stored = readStoredNumber(HORIZON_STEP_INDEX_KEY, 2);
+    return stored >= 0 && stored < HORIZON_STEPS.length ? stored : 2;
+  });
   const [observatoryInfo, setObservatoryInfo] = useState<ObservatoryInfo | null>(null);
   // Kept live for the poll-loop effect below (whose closure only runs once, deps [ready]) to read
-  // without needing to be in that effect's own dependency array — see zenithLock's own comment.
+  // without needing to be in that effect's own dependency array.
   horizonTimeRef.current = horizonTime;
   observatoryInfoRef.current = observatoryInfo;
   const [artificialHorizon, setArtificialHorizon] = useState<ArtificialHorizonRegion[]>([]);
@@ -1391,10 +1922,35 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
   const [pixelSizeUm, setPixelSizeUm] = useState(() => readStoredNumber(PLANNING_FOV_PIXEL_SIZE_KEY, DEFAULT_PIXEL_SIZE_UM));
   const [focalLengthMm, setFocalLengthMm] = useState(() => readStoredNumber(PLANNING_FOV_FOCAL_LENGTH_KEY, DEFAULT_FOCAL_LENGTH_MM));
   const [planningFovRotationDeg, setPlanningFovRotationDeg] = useState(() => readStoredNumber(PLANNING_FOV_ROTATION_KEY, 0));
+  // The Planning FOV's own view center (ra/dec), for the path overlay and the visibility chart —
+  // deliberately its own, debounced state rather than reading aladin.getRaDec() directly from
+  // those effects: the FOV rectangle itself is cheap to redraw every frame during a pan/zoom (see
+  // redraw() below), but the path overlay (a ~120-point polygon) and the visibility chart (360
+  // altitude samples across 24h) are not, so both only recompute once the view has settled.
+  const [planningFovCenter, setPlanningFovCenter] = useState<{ ra: number; dec: number } | null>(null);
+  const planningFovCenterDebounceRef = useRef<number | undefined>(undefined);
+  // Not persisted — like hiddenAstrobinUrls, this is a per-session pin on a specific spot rather
+  // than a durable preference, and a stale locked target reappearing on a future, unrelated
+  // session would be more confusing than useful.
+  const [planningFovLocked, setPlanningFovLocked] = useState(false);
+  const planningFovLockedCenterRef = useRef<{ ra: number; dec: number } | null>(null);
   const [sensorConfigOpen, setSensorConfigOpen] = useState(false);
   const sensorConfigRef = useRef<HTMLDivElement>(null);
   const planningFovWidthArcmin = sensorFovArcmin(sensorWidthPx, pixelSizeUm, focalLengthMm);
   const planningFovHeightArcmin = sensorFovArcmin(sensorHeightPx, pixelSizeUm, focalLengthMm);
+  // Recomputed only when the (already debounced) target center, the simulated time, or the
+  // location/artificial-horizon data actually change — 360 altitude samples is cheap once, not
+  // something worth redoing on every unrelated re-render.
+  const planningFovVisibility = useMemo(() => {
+    if (!planningFovEnabled || !planningFovCenter || !observatoryInfo || !isValidLocation(observatoryInfo)) {
+      return null;
+    }
+    const samples = sampleVisibility(
+      planningFovCenter.ra, planningFovCenter.dec,
+      observatoryInfo.latitude, observatoryInfo.longitude, horizonTime, artificialHorizon,
+    );
+    return { samples, window: findVisibilityWindow(samples, horizonTime) };
+  }, [planningFovEnabled, planningFovCenter, observatoryInfo, artificialHorizon, horizonTime]);
   // On-demand (not re-queried on every pan/zoom, unlike the FOV rectangles) — a SIMBAD conesearch
   // is a real network round-trip, and "what's in this exact framing" is naturally a "I've settled
   // on a spot, now check it" action rather than something to hammer continuously while dragging.
@@ -1484,6 +2040,26 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
     };
   }, [sensorConfigOpen]);
 
+  // Same outside-click/Escape pattern as sensorConfigOpen above, for the survey/palette picker's
+  // own popup (see its own button below — replaces what used to be a plain <select>).
+  useEffect(() => {
+    if (!paletteOpen) return undefined;
+    function onPointerDown(e: PointerEvent) {
+      if (paletteRef.current && !paletteRef.current.contains(e.target as Node)) {
+        setPaletteOpen(false);
+      }
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setPaletteOpen(false);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [paletteOpen]);
+
   // Recorded on every mousedown regardless of target — a pan can start inside the sky map and end
   // outside it (or vice versa) — so both listeners below can tell a background drag-to-pan apart
   // from an actual click, which a plain 'click' listener can't do on its own (see
@@ -1529,7 +2105,7 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
 
   function openAstrobinPopover(f: AstrobinFootprint) {
     setAstrobinPopover({ footprint: f, date: null, loading: true, error: false });
-    fetchAstrobinImageDetail(f.hash)
+    dataSource.getAstrobinImageDetail(f.hash)
       .then((detail) => {
         setAstrobinPopover((prev) => (prev?.footprint.url === f.url ? { ...prev, date: detail.date, loading: false } : prev));
       })
@@ -1580,12 +2156,16 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
         fov: savedView?.fovDeg ?? DEFAULT_FOV_DEG,
         target: savedView ? `${savedView.ra} ${savedView.dec}` : '0 +0',
         cooFrame: 'equatorial',
+        projection: readStoredString(PROJECTION_KEY) ?? 'SIN',
         showFullscreenControl: false,
         log: false,
       });
       aladinRef.current = aladin;
-      (window as any).__debugAladin = aladin;
       appliedSurveyIdRef.current = defaultSurvey.id;
+      // Aladin's own corner button changes the projection (SIN/ZEA/AIT/...) — persist whatever the
+      // user picks there the same way the view itself is persisted, so a reload doesn't silently
+      // reset back to SIN.
+      aladin.on('projectionChanged', (name: string) => writeStoredString(PROJECTION_KEY, name));
 
       const mountCat = window.A.catalog({ name: 'mount', sourceSize: 20, color: '#4ade80' });
       const targetCat = window.A.catalog({ name: 'target', sourceSize: 20, color: '#f59e0b' });
@@ -1594,15 +2174,21 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
       mountCatalogRef.current = mountCat;
       targetCatalogRef.current = targetCat;
 
-      const fovOverlay = window.A.graphicOverlay({ color: '#38bdf8', lineWidth: 2 });
+      const fovOverlay = window.A.graphicOverlay({ name: 'Mount FOV', color: '#38bdf8', lineWidth: 2 });
       aladin.addOverlay(fovOverlay);
       fovOverlayRef.current = fovOverlay;
 
       // Dashed + a different hue than the live FOV overlay, so "planned framing" is never
       // mistaken for "where the camera is actually pointed right now".
-      const planningFovOverlay = window.A.graphicOverlay({ color: '#c084fc', lineWidth: 2, lineDash: [8, 6] });
+      const planningFovOverlay = window.A.graphicOverlay({ name: 'Planning FOV', color: '#c084fc', lineWidth: 2, lineDash: [8, 6] });
       aladin.addOverlay(planningFovOverlay);
       planningFovOverlayRef.current = planningFovOverlay;
+
+      // Thin/undashed so it doesn't compete visually with the FOV rectangle itself — see
+      // planningFovCenter's own comment for why this is updated separately (debounced).
+      const planningFovPathOverlay = window.A.graphicOverlay({ name: 'Planning FOV path', color: '#c084fc', lineWidth: 1 });
+      aladin.addOverlay(planningFovPathOverlay);
+      planningFovPathOverlayRef.current = planningFovPathOverlay;
 
       setReady(true);
     });
@@ -1651,6 +2237,28 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
   // multi-hour session that accumulated thousands of stale callbacks on the same long-lived Aladin
   // instance, and the next positionChanged/zoomChanged (e.g. one last mount update as Ekos stops)
   // fired all of them synchronously, which was enough to freeze the tab or lose the WebGL context.
+  // Only needed for the Ekos-off path (see openTargetJobs below) — refetched every time the
+  // toggle turns on rather than cached like the AstroBin/NGC/Sh2 "fetch once" lazy loads
+  // elsewhere: unlike those, the .esl file on disk can change between one enable and the next
+  // (someone edited the schedule in KStars while the toggle happened to be off), so a stale disk
+  // snapshot sitting around would be actively misleading here in a way a stale NGC catalog never is.
+  useEffect(() => {
+    if (!showOpenTargets || ekosReady) {
+      setDiskJobs(null);
+      return;
+    }
+    dataSource.getScheduleFileJobs().then(setDiskJobs).catch(() => setDiskJobs([]));
+  }, [showOpenTargets, ekosReady]);
+
+  // Live Ekos: use its own jobs list, filtered to what isn't finished yet. Ekos off: the jobs
+  // list parsed straight off the configured .esl file (see fetchScheduleFileJobs) — every job in
+  // there is "open" by construction, since a freshly-parsed file has no run history at all.
+  const openTargetJobs = useMemo(() => {
+    if (!showOpenTargets) return [];
+    if (ekosReady) return (jobs ?? []).filter(isOpenSchedulerJob);
+    return diskJobs ?? [];
+  }, [showOpenTargets, ekosReady, jobs, diskJobs]);
+
   const redrawRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -1663,7 +2271,20 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
       if (planningOverlay) {
         planningOverlay.removeAll();
         if (planningFovEnabled) {
-          const [centerRa, centerDec] = aladin.getRaDec();
+          // Locked: stays wherever it was pinned (see togglePlanningFovLock) instead of following
+          // the view — panning/zooming around a locked framing to check what's nearby no longer
+          // drags the framing itself along.
+          let centerRa: number;
+          let centerDec: number;
+          if (planningFovLockedCenterRef.current) {
+            ({ ra: centerRa, dec: centerDec } = planningFovLockedCenterRef.current);
+          } else {
+            [centerRa, centerDec] = aladin.getRaDec();
+            window.clearTimeout(planningFovCenterDebounceRef.current);
+            planningFovCenterDebounceRef.current = window.setTimeout(() => {
+              setPlanningFovCenter({ ra: centerRa, dec: centerDec });
+            }, 200);
+          }
           const corners = fovCorners(
             centerRa,
             centerDec,
@@ -1845,6 +2466,25 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
         }
       }
 
+      const targetsCanvas = targetsCanvasRef.current;
+      if (targetsCanvas && container) {
+        const dpr = window.devicePixelRatio || 1;
+        const targetW = Math.round(container.clientWidth * dpr);
+        const targetH = Math.round(container.clientHeight * dpr);
+        if (targetsCanvas.width !== targetW || targetsCanvas.height !== targetH) {
+          targetsCanvas.width = targetW;
+          targetsCanvas.height = targetH;
+          targetsCanvas.style.width = `${container.clientWidth}px`;
+          targetsCanvas.style.height = `${container.clientHeight}px`;
+        }
+        const tgCtx = targetsCanvas.getContext('2d');
+        if (tgCtx) {
+          tgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          tgCtx.clearRect(0, 0, container.clientWidth, container.clientHeight);
+          if (openTargetJobs.length > 0) drawOpenTargets(tgCtx, aladin, openTargetJobs);
+        }
+      }
+
       overlay.removeAll();
       if (!mountCoords || !fov) {
         if (overlayImgRef.current) overlayImgRef.current.style.display = 'none';
@@ -1868,6 +2508,7 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
     showAstrobin, astrobinFootprints, hiddenAstrobinUrls, astrobinPopover,
     planningFovEnabled, planningFovWidthArcmin, planningFovHeightArcmin, planningFovRotationDeg,
     showHorizon, showTerrain, horizonTime, observatoryInfo, artificialHorizon, terrainImageLoaded,
+    openTargetJobs,
   ]);
 
   useEffect(() => {
@@ -2009,11 +2650,11 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
           if (fovChanged) scheduleResync();
         }
 
-        // EXPERIMENTAL zenith-lock — see parallacticAngleDeg's own comment. Recomputed every frame
-        // the view actually has a center (cheap: one setRotation() matrix update), not gated on the
-        // ra/dec-changed branch above, since the parallactic angle also drifts with time alone even
-        // while the view sits still (real sidereal motion) — though horizonTime here only advances
-        // when the user moves "Simulate at"/clicks "Now", not on a real-time clock.
+        // Zenith-lock: recomputed every frame the view actually has a center (cheap: one
+        // setRotation() matrix update), not gated on the ra/dec-changed branch above, since the
+        // parallactic angle also drifts with time alone even while the view sits still (real
+        // sidereal motion) — though horizonTime here only advances when the user moves "Simulate
+        // at"/clicks "Now", not on a real-time clock.
         const info = observatoryInfoRef.current;
         if (zenithLockRef.current && info && isValidLocation(info)) {
           const q = parallacticAngleDeg(ra, dec, info.latitude, info.longitude, horizonTimeRef.current);
@@ -2052,6 +2693,14 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
   }, [followMount]);
 
   useEffect(() => {
+    writeStoredBoolean(ZENITH_LOCK_KEY, zenithLock);
+  }, [zenithLock]);
+
+  useEffect(() => {
+    writeStoredNumber(HORIZON_STEP_INDEX_KEY, horizonStepIndex);
+  }, [horizonStepIndex]);
+
+  useEffect(() => {
     writeStoredBoolean(SHOW_LAST_IMAGE_KEY, showLastImage);
   }, [showLastImage]);
 
@@ -2064,12 +2713,66 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
   }, [showSh2]);
 
   useEffect(() => {
+    writeStoredBoolean(SHOW_GRID_KEY, showGrid);
+  }, [showGrid]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_CONSTELLATION_LINES_KEY, showConstellationLines);
+  }, [showConstellationLines]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_CONSTELLATION_BOUNDS_KEY, showConstellationBounds);
+  }, [showConstellationBounds]);
+
+  useEffect(() => {
+    writeStoredBoolean(SHOW_OPEN_TARGETS_KEY, showOpenTargets);
+  }, [showOpenTargets]);
+
+  // Aladin's own built-in coordinate grid — no data to fetch, just its own show/hide toggle.
+  // showLabels off: the RA/Dec labels on every gridline clutter a frame this small far more than
+  // the lines themselves do. thickness isn't clamped to its documented default of 1 — confirmed
+  // empirically down to 0.02 (still rendering, not vanishing) — so 0.1 renders visibly thinner
+  // without risking the line disappearing entirely at some unverified lower value. A neutral
+  // mid-gray reads as a measuring aid rather than a colored overlay competing with the sky itself.
+  useEffect(() => {
+    if (!ready || !aladinRef.current) return;
+    aladinRef.current.setCooGrid({
+      enabled: showGrid, showLabels: false, color: '#888888', thickness: 0.1,
+    });
+  }, [ready, showGrid]);
+
+  useEffect(() => {
     writeStoredBoolean(SHOW_ASTROBIN_KEY, showAstrobin);
   }, [showAstrobin]);
 
   useEffect(() => {
     writeStoredBoolean(PLANNING_FOV_ENABLED_KEY, planningFovEnabled);
   }, [planningFovEnabled]);
+
+  // Turning Planning FOV off and back on starts fresh (following the view again) rather than
+  // silently resuming at whatever spot was locked last time — the lock is a "working on this one
+  // right now" pin, not a setting that should survive the feature itself being toggled off.
+  useEffect(() => {
+    if (!planningFovEnabled) {
+      setPlanningFovLocked(false);
+      planningFovLockedCenterRef.current = null;
+    }
+  }, [planningFovEnabled]);
+
+  // The Planning FOV target's diurnal path — every point sharing its declination, at every RA
+  // (Earth's rotation carries the target along this exact circle over the course of a day, even
+  // though its own RA/Dec never changes; what changes is which part of the circle is above the
+  // horizon — see the visibility chart for that side of it). ~120 points (3° steps) is enough for
+  // a visually smooth circle even right up against a pole, where it's tight and small.
+  useEffect(() => {
+    const overlay = planningFovPathOverlayRef.current;
+    if (!overlay) return;
+    overlay.removeAll();
+    if (!planningFovEnabled || !planningFovCenter) return;
+    const points: [number, number][] = [];
+    for (let ra = 0; ra <= 360; ra += 3) points.push([ra, planningFovCenter.dec]);
+    overlay.add(window.A.polygon(points));
+  }, [planningFovEnabled, planningFovCenter]);
 
   useEffect(() => {
     writeStoredNumber(PLANNING_FOV_SENSOR_WIDTH_KEY, sensorWidthPx);
@@ -2099,16 +2802,16 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
     writeStoredBoolean(SHOW_TERRAIN_KEY, showTerrain);
   }, [showTerrain]);
 
-  // Fetched at most once, unconditionally on mount rather than gated behind showHorizon (unlike
-  // the production SkyMapCard) — the EXPERIMENTAL zenith-lock toggle also needs observatoryInfo's
-  // lat/lon, and shouldn't require enabling "Horizon" just to unlock it. Cheap, small, one-time
-  // fetch either way (location/artificial-horizon only ever change if the user reconfigures KStars
-  // itself), same reasoning as the NGC/Sh2 catalogs below.
+  // Fetched at most once, unconditionally on mount rather than gated behind showHorizon — the
+  // zenith-lock toggle also needs observatoryInfo's lat/lon, and shouldn't require enabling
+  // "Horizon" just to unlock it. Cheap, small, one-time fetch either way (location/artificial-
+  // horizon only ever change if the user reconfigures KStars itself), same reasoning as the
+  // NGC/Sh2 catalogs below.
   useEffect(() => {
     if (observatoryFetchedRef.current) return;
     observatoryFetchedRef.current = true;
-    fetchObservatoryInfo().then(setObservatoryInfo).catch(() => { /* no location configured — flat horizon/terrain just won't draw */ });
-    fetchArtificialHorizon().then(setArtificialHorizon).catch(() => { /* no artificial horizon defined — flat horizon still draws */ });
+    dataSource.getObservatoryInfo().then(setObservatoryInfo).catch(() => { /* no location configured — flat horizon/terrain just won't draw */ });
+    dataSource.getArtificialHorizon().then(setArtificialHorizon).catch(() => { /* no artificial horizon defined — flat horizon still draws */ });
   }, []);
 
   // The Terrain panorama is an 8+MB image — only fetched once "Terrain photo" is actually turned
@@ -2132,7 +2835,7 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
       terrainPixelDataRef.current = { data, width: off.width, height: off.height };
       setTerrainImageLoaded(true);
     };
-    img.src = TERRAIN_IMAGE_URL;
+    img.src = dataSource.getTerrainImageUrl();
     terrainImgRef.current = img;
   }, [showHorizon, showTerrain, observatoryInfo?.hasTerrain]);
 
@@ -2158,7 +2861,7 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
       (cat: any) => {
         ngcCatalogRef.current = cat;
         aladin.addCatalog(cat);
-        ngcBoundaryRef.current = buildBoundaryOverlay(aladin, cat, 'size', '#facc15');
+        ngcBoundaryRef.current = buildBoundaryOverlay(aladin, cat, 'size', '#facc15', 'NGC/IC boundaries');
       },
     );
   }, [ready, showNgc]);
@@ -2182,17 +2885,51 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
       (cat: any) => {
         sh2CatalogRef.current = cat;
         aladin.addCatalog(cat);
-        sh2BoundaryRef.current = buildBoundaryOverlay(aladin, cat, 'Diam', '#fb7185');
+        sh2BoundaryRef.current = buildBoundaryOverlay(aladin, cat, 'Diam', '#fb7185', 'Sharpless (Sh2) boundaries');
       },
     );
   }, [ready, showSh2]);
 
-  // Fetched at most once (lazily, on first enable) from our own server-side cache — see
-  // fetchAstrobinFootprints — then just shown/hidden via redraw()'s showAstrobin check.
+  // Same "fetch once on first enable, then just show/hide" shape as NGC/Sh2 above, but the source
+  // is a bundled static asset (see fetchConstellationLines) rather than a VizieR cone search.
+  useEffect(() => {
+    if (!ready || !aladinRef.current) return;
+    if (constellationLinesOverlayRef.current) {
+      const action = showConstellationLines ? 'show' : 'hide';
+      constellationLinesOverlayRef.current[action]();
+      return;
+    }
+    if (!showConstellationLines) return;
+    const aladin = aladinRef.current;
+    fetchConstellationLines()
+      .then((features) => {
+        constellationLinesOverlayRef.current = buildConstellationLinesOverlay(aladin, features);
+      })
+      .catch(() => { /* asset unreachable — toggle stays on, nothing drawn, no retry loop */ });
+  }, [ready, showConstellationLines]);
+
+  useEffect(() => {
+    if (!ready || !aladinRef.current) return;
+    if (constellationBoundsOverlayRef.current) {
+      const action = showConstellationBounds ? 'show' : 'hide';
+      constellationBoundsOverlayRef.current[action]();
+      return;
+    }
+    if (!showConstellationBounds) return;
+    const aladin = aladinRef.current;
+    fetchConstellationBounds()
+      .then((features) => {
+        constellationBoundsOverlayRef.current = buildConstellationBoundsOverlay(aladin, features);
+      })
+      .catch(() => { /* asset unreachable — toggle stays on, nothing drawn, no retry loop */ });
+  }, [ready, showConstellationBounds]);
+
+  // Fetched at most once (lazily, on first enable) from the data source — then just shown/hidden
+  // via redraw()'s showAstrobin check.
   useEffect(() => {
     if (!showAstrobin || astrobinFetchedRef.current) return;
     astrobinFetchedRef.current = true;
-    fetchAstrobinFootprints()
+    dataSource.getAstrobinFootprints()
       // Largest-FOV shots first (rendered first = sit at the bottom of the DOM stacking order) so a
       // wide-field footprint never sits on top of a narrower one of the same target by default —
       // hover (see the z-index rule in index.css) still lifts whichever one you're pointing at.
@@ -2200,54 +2937,6 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
       .then(setAstrobinFootprints)
       .catch(() => { /* AstroBin unreachable — leave the toggle checked but nothing drawn, no retry loop */ });
   }, [showAstrobin]);
-
-  // EXPERIMENTAL — see wcsImageTest's own declaration comment. Deliberately capped (WCS_IMAGE_TEST_
-  // COUNT) rather than trying all ~250 footprints: this is a first spike to see whether Aladin's
-  // own image-layer rendering (a) actually curves the thumbnail with the projection the way a rigid
-  // canvas rectangle can't, and (b) stays responsive with many simultaneous layers, before deciding
-  // whether to push further. Registers once footprints are loaded and doesn't re-run per redraw —
-  // each layer is genuinely a persistent Aladin object (like a HiPS survey layer), not something
-  // this repaints by hand every frame the way the canvas approach does.
-  useEffect(() => {
-    const aladin = aladinRef.current;
-    if (!wcsImageTest || !ready || !aladin || !astrobinFootprints) return;
-
-    // Dropped from 20 to 3 after 20 simultaneous layers crashed the whole browser tab in testing —
-    // start small and work back up once it's clear what the real ceiling is.
-    const WCS_IMAGE_TEST_COUNT = 3;
-    let cancelled = false;
-
-    // Real sky-projected border (see wcsImageBorderOverlayRef's own comment) — one overlay shared
-    // by all test images, cleared and rebuilt alongside them rather than per-image, since Aladin
-    // has no per-shape removal API (only whole-overlay .hide()/.removeAll(), see below).
-    const borderOverlay = window.A.graphicOverlay({ color: '#22d3ee', lineWidth: 2 });
-    aladin.addOverlay(borderOverlay);
-    wcsImageBorderOverlayRef.current = borderOverlay;
-
-    const targets = astrobinFootprints.slice(0, WCS_IMAGE_TEST_COUNT);
-    targets.forEach((f, i) => {
-      const img = new Image();
-      img.onload = () => {
-        if (cancelled) return;
-        const corners = footprintCorners(f);
-        const wcs = wcsFromCorners(corners, img.naturalWidth, img.naturalHeight);
-        const layerName = `wcs-test-${i}-${f.hash}`;
-        const aladinImage = window.A.image(f.thumbnailUrl, { name: layerName, imgFormat: guessImgFormat(f.thumbnailUrl), wcs });
-        aladin.setOverlayImageLayer(aladinImage, layerName);
-        wcsImageLayerNamesRef.current.add(layerName);
-        borderOverlay.add(window.A.polygon(corners));
-      };
-      img.src = f.thumbnailUrl;
-    });
-
-    return () => {
-      cancelled = true;
-      wcsImageLayerNamesRef.current.forEach((name) => aladin.removeImageLayer(name));
-      wcsImageLayerNamesRef.current.clear();
-      borderOverlay.removeAll();
-      wcsImageBorderOverlayRef.current = null;
-    };
-  }, [wcsImageTest, astrobinFootprints, ready]);
 
   useEffect(() => {
     function onFullscreenChange() {
@@ -2263,6 +2952,25 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
     } else {
       cardRef.current?.requestFullscreen();
     }
+  }
+
+  // Locking pins the framing at whatever the view center happens to be right now (captured
+  // immediately, not waiting for the usual 200ms debounce — the user just asked for this exact
+  // spot); unlocking clears the pin so redraw() goes back to reading aladin.getRaDec() live.
+  function togglePlanningFovLock() {
+    setPlanningFovLocked((locked) => {
+      if (locked) {
+        planningFovLockedCenterRef.current = null;
+        return false;
+      }
+      const aladin = aladinRef.current;
+      if (aladin) {
+        const [ra, dec] = aladin.getRaDec();
+        planningFovLockedCenterRef.current = { ra, dec };
+        setPlanningFovCenter({ ra, dec });
+      }
+      return true;
+    });
   }
 
   // The overlay used DEFAULT_STRETCH (a no-op linear passthrough) unconditionally, so "last
@@ -2282,11 +2990,32 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
     <div ref={cardRef} className="card card--wide">
       <h3>Sky Map</h3>
       <div className="sky-map-controls">
-        <select value={surveyId} onChange={(e) => setSurveyId(e.target.value)}>
-          {SURVEYS.map((s) => (
-            <option key={s.id} value={s.id}>{s.label}</option>
-          ))}
-        </select>
+        <div className="sky-map-palette-picker" ref={paletteRef}>
+          <button
+            type="button"
+            className="sky-map-icon-button"
+            onClick={() => setPaletteOpen((open) => !open)}
+            title={`Palette: ${SURVEYS.find((s) => s.id === surveyId)?.label ?? ''}`}
+            aria-label="Choose palette"
+          >
+            <PaletteIcon />
+          </button>
+          {paletteOpen && (
+            <div className="sky-map-palette-popup">
+              {SURVEYS.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className="sky-map-palette-option"
+                  data-active={s.id === surveyId ? 'true' : undefined}
+                  onClick={() => { setSurveyId(s.id); setPaletteOpen(false); }}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           type="button"
           className="sky-map-icon-button"
@@ -2296,68 +3025,56 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
         >
           {isFullscreen ? <CompressIcon /> : <ExpandIcon />}
         </button>
-        <div className="sky-map-toggles">
-          <label className="sky-map-toggle">
-            <input
-              type="checkbox"
-              checked={followMount}
-              onChange={(e) => setFollowMount(e.target.checked)}
-              disabled={!mountCoords}
-            />
-            Follow mount
-          </label>
-          <label className="sky-map-toggle" title="Experimental: aladin.setRotation() to fake a zenith-up view">
-            <input
-              type="checkbox"
-              checked={zenithLock}
-              onChange={(e) => setZenithLock(e.target.checked)}
-              disabled={!observatoryInfo || !isValidLocation(observatoryInfo)}
-            />
-            Zenith lock (exp.)
-          </label>
-          <label className="sky-map-toggle" title="Experimental: register a handful of AstroBin thumbnails as real WCS image layers instead of rigid canvas rectangles">
-            <input
-              type="checkbox"
-              checked={wcsImageTest}
-              onChange={(e) => setWcsImageTest(e.target.checked)}
-              disabled={!astrobinFootprints}
-            />
-            AstroBin as WCS images (exp.)
-          </label>
-          <label className="sky-map-toggle">
-            <input
-              type="checkbox"
-              checked={showLastImage}
-              onChange={(e) => setShowLastImage(e.target.checked)}
-              disabled={!lastImageFilename}
-            />
-            Show last image
-          </label>
-          <label className="sky-map-toggle">
-            <input type="checkbox" checked={showNgc} onChange={(e) => setShowNgc(e.target.checked)} />
-            NGC/IC
-          </label>
-          <label className="sky-map-toggle">
-            <input type="checkbox" checked={showSh2} onChange={(e) => setShowSh2(e.target.checked)} />
-            Sharpless (Sh2)
-          </label>
-          <label className="sky-map-toggle">
-            <input type="checkbox" checked={showAstrobin} onChange={(e) => setShowAstrobin(e.target.checked)} />
-            My AstroBin
-          </label>
-          <label className="sky-map-toggle">
-            <input
-              type="checkbox"
-              checked={planningFovEnabled}
-              onChange={(e) => setPlanningFovEnabled(e.target.checked)}
-            />
-            Planning FOV
-          </label>
-          <label className="sky-map-toggle">
-            <input type="checkbox" checked={showHorizon} onChange={(e) => setShowHorizon(e.target.checked)} />
-            Horizon
-          </label>
-        </div>
+        <IconToggleButton
+          active={followMount}
+          onToggle={() => setFollowMount((v) => !v)}
+          disabled={!mountCoords}
+          title="Follow mount"
+          icon={<CrosshairIcon />}
+        />
+        <IconToggleButton
+          active={zenithLock}
+          onToggle={() => setZenithLock((v) => !v)}
+          disabled={!observatoryInfo || !isValidLocation(observatoryInfo)}
+          title="Zenith lock — locks the view to zenith-up (Horizontal mode) instead of celestial-north-up, so the sky's actual drift during a session stays legible"
+          icon={<ZenithIcon />}
+        />
+        <IconToggleButton
+          active={showLastImage}
+          onToggle={() => setShowLastImage((v) => !v)}
+          disabled={!lastImageFilename}
+          title="Show last image"
+          icon={<LastImageIcon />}
+        />
+        <IconToggleButton active={showNgc} onToggle={() => setShowNgc((v) => !v)} title="NGC/IC" icon={<GalaxyIcon />} />
+        <IconToggleButton active={showSh2} onToggle={() => setShowSh2((v) => !v)} title="Sharpless (Sh2)" icon={<NebulaIcon />} />
+        <IconToggleButton active={showGrid} onToggle={() => setShowGrid((v) => !v)} title="Coordinate grid" icon={<GridIcon />} />
+        <IconToggleButton
+          active={showConstellationLines}
+          onToggle={() => setShowConstellationLines((v) => !v)}
+          title="Constellation lines"
+          icon={<ConstellationLinesIcon />}
+        />
+        <IconToggleButton
+          active={showConstellationBounds}
+          onToggle={() => setShowConstellationBounds((v) => !v)}
+          title="Constellation boundaries"
+          icon={<ConstellationBoundsIcon />}
+        />
+        <IconToggleButton active={showAstrobin} onToggle={() => setShowAstrobin((v) => !v)} title="My AstroBin" icon={<GalleryIcon />} />
+        <IconToggleButton
+          active={showOpenTargets}
+          onToggle={() => setShowOpenTargets((v) => !v)}
+          title={ekosReady ? 'Open targets — from the running Ekos scheduler' : 'Open targets — from the configured sequence file'}
+          icon={<OpenTargetsIcon />}
+        />
+        <IconToggleButton
+          active={planningFovEnabled}
+          onToggle={() => setPlanningFovEnabled((v) => !v)}
+          title="Planning FOV"
+          icon={<ViewfinderIcon />}
+        />
+        <IconToggleButton active={showHorizon} onToggle={() => setShowHorizon((v) => !v)} title="Horizon" icon={<HorizonIcon />} />
       </div>
       {planningFovEnabled && (
         <div className="sky-map-planning-fov">
@@ -2405,6 +3122,12 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
               </div>
             )}
           </div>
+          <IconToggleButton
+            active={planningFovLocked}
+            onToggle={togglePlanningFovLock}
+            title={planningFovLocked ? 'Unlock — resume following the view center' : 'Lock — pin the framing here instead of following the view center'}
+            icon={<LockIcon />}
+          />
           <label>
             Rotation
             <input
@@ -2454,27 +3177,72 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
               </div>
             )}
           </div>
+          {planningFovCenter && (!observatoryInfo || !isValidLocation(observatoryInfo)) && (
+            <span className="sky-map-horizon-warning">No location configured in KStars — can't compute visibility</span>
+          )}
+          {planningFovVisibility && (
+            <div className="sky-map-visibility">
+              <VisibilityChart
+                samples={planningFovVisibility.samples}
+                centerMs={horizonTime}
+                window={planningFovVisibility.window}
+              />
+              <span className="sky-map-visibility-text">{formatVisibilityText(planningFovVisibility.window)}</span>
+            </div>
+          )}
         </div>
       )}
       {showHorizon && (
         <div className="sky-map-horizon">
-          <label>
-            Simulate at
-            <input
-              type="datetime-local"
-              value={toDatetimeLocalValue(horizonTime)}
-              onChange={(e) => {
-                const t = new Date(e.target.value).getTime();
-                if (!Number.isNaN(t)) setHorizonTime(t);
-              }}
-            />
-          </label>
+          <span className="sky-map-horizon-clock" title="Simulated time">
+            <ClockIcon />
+          </span>
+          <input
+            type="datetime-local"
+            value={toDatetimeLocalValue(horizonTime)}
+            onChange={(e) => {
+              const t = new Date(e.target.value).getTime();
+              if (!Number.isNaN(t)) setHorizonTime(t);
+            }}
+          />
+          <div className="sky-map-horizon-stepper">
+            <button
+              type="button"
+              className="sky-map-icon-button"
+              onClick={() => setHorizonTime((t) => stepHorizonTime(t, HORIZON_STEPS[horizonStepIndex], -1))}
+              title={`Step back ${HORIZON_STEPS[horizonStepIndex].label}`}
+              aria-label="Step back"
+            >
+              −
+            </button>
+            <select
+              value={horizonStepIndex}
+              onChange={(e) => setHorizonStepIndex(Number(e.target.value))}
+              title="Step size"
+              aria-label="Step size"
+            >
+              {HORIZON_STEPS.map((step, i) => (
+                <option key={step.label} value={i}>{step.label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="sky-map-icon-button"
+              onClick={() => setHorizonTime((t) => stepHorizonTime(t, HORIZON_STEPS[horizonStepIndex], 1))}
+              title={`Step forward ${HORIZON_STEPS[horizonStepIndex].label}`}
+              aria-label="Step forward"
+            >
+              +
+            </button>
+          </div>
           <button type="button" onClick={() => setHorizonTime(Date.now())}>Now</button>
           {observatoryInfo?.hasTerrain && (
-            <label className="sky-map-toggle">
-              <input type="checkbox" checked={showTerrain} onChange={(e) => setShowTerrain(e.target.checked)} />
-              Terrain photo
-            </label>
+            <IconToggleButton
+              active={showTerrain}
+              onToggle={() => setShowTerrain((v) => !v)}
+              title="Terrain photo"
+              icon={<TerrainIcon />}
+            />
           )}
           {observatoryInfo && !isValidLocation(observatoryInfo) && (
             <span className="sky-map-horizon-warning">No location configured in KStars</span>
@@ -2505,6 +3273,9 @@ export function SkyMapCardExperiment({ mountCoords, activeJob, fov, pa, lastImag
             and artificial-horizon shading are always visible, not hidden under the terrain overlay
             or a wide AstroBin footprint. */}
         <canvas ref={horizonCanvasRef} className="sky-map-horizon-canvas" />
+        {/* Topmost of the plain-canvas overlays — a handful of small marker+label pairs, never
+            wide enough to meaningfully hide anything underneath the way the terrain photo can. */}
+        <canvas ref={targetsCanvasRef} className="sky-map-targets-canvas" />
         {astrobinPopover && (
           <div className="sky-map-astrobin-popover" ref={astrobinPopoverRef}>
             <button type="button" className="sky-map-astrobin-popover-close" onClick={() => setAstrobinPopover(null)} aria-label="Close">×</button>
