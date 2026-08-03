@@ -11,7 +11,7 @@ import { ObservatoryCard } from './components/ObservatoryCard';
 import { CurrentStatusCard } from './components/CurrentStatusCard';
 import { LogPanel } from './components/LogPanel';
 import { DeviceList } from './components/DeviceList';
-import { SkyMapCard } from './skymap/SkyMapCard';
+import { SkyMapCard } from 'skymap-widget';
 import { liveSkyMapDataSource } from './skymap/liveDataSource';
 import { GuideCard } from './components/GuideCard';
 import { AllskySection } from './components/AllskySection';

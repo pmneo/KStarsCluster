@@ -1,7 +1,27 @@
-import { fetchObservatoryInfo, fetchArtificialHorizon, TERRAIN_IMAGE_URL } from './horizonApi';
 import { fetchScheduleFileJobs } from '../api/actions';
-import type { SkyMapDataSource } from './dataSource';
-import type { AstrobinFootprint, AstrobinImageDetail, SurveyOption } from './types';
+import type {
+  SkyMapDataSource, AstrobinFootprint, AstrobinImageDetail, SurveyOption,
+  ObservatoryInfo, ArtificialHorizonRegion,
+} from 'skymap-widget';
+
+/** -999/-999 is KStarsConfig's own "never configured" sentinel (see KStarsConfig.getLatitude) —
+ *  also the sentinel skymap-widget's own isValidLocation()/SkyMapDataSource contract expects. */
+async function fetchObservatoryInfo(): Promise<ObservatoryInfo> {
+  const res = await fetch('/observatory/info');
+  if (!res.ok) throw new Error(`observatory/info failed: ${res.status}`);
+  return res.json();
+}
+
+async function fetchArtificialHorizon(): Promise<ArtificialHorizonRegion[]> {
+  const res = await fetch('/observatory/artificial-horizon');
+  if (!res.ok) throw new Error(`observatory/artificial-horizon failed: ${res.status}`);
+  return res.json();
+}
+
+/** The user's own "Terrain" panorama (KStars: View > Show Terrain) — only meaningful once
+ *  ObservatoryInfo.hasTerrain is true. Cached by the browser (see ObservatoryServlet's ETag/
+ *  Cache-Control), so fetching this is cheap on every mount after the first. */
+const TERRAIN_IMAGE_URL = '/observatory/terrain.png';
 
 /** Custom entries verified against each survey's own HiPS `properties` file (frame/order/tile format).
  * None of the NSNS palette entries are real simg.de surveys — simg.de only publishes single-channel
@@ -50,8 +70,9 @@ async function fetchAstrobinImageDetail(hash: string): Promise<AstrobinImageDeta
 
 /** SkyMapCard's data source when embedded in this dashboard — every method backed by this
  * server's own live endpoints (Ekos D-Bus reads, AstroBin proxy, observatory config on disk).
- * A future public-site deployment would supply a different SkyMapDataSource instead (e.g. reading
- * one static JSON config dump), passed to the same component unchanged. */
+ * astro-homepage's own publicDataSource.ts is the "future public-site deployment" this interface
+ * (see skymap-widget's dataSource.ts) was built to also support, passed to the same SkyMapCard
+ * unchanged. */
 export const liveSkyMapDataSource: SkyMapDataSource = {
   getObservatoryInfo: fetchObservatoryInfo,
   getArtificialHorizon: fetchArtificialHorizon,

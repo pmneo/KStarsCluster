@@ -20,36 +20,12 @@ export interface TimelineEvent {
   label: string;
 }
 
-export interface SchedulerJob {
-  name: string;
-  altitude: number;
-  completedCount: number;
-  completionTime: string;
-  inSequenceFocus: boolean;
-  minAltitude: number;
-  minMoonSeparation: number;
-  pa: number;
-  repeatsRemaining: number;
-  repeatsRequired: number;
-  sequence: string;
-  sequenceCount: number;
-  stage: number;
-  startupTime: string;
-  state: number;
-  targetDEC: number;
-  targetRA: number;
-  fRatio: number;
-}
-
-/** Mirrors org.kde.kstars.ekos.SchedulerJob.JobState's ordinal order (SchedulerJob.java). */
-const JOB_STATE_LABELS = [
-  'JOB_IDLE', 'JOB_EVALUATION', 'JOB_SCHEDULED', 'JOB_BUSY',
-  'JOB_ERROR', 'JOB_ABORTED', 'JOB_INVALID', 'JOB_COMPLETE',
-];
-
-export function getJobStateLabel(state: number): string {
-  return JOB_STATE_LABELS[state] ?? `JOB_STATE_${state}`;
-}
+// Canonical definition now lives in skymap-widget (SkyMapCard needs it too) — re-exported here
+// so this dashboard's own consumers (SchedulerCard, api/actions.ts) don't need to know that.
+// (Imported, not just re-exported, so StatusSnapshot below can still reference it directly.)
+import type { SchedulerJob } from 'skymap-widget';
+export type { SchedulerJob };
+export { getJobStateLabel } from 'skymap-widget';
 
 export interface CapturedImage {
   ts: number;
