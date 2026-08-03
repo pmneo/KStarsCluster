@@ -2789,13 +2789,14 @@ export function SkyMapCard({
 
   // Aladin's own built-in coordinate grid — no data to fetch, just its own show/hide toggle.
   // showLabels off: the RA/Dec labels on every gridline clutter a frame this small far more than
-  // the lines themselves do. thickness:1 is Aladin's own thinnest supported line (its default —
-  // there's no sub-1 option), and a neutral mid-gray reads as a measuring aid rather than a
-  // colored overlay competing with the actual sky content.
+  // the lines themselves do. thickness isn't clamped to its documented default of 1 — confirmed
+  // empirically down to 0.02 (still rendering, not vanishing) — so 0.1 renders visibly thinner
+  // without risking the line disappearing entirely at some unverified lower value. A neutral
+  // mid-gray reads as a measuring aid rather than a colored overlay competing with the sky itself.
   useEffect(() => {
     if (!ready || !aladinRef.current) return;
     aladinRef.current.setCooGrid({
-      enabled: showGrid, showLabels: false, color: '#888888', thickness: 1,
+      enabled: showGrid, showLabels: false, color: '#888888', thickness: 0.1,
     });
   }, [ready, showGrid]);
 
