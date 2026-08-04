@@ -66,6 +66,18 @@ public class HipsProxyServlet extends HttpServlet {
     private static final String BASE_URL = "https://www.simg.de/nebulae3/dr0_2/";
     private static final Pattern TILE_PATH = Pattern.compile( "Norder\\d+/(Dir\\d+/Npix\\d+|Allsky)\\.png" );
 
+    /** Aladin Lite's own default "no HiPS data here" background (its init option defaults to
+     *  exactly this, see aladin.js's own `backgroundColor:"rgb(60, 60, 60)"`) — but that default
+     *  only paints the letterboxed area *outside* the projected sky circle. *Within* a tile,
+     *  Aladin's WebGL renderer doesn't alpha-blend the base image layer at all: confirmed by
+     *  reading back an actual rendered canvas pixel at a known no-coverage point, alpha=0 rendered
+     *  as fully opaque black, identical to how alpha=255 black would render. The single-channel
+     *  surveys' and ohs8's own no-coverage pixels are alpha=0 with RGB baked in as (0,0,0) — real
+     *  black, not a neutral placeholder — so every recombination below has to check alpha itself
+     *  and substitute this gray, then output fully opaque RGB (no alpha channel at all), rather
+     *  than trying to preserve transparency that nothing downstream actually honors. */
+    private static final int NODATA_RGB = ( 60 << 16 ) | ( 60 << 8 ) | 60;
+
     private static final File CACHE_DIR = new File( "./hips-cache" );
 
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -110,6 +122,15 @@ public class HipsProxyServlet extends HttpServlet {
             else {
                 servePropertiesFile( req, resp, palette, remappedChannelOrder( ohsRemap ), true );
             }
+            return;
+        }
+
+        if( "Moc.fits".equals( tilePath ) ) {
+            // The MOC tells Aladin which parts of the sky a survey actually has data for — without
+            // it, Aladin has no way to know that short of probing tiles, which reads as random
+            // "half the sky is black" until it's given up guessing. NSNS only covers part of the
+            // northern sky, so this matters here especially.
+            serveMoc( resp, raw ? palette : "ohs8" );
             return;
         }
 
@@ -235,6 +256,34 @@ public class HipsProxyServlet extends HttpServlet {
         resp.getOutputStream().flush();
     }
 
+    /** Straight passthrough+cache of one survey's real Moc.fits from simg.de — for the combined
+     *  (PALETTES) and remapped (OHS_REMAP) palettes this is always ohs8's own Moc, a reasonable
+     *  stand-in since all of these are built from the same NSNS DR0.2 processing run and so share
+     *  essentially the same real sky footprint (computing the true intersection of three separate
+     *  single-channel Mocs for the "-sl" palettes wasn't worth it for that approximation). */
+    private void serveMoc( HttpServletResponse resp, String survey ) throws IOException {
+        File cacheFile = new File( CACHE_DIR, survey + "/Moc.fits" );
+        byte[] bytes;
+        if( cacheFile.isFile() ) {
+            bytes = Files.readAllBytes( cacheFile.toPath() );
+        }
+        else {
+            bytes = fetchBytes( BASE_URL + survey + "/Moc.fits" ).join();
+            if( bytes == null ) {
+                resp.sendError( HttpServletResponse.SC_NOT_FOUND );
+                return;
+            }
+            cacheFile.getParentFile().mkdirs();
+            Files.write( cacheFile.toPath(), bytes );
+        }
+
+        resp.setContentType( "image/fits" );
+        resp.setHeader( "Cache-Control", "public, max-age=31536000, immutable" );
+        resp.setContentLength( bytes.length );
+        resp.getOutputStream().write( bytes );
+        resp.getOutputStream().flush();
+    }
+
     private void serveBytes( HttpServletResponse resp, byte[] bytes ) throws IOException {
         resp.setContentType( "image/png" );
         // Tiles are immutable once generated — cache hard on the client too.
@@ -270,10 +319,22 @@ public class HipsProxyServlet extends HttpServlet {
         BufferedImage out = new BufferedImage( w, h, BufferedImage.TYPE_INT_RGB );
         for( int y = 0; y < h; y++ ) {
             for( int x = 0; x < w; x++ ) {
-                int rv = r.getRaster().getSample( x, y, 0 );
-                int gv = g.getRaster().getSample( x, y, 0 );
-                int bv = b.getRaster().getSample( x, y, 0 );
-                out.setRGB( x, y, (rv << 16) | (gv << 8) | bv );
+                // getRGB() normalizes any source color model (these are single-channel grayscale
+                // PNGs) to ARGB — the gray sample ends up replicated into R/G/B alike, and alpha
+                // comes along for free instead of having to inspect each raster's own band layout.
+                int rArgb = r.getRGB( x, y );
+                int gArgb = g.getRGB( x, y );
+                int bArgb = b.getRGB( x, y );
+                // Any one of the three single-channel surveys marking "no data" here (alpha=0,
+                // same NSNS DR0.2 convention as ohs8 below) means the combined pixel has no real
+                // data either — see NODATA_RGB above for why this substitutes gray, not black.
+                boolean noData = (rArgb >>> 24) == 0 || (gArgb >>> 24) == 0 || (bArgb >>> 24) == 0;
+                if( noData ) {
+                    out.setRGB( x, y, NODATA_RGB );
+                }
+                else {
+                    out.setRGB( x, y, ((rArgb & 0xFF) << 16) | ((gArgb & 0xFF) << 8) | (bArgb & 0xFF) );
+                }
             }
         }
 
@@ -297,8 +358,14 @@ public class HipsProxyServlet extends HttpServlet {
         BufferedImage out = new BufferedImage( w, h, BufferedImage.TYPE_INT_RGB );
         for( int y = 0; y < h; y++ ) {
             for( int x = 0; x < w; x++ ) {
-                int rgb = src.getRGB( x, y );
-                int[] channelValues = { (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF };
+                int argb = src.getRGB( x, y );
+                // alpha=0 marks a pixel NSNS has no coverage for at all — see NODATA_RGB above for
+                // why this substitutes gray instead of passing the real (baked-in black) RGB through.
+                if( (argb >>> 24) == 0 ) {
+                    out.setRGB( x, y, NODATA_RGB );
+                    continue;
+                }
+                int[] channelValues = { (argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF };
                 out.setRGB( x, y, (channelValues[remap[0]] << 16) | (channelValues[remap[1]] << 8) | channelValues[remap[2]] );
             }
         }
