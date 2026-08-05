@@ -2,9 +2,11 @@ package de.pmneo.kstars.web;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -35,6 +37,7 @@ public class AstrobinProxyServlet extends HttpServlet {
     // model — both found via the network requests app.astrobin.com/u/pmneo itself makes, and both
     // effectively permanent for a given account/deployment. Not worth making configurable for what
     // is fundamentally "my own dashboard showing my own gallery".
+    private static final String ASTROBIN_CDN_HOST = "cdn.astrobin.com";
     private static final long ASTROBIN_USER_ID = 56163;
     private static final int IMAGE_CONTENT_TYPE_ID = 19;
     private static final int IMAGE_REVISION_CONTENT_TYPE_ID = 20;
@@ -97,7 +100,64 @@ public class AstrobinProxyServlet extends HttpServlet {
             return;
         }
 
+        if( "/thumbnail".equals( pathInfo ) ) {
+            serveThumbnail( req.getParameter( "url" ), resp );
+            return;
+        }
+
         resp.sendError( HttpServletResponse.SC_NOT_FOUND );
+    }
+
+    /** Proxies one AstroBin CDN thumbnail same-origin — SkyMapCard's getAstrobinImage fetches this
+     *  (not the raw CDN URL, see extractThumbnailUrl below) specifically so it can read the response
+     *  as a blob; a cross-origin fetch() straight to AstroBin's CDN would otherwise be blocked
+     *  outright (no CORS header there), unlike the plain &lt;img src&gt; this used to be. Restricted
+     *  to that one hostname so this can't become an open image-fetching proxy for anyone who finds
+     *  the endpoint. Not disk-cached like the HiPS tiles: this is a single-user private dashboard, so
+     *  the browser's own HTTP cache (see the Cache-Control below) already covers the "don't re-fetch
+     *  every reload" case that matters for a public multi-visitor site. */
+    private void serveThumbnail( String url, HttpServletResponse resp ) throws IOException {
+        if( url == null || url.isEmpty() ) {
+            resp.sendError( HttpServletResponse.SC_BAD_REQUEST );
+            return;
+        }
+
+        URI uri;
+        try {
+            uri = URI.create( url );
+        }
+        catch( IllegalArgumentException e ) {
+            resp.sendError( HttpServletResponse.SC_BAD_REQUEST );
+            return;
+        }
+        if( !ASTROBIN_CDN_HOST.equals( uri.getHost() ) ) {
+            resp.sendError( HttpServletResponse.SC_FORBIDDEN );
+            return;
+        }
+
+        HttpResponse<byte[]> upstream;
+        try {
+            HttpRequest request = HttpRequest.newBuilder( uri ).GET().build();
+            upstream = httpClient.send( request, HttpResponse.BodyHandlers.ofByteArray() );
+        }
+        catch( InterruptedException e ) {
+            Thread.currentThread().interrupt();
+            resp.sendError( HttpServletResponse.SC_BAD_GATEWAY );
+            return;
+        }
+        catch( Exception e ) {
+            resp.sendError( HttpServletResponse.SC_BAD_GATEWAY );
+            return;
+        }
+        if( upstream.statusCode() != 200 ) {
+            resp.sendError( HttpServletResponse.SC_BAD_GATEWAY );
+            return;
+        }
+
+        resp.setContentType( upstream.headers().firstValue( "Content-Type" ).orElse( "image/jpeg" ) );
+        resp.setHeader( "Cache-Control", "public, max-age=31536000, immutable" );
+        resp.getOutputStream().write( upstream.body() );
+        resp.getOutputStream().flush();
     }
 
     private synchronized List<Map<String, Object>> getFootprints() throws Exception {
@@ -204,17 +264,24 @@ public class AstrobinProxyServlet extends HttpServlet {
      *  missing, so a footprint still shows *something* rather than nothing. */
     @SuppressWarnings("unchecked")
     private static String extractThumbnailUrl( Map<String, Object> image ) {
+        String rawUrl = null;
         Object thumbnails = image.get( "thumbnails" );
         if( thumbnails instanceof List ) {
             for( Object entry : (List<Object>) thumbnails ) {
                 if( entry instanceof Map && "regular".equals( ((Map<String, Object>) entry).get( "alias" ) ) ) {
                     Object url = ((Map<String, Object>) entry).get( "url" );
-                    if( url != null ) return String.valueOf( url );
+                    if( url != null ) { rawUrl = String.valueOf( url ); break; }
                 }
             }
         }
-        Object fallback = image.get( "finalGalleryThumbnail" );
-        return fallback == null ? null : String.valueOf( fallback );
+        if( rawUrl == null ) {
+            Object fallback = image.get( "finalGalleryThumbnail" );
+            rawUrl = fallback == null ? null : String.valueOf( fallback );
+        }
+        if( rawUrl == null ) return null;
+        // Same-origin so SkyMapCard's getAstrobinImage can fetch() it and read a blob — see
+        // serveThumbnail above.
+        return "/astrobin/thumbnail?url=" + URLEncoder.encode( rawUrl, StandardCharsets.UTF_8 );
     }
 
     /** Pages through the same lightweight "gallery" listing app.astrobin.com/u/&lt;username&gt;
