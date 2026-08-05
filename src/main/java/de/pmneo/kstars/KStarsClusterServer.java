@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
+import org.eclipse.jetty.client.util.StringContentProvider;
+import org.eclipse.jetty.http.HttpMethod;
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.kde.kstars.ekos.SchedulerJob;
 import org.kde.kstars.ekos.Align.AlignState;
@@ -50,6 +52,84 @@ public class KStarsClusterServer extends KStarsCluster {
         super.ekosReady();
 
         loadSchedule();
+    }
+
+    private String publicStatusUrl;
+    private String publicStatusSecret;
+
+    /** Enables the periodic public-status push (see pushPublicStatus()) — disabled entirely
+     *  (no task ever scheduled) unless a non-empty URL is configured, same "opt-in, off by
+     *  default" pattern as astro-homepage's own CACHE_EVICT_SECRET. This machine isn't reachable
+     *  from the internet, so it has to push to the public site rather than the other way around. */
+    public void setPublicStatusPush( String url, String secret ) {
+        this.publicStatusUrl = url;
+        this.publicStatusSecret = secret;
+
+        if( url != null && !url.isEmpty() ) {
+            schedulerService.scheduleWithFixedDelay( this::pushPublicStatus, 10, 60, TimeUnit.SECONDS );
+        }
+    }
+
+    /** A small, publicly-safe subset of buildStatusSnapshot() — roof/weather/current-target only,
+     *  not the full device/camera/history payload that's nobody else's business. Best-effort: a
+     *  failed push just tries again in 60s, same as any of this class's other periodic checks. */
+    private void pushPublicStatus() {
+        try {
+            Map<String,Object> payload = new HashMap<>();
+            payload.put( "timestamp", System.currentTimeMillis() );
+            payload.put( "kstarsRunning", getKStarsRuntime() >= 0 );
+            payload.put( "ekosReady", ekosReady.get() );
+            payload.put( "roofOpen", roofStatus.get() == RoofStatus.UNPARKED );
+            payload.put( "weatherSafe", weather.checkWeatherStatus( client ) );
+
+            SchedulerJob active = schedulerActiveJob.get();
+            if( active != null ) {
+                Map<String,Object> job = new HashMap<>();
+                job.put( "targetName", active.name );
+                // Renamed from the job's own numeric "stage" (a distinct Ekos concept, capture
+                // sub-step) to avoid confusion — this is just the human-readable JobState label
+                // for our own status text (see astro-homepage's ObservatoryStatusList).
+                job.put( "stateLabel", active.getState().name() );
+                job.put( "completedCount", active.completedCount );
+                job.put( "sequenceCount", active.sequenceCount );
+                // J2000 target coordinates + position angle — lets the public site draw the same
+                // "where's it pointed and how big is the frame" marker/rectangle the private
+                // dashboard shows, without needing the mount's actual live encoder position.
+                job.put( "targetRA", active.targetRA );
+                job.put( "targetDEC", active.targetDEC );
+                job.put( "pa", active.pa );
+                payload.put( "activeJob", job );
+            }
+            else {
+                payload.put( "activeJob", null );
+            }
+
+            double[] fovValues = this.fov.get();
+            if( fovValues != null && fovValues.length >= 2 ) {
+                Map<String,Object> fovMap = new HashMap<>();
+                fovMap.put( "widthArcmin", fovValues[0] );
+                fovMap.put( "heightArcmin", fovValues[1] );
+                payload.put( "fov", fovMap );
+            }
+            else {
+                payload.put( "fov", null );
+            }
+
+            String json = new GsonBuilder().create().toJson( payload );
+
+            var res = client.newRequest( publicStatusUrl )
+                .method( HttpMethod.POST )
+                .header( "X-Observatory-Secret", publicStatusSecret )
+                .content( new StringContentProvider( json ), "application/json" )
+                .send();
+
+            if( res.getStatus() < 200 || res.getStatus() > 203 ) {
+                logError( "Failed to push public status: " + res.getStatus(), null );
+            }
+        }
+        catch( Throwable t ) {
+            logError( "Failed to push public status", t );
+        }
     }
 
     @Override

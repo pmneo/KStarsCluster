@@ -71,10 +71,19 @@ public class ServerRunner {
 		
 	@Argument(alias = "a", required = false, valuesProvider = BooleanProvider.class )
 	public static String autoFocus = "true";
-	
+
+	// Both empty (the default) disables the push entirely — see
+	// KStarsClusterServer.setPublicStatusPush(). Only meaningful for the real server (not a
+	// KStarsClusterClient view), since roof/weather status only exists there.
+	@Argument(alias = "psu", required = false )
+	public static String publicStatusUrl = "";
+
+	@Argument(alias = "pss", required = false )
+	public static String publicStatusSecret = "";
+
 	public static void main(String[] args) throws Exception {
 		Args.parseOrExit(ServerRunner.class, args);
-		
+
 		KStarsCluster cluster = null;
 
 		if( host != null && host.isEmpty() == false ) {
@@ -86,6 +95,7 @@ public class ServerRunner {
 		else {
 			KStarsClusterServer server = new KStarsClusterServer(port);
 			server.setLoadSchedule( loadSchedule );
+			server.setPublicStatusPush( publicStatusUrl, publicStatusSecret );
 			cluster = server;
 		}
 

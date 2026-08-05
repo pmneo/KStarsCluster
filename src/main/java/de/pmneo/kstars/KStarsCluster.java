@@ -65,7 +65,7 @@ public abstract class KStarsCluster extends KStarsState {
 	public final KStarsConfig config = new KStarsConfig();
 	public final Weather weather = new Weather();
 
-	protected final ScheduledExecutorService schedulerService = Executors.newScheduledThreadPool(1);
+	protected final ScheduledExecutorService schedulerService = Executors.newScheduledThreadPool(5);
 
 	public Device<Ekos> ekos;
 	public Device<Align> align;
