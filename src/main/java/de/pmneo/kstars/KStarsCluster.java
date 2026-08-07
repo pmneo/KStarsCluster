@@ -2057,6 +2057,17 @@ public abstract class KStarsCluster extends KStarsState {
 		// and logging an UnknownObject error per refresh per second until torn down below.
 		ekosReady.set( false );
 
+		// Don't rely on the Scheduler's jobEnded signal to clear this — unsubscribe() below
+		// tears down that very handler right after stop(), and a forced/external stop (e.g.
+		// the weather-triggered safeStopEkos shutdown) doesn't necessarily make Ekos fire
+		// jobEnded for whatever job was running. Set directly rather than via
+		// updateSchedulerActiveJob(), which would just re-read the (still-busy, or by then
+		// gone-and-exception-swallowed) live D-Bus job instead of actually clearing it.
+		final SchedulerJob prevJob = schedulerActiveJob.getAndSet( null );
+		if( prevJob != null ) {
+			logMessage( "Clearing scheduler active job '" + prevJob.name + "' (Ekos is stopping)" );
+		}
+
 		try {
 			if( getKStarsRuntime() > 0 ) {
 				logMessage( "Stopping Ekos" );
