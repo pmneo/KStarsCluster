@@ -1,7 +1,14 @@
 import { useRef, useState } from 'react';
 import type { CapturedImage, GuideDeltaSample, HfrSample, TimelineEvent, TimelineCaptureSelection, ViewerImage } from '../api/types';
-import type { AllskyMatch } from '../api/allskyApi';
+import type { AllskyMatch, AllskyPoint } from '../api/allskyApi';
 import { CaptureCompareStrip } from './CaptureCompareStrip';
+
+interface NightKeogram {
+  label: string;
+  startMs: number;
+  endMs: number;
+  imageUrl: string;
+}
 
 interface Props {
   images: Record<string, CapturedImage[]>;
@@ -20,6 +27,13 @@ interface Props {
    * CaptureCompareStrip below renders. */
   activeCapture: TimelineCaptureSelection | null;
   activeAllskyMatches: AllskyMatch[];
+  /** Outdoor allsky camera's star count over time — plotted as its own line row, see LineRow. */
+  allskyHistory?: AllskyPoint[];
+  /** Every completed night's keogram within whatever range App fetched, pre-resolved (image URLs
+   * built, cam-name knowledge kept in App) — each one stretched across the time axis between its
+   * own civil dusk/dawn, see the keogram <image> rendering below. Non-overlapping by construction
+   * (nights don't overlap), so they all share one row same as multiple Capture segments do. */
+  nightKeograms?: NightKeogram[];
   onClearActiveCapture: () => void;
   onOpenImage: (image: ViewerImage) => void;
 }
@@ -213,6 +227,14 @@ const WIDTH = 1000;
 const ROW_HEIGHT = 22;
 const ROW_GAP = 4;
 const LABEL_WIDTH = 110;
+/** Taller than a normal lane — a keogram needs more vertical room to actually read than a Gantt
+ * bar does. */
+const KEOGRAM_HEIGHT = 80;
+/** Allsky frames land ~15-30s apart within a night; the real gaps worth breaking the star-count
+ * line at are the multi-hour daytime stretches between separately-fetched nights (see the
+ * LineRow rendering below) — comfortably larger than any in-night capture hiccup, comfortably
+ * smaller than "the next night". */
+const ALLSKY_GAP_MS = 30 * 60_000;
 
 /** Default view before the user has touched the scrollbar — the last 24h, right edge pinned to
  * "now". Once they drag either handle, the view holds still at whatever absolute range they
@@ -226,10 +248,23 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-interface Row {
+interface SegmentRow {
+  kind: 'segments';
   label: string;
   segments: Segment[];
 }
+
+/** A continuous value-over-time lane (e.g. allsky star count) rather than a Gantt bar sequence —
+ * rendered as a single <polyline> inside the row's own ROW_HEIGHT band instead of one <rect> per
+ * event. */
+interface LineRow {
+  kind: 'line';
+  label: string;
+  points: { ts: number; value: number }[];
+  color: string;
+}
+
+type Row = SegmentRow | LineRow;
 
 interface HoverState {
   x: number;
@@ -316,7 +351,7 @@ function TimelineScrollbar({ fullStart, fullEnd, viewStart, viewEnd, onChange }:
 
 export function SessionTimeline({
   images, hfrHistory, guideDeltaHistory, timelineEvents, onHoverCapture, onSelectCapture,
-  activeCapture, activeAllskyMatches, onClearActiveCapture, onOpenImage,
+  activeCapture, activeAllskyMatches, allskyHistory, nightKeograms = [], onClearActiveCapture, onOpenImage,
 }: Props) {
   // null = "follow now", i.e. the default last-24h view whose right edge keeps up with live
   // data. Set once the user drags a handle, at which point the view holds still at that exact
@@ -337,19 +372,27 @@ export function SessionTimeline({
   const jobColors = new Map<string, string>();
 
   const rows: Row[] = [];
-  rows.push({ label: 'Scheduler', segments: schedulerSegments(timelineEvents, jobColors, now) });
+  rows.push({ kind: 'segments', label: 'Scheduler', segments: schedulerSegments(timelineEvents, jobColors, now) });
   for (const train of Object.keys(images).sort()) {
-    rows.push({ label: `Capture (${train})`, segments: captureSegments(images[train], dynamicFilterSeen, filterLegend) });
+    rows.push({ kind: 'segments', label: `Capture (${train})`, segments: captureSegments(images[train], dynamicFilterSeen, filterLegend) });
   }
   for (const train of Object.keys(hfrHistory).sort()) {
-    rows.push({ label: `Focus (${train})`, segments: focusSegments(hfrHistory[train]) });
+    rows.push({ kind: 'segments', label: `Focus (${train})`, segments: focusSegments(hfrHistory[train]) });
   }
-  rows.push({ label: 'Guide', segments: toSegments(timelineEvents, 'guide', now, guideColor) });
-  rows.push({ label: 'Mount', segments: toSegments(timelineEvents, 'mount', now, mountColor) });
-  rows.push({ label: 'Align', segments: toSegments(timelineEvents, 'align', now, alignColor, ALIGN_MOMENTARY_LABELS) });
+  rows.push({ kind: 'segments', label: 'Guide', segments: toSegments(timelineEvents, 'guide', now, guideColor) });
+  rows.push({ kind: 'segments', label: 'Mount', segments: toSegments(timelineEvents, 'mount', now, mountColor) });
+  rows.push({ kind: 'segments', label: 'Align', segments: toSegments(timelineEvents, 'align', now, alignColor, ALIGN_MOMENTARY_LABELS) });
+  if (allskyHistory && allskyHistory.length > 0) {
+    rows.push({
+      kind: 'line',
+      label: 'Allsky Stars',
+      points: allskyHistory.map((p) => ({ ts: p.ts, value: p.stars })),
+      color: '#4dabf7',
+    });
+  }
 
   const allTs = [
-    ...rows.flatMap((r) => r.segments.flatMap((s) => [s.start, s.end])),
+    ...rows.filter((r): r is SegmentRow => r.kind === 'segments').flatMap((r) => r.segments.flatMap((s) => [s.start, s.end])),
     ...guideDeltaHistory.map((s) => s.ts),
   ];
 
@@ -369,6 +412,14 @@ export function SessionTimeline({
   const plotWidth = WIDTH - LABEL_WIDTH;
   const scale = plotWidth / Math.max(1, domainEnd - domainStart);
   const x = (ts: number) => LABEL_WIDTH + Math.max(0, ts - domainStart) * scale;
+  /** Same mapping as x(), but without its floor at LABEL_WIDTH — that floor is harmless for a
+   * solid-color Segment <rect> (clipping its start to the viewport edge looks identical to true
+   * off-screen positioning, since there's no internal content to distort), but wrong for the
+   * keogram <image>: flooring its box's left edge to LABEL_WIDTH while sizing the box from the
+   * image's TRUE end would still squeeze the whole picture into a narrower-than-real box. Used
+   * only for the keogram, which needs a real (possibly negative, off-canvas) x so the SVG's own
+   * viewBox clips it naturally instead. */
+  const xUnclamped = (ts: number) => LABEL_WIDTH + (ts - domainStart) * scale;
 
   /** Inverse of x() above, accounting for the SVG's own on-screen size (viewBox units aren't
    * screen pixels — see preserveAspectRatio="none" on the <svg>) — clamped to the segment's own
@@ -413,7 +464,8 @@ export function SessionTimeline({
     onSelectCapture(buildSelection(timestampAtClientX(e.clientX, seg), images));
   }
 
-  const height = rows.length * (ROW_HEIGHT + ROW_GAP) + 24;
+  const keogramY = rows.length * (ROW_HEIGHT + ROW_GAP);
+  const height = keogramY + (nightKeograms.length > 0 ? KEOGRAM_HEIGHT + ROW_GAP : 0) + 24;
   const tickCount = 6;
   const ticks = Array.from({ length: tickCount }, (_, i) => domainStart + ((domainEnd - domainStart) * i) / (tickCount - 1));
 
@@ -455,6 +507,58 @@ export function SessionTimeline({
 
         {rows.map((row, i) => {
           const y = i * (ROW_HEIGHT + ROW_GAP);
+
+          if (row.kind === 'line') {
+            const visible = row.points.filter((p) => p.ts >= domainStart && p.ts <= domainEnd);
+            // Daytime and any other stretch we simply have no allsky frames for (indi-allsky's own
+            // entry-count cap can still leave small holes even after the per-night sub-windowing in
+            // App's star-history effect) reasonably default to "0 stars" — there's no meaningful
+            // difference between "checked, saw nothing" and "didn't check" for this purpose, and
+            // filling gaps this way beats either leaving a blank hole or, worse, drawing a single
+            // polyline straight through the merged points that'd cut a spurious diagonal across
+            // hours of missing data as if it were a real (and wildly wrong) trend.
+            const filled: typeof visible = [];
+            if (visible.length > 0 && visible[0].ts - domainStart > ALLSKY_GAP_MS) {
+              // Two anchors, not one — a flat zero from domainStart up to just before the first
+              // real point, THEN a vertical jump up to it. A single anchor at domainStart would
+              // leave nothing but that one zero point and the first real point to connect, which
+              // draws a smooth diagonal ramp across the whole gap instead of a flat 0 baseline —
+              // exactly the same reasoning as the paired anchors for internal/trailing gaps below.
+              filled.push({ ts: domainStart, value: 0 }, { ts: visible[0].ts - 1, value: 0 });
+            }
+            visible.forEach((p, idx) => {
+              const prev = visible[idx - 1];
+              if (prev && p.ts - prev.ts > ALLSKY_GAP_MS) {
+                filled.push({ ts: prev.ts + 1, value: 0 }, { ts: p.ts - 1, value: 0 });
+              }
+              filled.push(p);
+            });
+            if (visible.length > 0 && domainEnd - visible[visible.length - 1].ts > ALLSKY_GAP_MS) {
+              filled.push({ ts: visible[visible.length - 1].ts + 1, value: 0 }, { ts: domainEnd, value: 0 });
+            }
+            const values = filled.map((p) => p.value);
+            const minV = values.length > 0 ? Math.min(...values) : 0;
+            const maxV = values.length > 0 ? Math.max(...values) : 1;
+            const valueToY = (v: number) => y + ROW_HEIGHT - ((v - minV) / (maxV - minV || 1)) * ROW_HEIGHT;
+            const latest = visible.length > 0 ? visible[visible.length - 1] : undefined;
+            return (
+              <g key={row.label}>
+                <text x={0} y={y + ROW_HEIGHT / 2 + 3} fontSize="10" fill="#e4e7ee">
+                  {row.label}{latest ? ` (★ ${latest.value})` : ''}
+                </text>
+                <rect x={LABEL_WIDTH} y={y} width={plotWidth} height={ROW_HEIGHT} fill="#14161c" />
+                {filled.length > 1 && (
+                  <polyline
+                    points={filled.map((p) => `${x(p.ts)},${valueToY(p.value)}`).join(' ')}
+                    fill="none"
+                    stroke={row.color}
+                    strokeWidth={1.5}
+                  />
+                )}
+              </g>
+            );
+          }
+
           return (
             <g key={row.label}>
               <text x={0} y={y + ROW_HEIGHT / 2 + 3} fontSize="10" fill="#e4e7ee">{row.label}</text>
@@ -482,6 +586,39 @@ export function SessionTimeline({
             </g>
           );
         })}
+
+        {nightKeograms.length > 0 && (
+          <g>
+            <text x={0} y={keogramY + 10} fontSize="10" fill="#e4e7ee">Keogram</text>
+            {nightKeograms.map((keogram) => {
+              // Skip entirely-offscreen nights (perf only) — but position/size the ones we do
+              // render using their own TRUE start/end, never domainStart/domainEnd. Clamping those
+              // into the x()/width computation would shrink the box that the full-image href gets
+              // stretched into (preserveAspectRatio="none" fills whatever box it's given), squeezing
+              // the WHOLE image into a fraction of its real width instead of just letting the part
+              // that's scrolled out of view get cropped — exactly like every Segment <rect> above
+              // already does, relying on the SVG viewBox's own edge clipping instead of clamping. */}
+              if (keogram.endMs <= domainStart || keogram.startMs >= domainEnd) return null;
+              const boxX = xUnclamped(keogram.startMs);
+              const boxWidth = Math.max(1, xUnclamped(keogram.endMs) - boxX);
+              return (
+                <g key={keogram.label}>
+                  <image
+                    x={boxX}
+                    y={keogramY}
+                    width={boxWidth}
+                    height={KEOGRAM_HEIGHT}
+                    preserveAspectRatio="none"
+                    href={keogram.imageUrl}
+                  />
+                  <text x={Math.max(boxX, LABEL_WIDTH) + 2} y={keogramY + KEOGRAM_HEIGHT - 4} fontSize="9" fill="#e4e7ee" style={{ paintOrder: 'stroke', stroke: '#000', strokeWidth: 3 }}>
+                    {keogram.label}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
+        )}
       </svg>
 
       {legend.length > 0 && (

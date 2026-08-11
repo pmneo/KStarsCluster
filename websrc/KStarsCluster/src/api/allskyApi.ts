@@ -47,6 +47,29 @@ export async function fetchAllskyChart(cam: string, limitS: number, timestampMs?
   return res.json();
 }
 
+export interface AllskyNightKeogram {
+  dayDate: string;
+  dayDateLong: string;
+  /** Relative to the indi-allsky web root — pass to allskyImageUrl(). */
+  path: string;
+  maxStars?: number;
+  avgStars?: number;
+  /** Civil dusk of dayDate / civil dawn of the following day — not indi-allsky's own data (it
+   * exposes no start/end for a night), computed backend-side from the observatory's own location.
+   * Absent if the twilight calc failed for that date (e.g. polar latitudes). */
+  startMs?: number;
+  endMs?: number;
+}
+
+/** Every COMPLETED night's keogram the backend still has on hand (indi-allsky groups by the
+ * night's own start date, and only finishes generating a keogram once that night is over) —
+ * covers as much of the retained session history as the Session Timeline can scroll back
+ * through, not just the latest one. Empty if none found yet. */
+export async function fetchAllskyKeograms(cam: string): Promise<AllskyNightKeogram[]> {
+  const res = await fetch(`/allsky/keogram?${new URLSearchParams({ cam }).toString()}`);
+  return res.json();
+}
+
 export interface AllskyMatch {
   cam: string;
   label: string;

@@ -2,6 +2,7 @@ package de.pmneo.kstars.web;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -9,8 +10,13 @@ import java.util.regex.Pattern;
 
 import com.google.gson.Gson;
 
+import de.pmneo.kstars.KStarsCluster;
+import de.pmneo.kstars.KStarsConfig;
 import de.pmneo.kstars.utils.AllskyClient;
+import de.pmneo.kstars.utils.SunriseSunset;
 
+import jakarta.servlet.ServletConfig;
+import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -23,11 +29,22 @@ import jakarta.servlet.http.HttpServletResponse;
  * AllskyClient per physical camera/host — there can be more than one indi-allsky install on the
  * LAN (e.g. one per site); the "cam" query param on every action but /cameras selects which.
  *
- * Deliberately self-contained — no dependency on live cluster state (unlike ImageServlet, which
- * needs KStarsCluster's own captured-image history) — so this can be lifted wholesale into the
- * standalone Sky Map/AstroBin widget this app is being prepped to spin out into its own repo.
+ * Mostly self-contained — no dependency on live cluster state (unlike ImageServlet, which needs
+ * KStarsCluster's own captured-image history), so most of this could be lifted wholesale into the
+ * standalone Sky Map/AstroBin widget this app is being prepped to spin out into its own repo. The
+ * one exception is /keogram, which needs the observatory's lat/long (static config, not live
+ * status) to place a night's keogram on the Session Timeline's time axis — see init() below.
  */
 public class AllskyProxyServlet extends HttpServlet {
+
+    private KStarsConfig config;
+
+    @Override
+    public void init( ServletConfig servletConfig ) throws ServletException {
+        super.init( servletConfig );
+        KStarsCluster cluster = (KStarsCluster) getServletContext().getAttribute( "cluster" );
+        config = cluster.config;
+    }
 
     /** showDetails: whether star count/history are meaningful for this camera — false for one
      *  pointed at the dome interior rather than the sky (no point charting "stars" there). */
@@ -82,6 +99,15 @@ public class AllskyProxyServlet extends HttpServlet {
                     // callers asking for "the last limitS seconds" keep working unchanged.
                     Long timestamp = parseLongParam( req, "timestamp" );
                     writeJson( resp, fetchChart( cam.client(), limitS, timestamp ) );
+                    return;
+                }
+
+                case "/keogram": {
+                    List<Map<String,Object>> keograms = new ArrayList<>();
+                    for( AllskyClient.NightKeogram keogram : cam.client().fetchNightKeograms() ) {
+                        keograms.add( nightKeogramJson( keogram ) );
+                    }
+                    writeJson( resp, keograms );
                     return;
                 }
 
@@ -189,6 +215,54 @@ public class AllskyProxyServlet extends HttpServlet {
             }
         }
         return points;
+    }
+
+    private static final Pattern DAY_DATE = Pattern.compile( "(\\d{4})(\\d{2})(\\d{2})" );
+
+    /** indi-allsky's own response has no start/end time for a night's keogram — only its
+     *  `dayDate` (the calendar day the night started). Rather than trying to derive an exact
+     *  boundary from indi-allsky itself (tried live against js/loop — unreliable, since that
+     *  endpoint caps how many entries it returns regardless of the requested window, so a wide
+     *  query never actually reaches back to dusk at night-time capture cadence), reuse this app's
+     *  own twilight math for the same observatory location: night start = that day's civil dusk,
+     *  night end = the following day's civil dawn. Approximate (a keogram's columns are one per
+     *  captured frame, not strictly one per second) but good enough to place/stretch the image on
+     *  the Session Timeline's axis. */
+    private long[] nightBounds( String dayDate ) {
+        var m = DAY_DATE.matcher( dayDate );
+        if( !m.matches() ) {
+            return null;
+        }
+
+        Calendar day = Calendar.getInstance();
+        day.set( Integer.parseInt( m.group( 1 ) ), Integer.parseInt( m.group( 2 ) ) - 1, Integer.parseInt( m.group( 3 ) ), 12, 0, 0 );
+
+        Calendar nextDay = (Calendar) day.clone();
+        nextDay.add( Calendar.DAY_OF_MONTH, 1 );
+
+        Calendar[] duskRange = SunriseSunset.getCivilTwilight( day, config.getLatitude(), config.getLongitude() );
+        Calendar[] dawnRange = SunriseSunset.getCivilTwilight( nextDay, config.getLatitude(), config.getLongitude() );
+        if( duskRange == null || dawnRange == null ) {
+            return null;
+        }
+
+        return new long[]{ duskRange[1].getTimeInMillis(), dawnRange[0].getTimeInMillis() };
+    }
+
+    private Map<String,Object> nightKeogramJson( AllskyClient.NightKeogram keogram ) {
+        Map<String,Object> res = new LinkedHashMap<>();
+        res.put( "dayDate", keogram.dayDate() );
+        res.put( "dayDateLong", keogram.dayDateLong() );
+        res.put( "path", keogram.path() );
+        res.put( "maxStars", keogram.maxStars() );
+        res.put( "avgStars", keogram.avgStars() );
+
+        long[] bounds = nightBounds( keogram.dayDate() );
+        if( bounds != null ) {
+            res.put( "startMs", bounds[0] );
+            res.put( "endMs", bounds[1] );
+        }
+        return res;
     }
 
     @SuppressWarnings("unchecked")

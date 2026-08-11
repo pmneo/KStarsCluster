@@ -2,9 +2,16 @@ package de.pmneo.kstars.utils;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
@@ -53,12 +60,16 @@ public class AllskyClient {
     }
 
     private HttpsURLConnection open( String url ) throws Exception {
+        return open( url, "GET" );
+    }
+
+    private HttpsURLConnection open( String url, String method ) throws Exception {
         HttpsURLConnection conn = (HttpsURLConnection) URI.create( url ).toURL().openConnection();
         conn.setSSLSocketFactory( sslContext.getSocketFactory() );
         conn.setHostnameVerifier( ( hostname, session ) -> true );
         conn.setConnectTimeout( 5000 );
         conn.setReadTimeout( 10000 );
-        conn.setRequestMethod( "GET" );
+        conn.setRequestMethod( method );
         return conn;
     }
 
@@ -138,5 +149,152 @@ public class AllskyClient {
         finally {
             conn.disconnect();
         }
+    }
+
+    /** Scrapes the CSRF token indi-allsky's own pages inline into a `<script>` (Flask-WTF style,
+     *  e.g. `xhr.setRequestHeader("X-CSRFToken", "...")`) — there's no dedicated API for it, the
+     *  token only ever shows up baked into an HTML page's JS. */
+    private static final Pattern CSRF_TOKEN_PATTERN = Pattern.compile( "X-CSRFToken\",\\s*\"([^\"]+)\"" );
+
+    /** dayDate/dayDateLong/path/maxStars/avgStars for one COMPLETED night (i.e. indi-allsky has
+     *  already finished generating its keogram for it) — see {@link #fetchNightKeograms()}. */
+    public record NightKeogram( String dayDate, String dayDateLong, String path, Integer maxStars, Integer avgStars ) {}
+
+    /** Only changes once a day, and finding it costs two round-trips per month queried (a
+     *  CSRF/cookie scrape plus the actual POST) — not worth repeating on every dashboard poll. */
+    private static final long NIGHT_KEOGRAM_CACHE_MS = 15 * 60 * 1000;
+    /** How many months back to look — the Session Timeline can retain (and let the user scroll
+     *  back through) more than one night's worth of history, so a single "latest night" isn't
+     *  enough; 2 months is a generous, simple upper bound rather than trying to coordinate the
+     *  exact lookback with however far back the frontend's own retained session data happens to
+     *  reach. */
+    private static final int NIGHT_KEOGRAM_MONTHS_BACK = 2;
+    private volatile List<NightKeogram> cachedNightKeograms;
+    private volatile long cachedNightKeogramsFetchedAtMs;
+
+    /**
+     * Every night indi-allsky has fully processed (keogram already generated) in the last
+     * {@link #NIGHT_KEOGRAM_MONTHS_BACK} months, newest first — empty if none found. Unlike
+     * {@link #fetchLoop}/{@link #fetchLatest}, this isn't exposed anywhere in indi-allsky's simple
+     * unauthenticated JSON API — the only source is its CSRF-protected `ajax/videoviewer` endpoint,
+     * which backs its own "Timelapses" page.
+     */
+    public List<NightKeogram> fetchNightKeograms() throws Exception {
+        List<NightKeogram> cached = cachedNightKeograms;
+        if( cached != null && System.currentTimeMillis() - cachedNightKeogramsFetchedAtMs < NIGHT_KEOGRAM_CACHE_MS ) {
+            return cached;
+        }
+
+        Calendar month = Calendar.getInstance();
+        List<NightKeogram> result = new ArrayList<>();
+        for( int i = 0; i < NIGHT_KEOGRAM_MONTHS_BACK; i++ ) {
+            result.addAll( fetchNightKeograms( month.get( Calendar.YEAR ), month.get( Calendar.MONTH ) + 1 ) );
+            month.add( Calendar.MONTH, -1 );
+        }
+
+        cachedNightKeograms = result;
+        cachedNightKeogramsFetchedAtMs = System.currentTimeMillis();
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<NightKeogram> fetchNightKeograms( int year, int month ) throws Exception {
+        String viewerUrl = baseUrl + "videoviewer";
+
+        String csrfToken;
+        String cookie;
+        HttpsURLConnection getConn = open( viewerUrl );
+        try {
+            if( getConn.getResponseCode() != 200 ) {
+                throw new IllegalStateException( "indi-allsky returned HTTP " + getConn.getResponseCode() + " for " + viewerUrl );
+            }
+            String html = new String( readAll( getConn.getInputStream() ), StandardCharsets.UTF_8 );
+            Matcher m = CSRF_TOKEN_PATTERN.matcher( html );
+            if( !m.find() ) {
+                throw new IllegalStateException( "Could not find CSRF token on " + viewerUrl );
+            }
+            csrfToken = m.group( 1 );
+            cookie = extractCookie( getConn );
+        }
+        finally {
+            getConn.disconnect();
+        }
+
+        String json = gson.toJson( Map.of(
+                "CAMERA_ID", String.valueOf( cameraId ),
+                "YEAR_SELECT", String.valueOf( year ),
+                "MONTH_SELECT", String.valueOf( month ),
+                "TIMEOFDAY_SELECT", "night"
+        ) );
+
+        HttpsURLConnection postConn = open( baseUrl + "ajax/videoviewer", "POST" );
+        postConn.setDoOutput( true );
+        postConn.setRequestProperty( "Content-Type", "application/json" );
+        postConn.setRequestProperty( "X-CSRFToken", csrfToken );
+        // Required — confirmed empirically that a bare POST without this 400s ("The referrer
+        // header is missing.") even with a valid CSRF token and cookie.
+        postConn.setRequestProperty( "Referer", viewerUrl );
+        if( cookie != null ) {
+            postConn.setRequestProperty( "Cookie", cookie );
+        }
+        try {
+            try( OutputStream out = postConn.getOutputStream() ) {
+                out.write( json.getBytes( StandardCharsets.UTF_8 ) );
+            }
+
+            if( postConn.getResponseCode() != 200 ) {
+                throw new IllegalStateException( "indi-allsky returned HTTP " + postConn.getResponseCode() + " for ajax/videoviewer" );
+            }
+
+            String responseBody = new String( readAll( postConn.getInputStream() ), StandardCharsets.UTF_8 );
+            Map<String,Object> response = gson.fromJson( responseBody, Map.class );
+            List<Map<String,Object>> videoList = (List<Map<String,Object>>) response.get( "video_list" );
+            if( videoList == null ) {
+                return List.of();
+            }
+
+            // A still-in-progress night either isn't in this list yet or has keogram_success ==
+            // false — everything else here is genuinely done.
+            List<NightKeogram> result = new ArrayList<>();
+            for( Map<String,Object> entry : videoList ) {
+                if( !Boolean.TRUE.equals( entry.get( "night" ) ) ) continue;
+                if( !Boolean.TRUE.equals( entry.get( "keogram_success" ) ) ) continue;
+                Object path = entry.get( "keogram" );
+                if( !(path instanceof String) || "None".equals( path ) ) continue;
+
+                result.add( new NightKeogram(
+                        (String) entry.get( "dayDate" ),
+                        (String) entry.get( "dayDate_long" ),
+                        (String) path,
+                        toInteger( entry.get( "max_stars" ) ),
+                        toInteger( entry.get( "avg_stars" ) )
+                ) );
+            }
+            return result;
+        }
+        finally {
+            postConn.disconnect();
+        }
+    }
+
+    /** Flask's session cookie, captured from Set-Cookie and replayed on the follow-up POST —
+     *  attribute-stripped (path/expires/etc, keeping only name=value) same as a browser would send
+     *  it back. This class otherwise never handles cookies (see class javadoc) since js/loop and
+     *  js/latest are plain unauthenticated GETs — only the CSRF-protected ajax/videoviewer needs
+     *  this, so it's kept local to that call rather than a shared CookieManager on the client. */
+    private static String extractCookie( HttpsURLConnection conn ) {
+        List<String> cookies = new ArrayList<>();
+        for( Map.Entry<String,List<String>> header : conn.getHeaderFields().entrySet() ) {
+            if( header.getKey() == null || !header.getKey().equalsIgnoreCase( "Set-Cookie" ) ) continue;
+            for( String value : header.getValue() ) {
+                int semi = value.indexOf( ';' );
+                cookies.add( semi >= 0 ? value.substring( 0, semi ) : value );
+            }
+        }
+        return cookies.isEmpty() ? null : String.join( "; ", cookies );
+    }
+
+    private static Integer toInteger( Object value ) {
+        return value instanceof Number ? ((Number) value).intValue() : null;
     }
 }
