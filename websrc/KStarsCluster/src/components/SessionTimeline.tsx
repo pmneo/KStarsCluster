@@ -223,6 +223,25 @@ function focusSegments( samples: HfrSample[] ): Segment[] {
   }));
 }
 
+/** Focus-drift correction events (KStarsCluster.correctFocusDrift) — always a "this happened
+ * here" moment, never an ongoing state, so unlike toSegments there's no "runs until the next
+ * event" case to handle: every one of these is rendered as a zero-duration marker. Rendered in
+ * STATUS_CRITICAL, same as an aborted/failed guide or align run — a focuser drifting badly enough
+ * to need correcting is exactly that kind of event. */
+function focusDriftSegments( events: TimelineEvent[] ): Segment[] {
+  return events
+    .filter((e) => e.lane === 'focus')
+    .sort((a, b) => a.ts - b.ts)
+    .map((e) => ({
+      key: `focus-drift-${e.ts}`,
+      start: e.ts,
+      end: e.ts,
+      color: STATUS_CRITICAL,
+      opacity: 1,
+      title: e.label,
+    }));
+}
+
 const WIDTH = 1000;
 const ROW_HEIGHT = 22;
 const ROW_GAP = 4;
@@ -378,6 +397,13 @@ export function SessionTimeline({
   }
   for (const train of Object.keys(hfrHistory).sort()) {
     rows.push({ kind: 'segments', label: `Focus (${train})`, segments: focusSegments(hfrHistory[train]) });
+  }
+  // Only shown when a drift correction has actually happened — unlike Guide/Mount/Align (which
+  // always have *some* state once Ekos is running), this is an exceptional event, and an
+  // always-present empty row would just be noise on every normal session.
+  const focusDriftEvents = timelineEvents.filter((e) => e.lane === 'focus');
+  if (focusDriftEvents.length > 0) {
+    rows.push({ kind: 'segments', label: 'Focus Drift', segments: focusDriftSegments(focusDriftEvents) });
   }
   rows.push({ kind: 'segments', label: 'Guide', segments: toSegments(timelineEvents, 'guide', now, guideColor) });
   rows.push({ kind: 'segments', label: 'Mount', segments: toSegments(timelineEvents, 'mount', now, mountColor) });
@@ -633,6 +659,12 @@ export function SessionTimeline({
             <span className="timeline-legend-dot" style={{ backgroundColor: FOCUS_MARK }} />
             Focus
           </span>
+          {focusDriftEvents.length > 0 && (
+            <span className="timeline-legend-item">
+              <span className="timeline-legend-dot" style={{ backgroundColor: STATUS_CRITICAL }} />
+              Focus Drift
+            </span>
+          )}
         </div>
       )}
 
