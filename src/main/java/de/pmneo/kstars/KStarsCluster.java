@@ -48,6 +48,7 @@ import com.google.gson.GsonBuilder;
 import bsh.Interpreter;
 
 import de.pmneo.kstars.utils.Coordinates;
+import de.pmneo.kstars.utils.FocusDriftDetector;
 import de.pmneo.kstars.utils.RaDecUtils;
 import de.pmneo.kstars.web.CommandServlet.Action;
 
@@ -114,6 +115,22 @@ public abstract class KStarsCluster extends KStarsState {
 	public void setRequiredLightBoxes( int requiredLightBoxes ) {
 		this.requiredLightBoxes = requiredLightBoxes;
 	}
+
+	// Focus-drift detection: a focuser whose autofocus solution keeps moving the same
+	// direction run after run (bad temp-comp coefficient, backlash runaway, ...) instead of
+	// settling — see checkFocusDrift()/correctFocusDrift(). Decision logic lives in
+	// FocusDriftDetector (pure, unit-tested against real recorded autofocus data); this class
+	// just wires it to live D-Bus state. Tuned against one real bad night (~4000 ticks of drift
+	// on a DeepSkyDad AF3); expect to retune focusDriftTicks per rig.
+	private static final long FOCUS_DRIFT_COOLDOWN_MS = TimeUnit.MINUTES.toMillis( 30 );
+
+	private int focusDriftTicks = 1000;
+	public void setFocusDriftTicks( int focusDriftTicks ) {
+		this.focusDriftTicks = focusDriftTicks;
+	}
+
+	private final ConcurrentHashMap<String, Deque<FocusDriftDetector.Sample>> focusSolutions = new ConcurrentHashMap<>();
+	private final ConcurrentHashMap<String, Long> lastFocusCorrection = new ConcurrentHashMap<>();
 
 	// Set to false whenever subscribe() gives up waiting for the expected device counts
 	// before they were all met — the shutdown gate must not trust an incomplete device
@@ -1234,7 +1251,84 @@ public abstract class KStarsCluster extends KStarsState {
 
 	public FocusState handleFocusStatus( FocusState state, String train ) {
 		state = super.handleFocusStatus( state, train );
+		if( state == FocusState.FOCUS_COMPLETE ) {
+			checkFocusDrift( train );
+		}
 		return state;
+	}
+
+	/**
+	 * Tracks the last few autofocus solutions per train and flags a run of consecutive
+	 * results that keep moving the same direction instead of settling — see the
+	 * "Auto-detect and correct focuser drift" plan for how this was derived from a real
+	 * bad night (a DeepSkyDad AF3 drifting inward ~4000 ticks over one session).
+	 */
+	private void checkFocusDrift( String train ) {
+		var hfrSamples = history.hfrHistory.get( train );
+		SessionHistory.HfrSample lastSample = hfrSamples == null ? null : hfrSamples.peekLast();
+		if( lastSample == null ) {
+			return;
+		}
+
+		Deque<FocusDriftDetector.Sample> window = focusSolutions.computeIfAbsent( train, t -> new ConcurrentLinkedDeque<>() );
+		window.addLast( new FocusDriftDetector.Sample( lastSample.ts, lastSample.position, lastSample.hfr ) );
+		while( window.size() > FocusDriftDetector.DEFAULT_WINDOW ) {
+			window.pollFirst();
+		}
+
+		if( window.size() < FocusDriftDetector.DEFAULT_WINDOW ) {
+			return;
+		}
+
+		FocusDriftDetector.Result result = FocusDriftDetector.evaluate(
+				new ArrayList<>( window ), focusDriftTicks, FocusDriftDetector.DEFAULT_HFR_BAD );
+
+		if( !result.driftDetected ) {
+			return;
+		}
+
+		long now = System.currentTimeMillis();
+		long lastCorrection = lastFocusCorrection.getOrDefault( train, 0L );
+		if( now - lastCorrection < FOCUS_DRIFT_COOLDOWN_MS ) {
+			logError( "Focuser for train " + train + " is still drifting after a recent correction ("
+					+ result.netDrift + " ticks over the last " + window.size() + " runs, HFR " + lastSample.hfr
+					+ ") — likely mechanical, needs manual attention", null );
+			return;
+		}
+
+		logError( "Detected focuser drift on train " + train + ": " + result.netDrift + " ticks over "
+				+ window.size() + " runs (HFR now " + lastSample.hfr + "), correcting back to "
+				+ result.referencePosition, null );
+
+		lastFocusCorrection.put( train, now );
+		int previousPosition = lastSample.position;
+		window.clear();
+
+		schedulerService.execute( () -> correctFocusDrift( train, result.referencePosition, previousPosition ) );
+	}
+
+	/** Moves the focuser back to a known-good position and forces a fresh autofocus run —
+	 *  runs on schedulerService, never on the D-Bus signal-dispatch thread, since it blocks
+	 *  on WaitUntil while the corrective move settles. */
+	private void correctFocusDrift( String train, int referencePosition, int previousPosition ) {
+		try {
+			history.recordTimelineEvent( "focus", "Drift corrected (" + train + "): "
+					+ previousPosition + " -> " + referencePosition );
+
+			String device = this.focus.methods.focuser( train );
+			IndiFocuser focuser = new IndiFocuser( device, this.indi );
+			focuser.setFocusPosition( referencePosition );
+
+			WaitUntil.waitUntil( "focus drift correction settle (" + train + ")", 60,
+					() -> focuser.getFocusPositionStatus() != IpsState.IPS_BUSY );
+
+			this.focus.methods.abort( train );
+			sleep( 1000 );
+			this.focus.methods.start( train );
+		}
+		catch( Throwable t ) {
+			logError( "Failed to correct focus drift for train " + train, t );
+		}
 	}
 
 	public void runAutoFocus() {
@@ -1917,6 +2011,7 @@ public abstract class KStarsCluster extends KStarsState {
 		if( active == null ) {
 			return;
 		}
+		active.completedCount++;
 		for( SchedulerJob job : allSchedulerJobs.get() ) {
 			if( active.name.equals( job.name ) ) {
 				job.completedCount++;

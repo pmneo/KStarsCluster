@@ -53,6 +53,12 @@ public class ServerRunner {
 	@Argument(alias = "rlb", required = false)
 	public static int requiredLightBoxes = 2;
 
+	// Minimum focuser position drift (in steps) across FOCUS_DRIFT_WINDOW consecutive
+	// autofocus solutions on one train before it's treated as a runaway and corrected —
+	// see KStarsCluster.checkFocusDrift(). Very focuser/rig specific, hence configurable.
+	@Argument(alias = "fdt", required = false)
+	public static int focusDriftTicks = 1000;
+
 	@Argument(alias = "ls", required = false )
 	public static String loadSchedule = "~/current_schedule.esl";
 
@@ -105,6 +111,7 @@ public class ServerRunner {
 		cluster.setRequiredRotators(requiredRotators);
 		cluster.setRequiredCaps(requiredCaps);
 		cluster.setRequiredLightBoxes(requiredLightBoxes);
+		cluster.setFocusDriftTicks(focusDriftTicks);
 		cluster.start();
 
 		startServer( cluster );

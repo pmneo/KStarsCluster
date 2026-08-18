@@ -35,17 +35,17 @@ public class FocusAnalyser {
 
         FocusAnalyser fa = new FocusAnalyser();
 
-        System.out.println( fa.aproximatePos( "Ha", 25.0 ) );
+        System.out.println( fa.aproximatePos( "DeepSkyDad AF3 A", "Ha", 25.0 ) );
 
-        System.out.println( fa.aproximatePos( "Ha", 5.0 ) );
-		
+        System.out.println( fa.aproximatePos( "DeepSkyDad AF3 A", "Ha", 5.0 ) );
+
         drawTempChart(fa);
         drawTimeChart( fa );
     }
 
 
-    public int aproximatePos(String filter, double temperature ) {
-        return (int) analysis.get( filter ).polyReg.predict( temperature );
+    public int aproximatePos( String device, String filter, double temperature ) {
+        return (int) analysis.get( key( device, filter ) ).polyReg.predict( temperature );
     }
 
 
@@ -100,7 +100,7 @@ public class FocusAnalyser {
             s.getPlotStyle().set( "pt 7 ps var" );
 
             //  u 1:2:3 w points lt 1 pt 10 ps variable
-            s.setTitle( a.filter );   
+            s.setTitle( a.device + " " + a.filter );
             //s.set( "yr", "[18000,19000]");
             
             plot.getJavaPlot().addPlot( s );
@@ -110,7 +110,7 @@ public class FocusAnalyser {
 
             plot.plot( );
             
-            tab.addTab( a.filter, plot );
+            tab.addTab( a.device + " " + a.filter, plot );
         }
 
         JFrame f = new JFrame();
@@ -168,7 +168,7 @@ public class FocusAnalyser {
             s.set( "using", "1:2:3");            
             s.setPlotStyle( new PlotStyle( Style.POINTS ) );
             s.getPlotStyle().set( "pt 7 ps var" );
-            s.setTitle( a.filter );   
+            s.setTitle( a.device + " " + a.filter );
             plot.getJavaPlot().addPlot( s );
 
             DataSetPlot s2 = new DataSetPlot( data2 );
@@ -176,7 +176,7 @@ public class FocusAnalyser {
             s2.set( "axes", "x1y2" );  
             //s2.setPlotStyle( new PlotStyle( Style.POINTS ) );
             //s2.getPlotStyle().set( "pt 7 ps var" );
-            s2.setTitle( a.filter + " temp");   
+            s2.setTitle( a.device + " " + a.filter + " temp");   
             plot.getJavaPlot().addPlot( s2 );
             
 
@@ -189,7 +189,7 @@ public class FocusAnalyser {
 
             plot.plot( );
             
-            tab.addTab( a.filter, plot );
+            tab.addTab( a.device + " " + a.filter, plot );
         }
 
         JFrame f = new JFrame();
@@ -214,21 +214,26 @@ date, time, position, temperature, filter, HFR, altitude
     public static SimpleDateFormat sdf = new SimpleDateFormat( "yyyy-MM-dd HH:mm:ss" );
     public static class FocusLog {
         public Date dateTime;
+        /** The focuser device this line came from, e.g. "DeepSkyDad AF3 A" — a rig with two
+         *  imaging trains has two focusers, each writing to the same focuslogs file, so this
+         *  (not just the filter) is required to tell their positions apart. See the "[device]
+         *  position" bracket format in the sample below. */
+        public String device;
         public int position;
         public double temperature;
         public String filter;
         public double hfr;
         public double altitude;
         public double weight = 1;
-        
+
         FocusLog( String line ) throws ParseException {
             String[] parts = line.split( ",\\s*" );
 
             dateTime = sdf.parse( parts[0] + " " + parts[1] );
 
-            parts[2] = parts[2].substring( parts[2].indexOf( "]" ) + 1 ).trim();
-
-            position = Integer.parseInt( parts[2] );
+            int deviceEnd = parts[2].indexOf( "]" );
+            device = parts[2].substring( parts[2].indexOf( "[" ) + 1, deviceEnd ).trim();
+            position = Integer.parseInt( parts[2].substring( deviceEnd + 1 ).trim() );
             temperature = Double.parseDouble( parts[3] );
             filter = parts[4];
             hfr = Double.parseDouble( parts[5] );
@@ -237,7 +242,7 @@ date, time, position, temperature, filter, HFR, altitude
 
         @Override
         public String toString() {
-            return dateTime + " " + temperature + "°C (" + filter + "): " + hfr + " @ " + position;
+            return dateTime + " " + temperature + "°C [" + device + "] (" + filter + "): " + hfr + " @ " + position;
         }
 
         public static Comparator<FocusLog> dateComp = (l,r) -> l.dateTime.compareTo( r.dateTime );
@@ -248,12 +253,14 @@ date, time, position, temperature, filter, HFR, altitude
     }
 
     public static class FocusAnalysis {
+        private String device;
         private String filter;
         private List< FocusLog > logs = new ArrayList<>();
 
         PolynomialRegression polyReg;
 
-        public FocusAnalysis( String filter ) {
+        public FocusAnalysis( String device, String filter ) {
+            this.device = device;
             this.filter = filter;
         }
 
@@ -300,24 +307,35 @@ date, time, position, temperature, filter, HFR, altitude
                 polyReg.fit( obs );
             }
             catch( Throwable t ) {
-                System.err.println( "Can't build polynom for filter " + filter );
+                System.err.println( "Can't build polynom for " + device + "/" + filter );
                 return false;
             }
 
             return true;
-            
+
         }
+    }
+
+    /** Keyed by device+filter (not filter alone) — a rig with two focusers can both use the same
+     *  filter name (e.g. "Ha"), and their positions are on entirely different scales. */
+    private static String key( String device, String filter ) {
+        return device + " " + filter;
     }
 
     private Map<String, FocusAnalysis> analysis = new HashMap<>();
 
     public FocusAnalyser() throws IOException {
-        File dir = new File( System.getProperty("user.home"), ".local/share/kstars/focuslogs" );
+        this( new File( System.getProperty("user.home"), ".local/share/kstars/focuslogs" ), fortyDaysAgo() );
+    }
 
-        Calendar c = Calendar.getInstance();
+    /** Directory + cutoff are constructor parameters (rather than hardcoded) so this can be unit
+     *  tested against a fixture directory without touching the real ~/.local/share/kstars/focuslogs
+     *  or being sensitive to the current wall-clock date. */
+    public FocusAnalyser( File dir ) throws IOException {
+        this( dir, fortyDaysAgo() );
+    }
 
-        c.add( Calendar.DATE, -40 );
-        
+    public FocusAnalyser( File dir, Date since ) throws IOException {
         for( File log : dir.listFiles() ) {
             if( log.isFile() && log.getName().startsWith( "autofocus" ) ) {
                 try( Scanner r = new Scanner( log ) ) {
@@ -338,7 +356,7 @@ date, time, position, temperature, filter, HFR, altitude
                                 break;
                             }
 
-                            if( l.dateTime.getTime() >= c.getTimeInMillis() ) {
+                            if( l.dateTime.getTime() >= since.getTime() ) {
                                 logs.add( l );
                             }
                         }
@@ -348,10 +366,11 @@ date, time, position, temperature, filter, HFR, altitude
                     }
 
                     for( FocusLog l : logs ) {
-                        FocusAnalysis a = analysis.get( l.filter );
+                        String key = key( l.device, l.filter );
+                        FocusAnalysis a = analysis.get( key );
 
                         if( a == null ) {
-                            analysis.put( l.filter, a = new FocusAnalysis( l.filter ) );
+                            analysis.put( key, a = new FocusAnalysis( l.device, l.filter ) );
                         }
 
                         a.logs.add( l );
@@ -365,6 +384,12 @@ date, time, position, temperature, filter, HFR, altitude
                 a.remove();
             }
         }
+    }
+
+    private static Date fortyDaysAgo() {
+        Calendar c = Calendar.getInstance();
+        c.add( Calendar.DATE, -40 );
+        return c.getTime();
     }
 
 
