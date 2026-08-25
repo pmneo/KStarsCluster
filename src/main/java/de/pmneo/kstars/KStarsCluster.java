@@ -132,6 +132,30 @@ public abstract class KStarsCluster extends KStarsState {
 	private final ConcurrentHashMap<String, Deque<FocusDriftDetector.Sample>> focusSolutions = new ConcurrentHashMap<>();
 	private final ConcurrentHashMap<String, Long> lastFocusCorrection = new ConcurrentHashMap<>();
 
+	// Capture-stall watchdog: on a real bad night (2026-08-22), a train's capture module got stuck
+	// in CAPTURE_FOCUSING for 43 minutes after a dither-triggered pause/resume + refocus cycle.
+	// Ekos's own CaptureStatus doc comments (Capture.java) mark the states below as pre-capture
+	// preparation steps ("... before starting to capture" / "preparation event ...") that
+	// resolved to CAPTURE_CAPTURING within seconds in every one of dozens of such transitions
+	// that same night (and on other nights). Deliberately NOT keyed off "focus completed"
+	// specifically — the same class of stall could just as easily wedge right after a plain
+	// dither with no refocus involved, which a focus-triggered check would completely miss.
+	// CAPTURE_CAPTURING and CAPTURE_MERIDIAN_FLIP are excluded: both can legitimately run for
+	// minutes. CAPTURE_SETTING_TEMPERATURE/CAPTURE_SETTING_ROTATOR are ALSO excluded — confirmed
+	// live on 2026-08-24: cooling/warming a camera to a target temperature (part of the weather-
+	// shutdown dark frame) can legitimately take several minutes depending on the delta, and this
+	// watchdog wrongly nudged it, which (see checkStalledCaptures' weather guard below) is exactly
+	// how a restarted capture ended up imaging for 18 minutes during confirmed-unsafe weather.
+	private static final Set<CaptureStatus> CAPTURE_PREP_STATES = EnumSet.of(
+			CaptureStatus.CAPTURE_PROGRESS, CaptureStatus.CAPTURE_WAITING, CaptureStatus.CAPTURE_IMAGE_RECEIVED,
+			CaptureStatus.CAPTURE_DITHERING, CaptureStatus.CAPTURE_FOCUSING, CaptureStatus.CAPTURE_FILTER_FOCUS,
+			CaptureStatus.CAPTURE_CHANGING_FILTER, CaptureStatus.CAPTURE_GUIDER_DRIFT,
+			CaptureStatus.CAPTURE_ALIGNING, CaptureStatus.CAPTURE_CALIBRATING );
+	private static final long CAPTURE_STALL_TIMEOUT_MS = TimeUnit.SECONDS.toMillis( 90 );
+	private static final long CAPTURE_STALL_COOLDOWN_MS = TimeUnit.MINUTES.toMillis( 10 );
+
+	private final ConcurrentHashMap<String, Long> lastCaptureStallNudge = new ConcurrentHashMap<>();
+
 	// Set to false whenever subscribe() gives up waiting for the expected device counts
 	// before they were all met — the shutdown gate must not trust an incomplete device
 	// enumeration (e.g. a cap that's still missing from capDevices doesn't get checked at
@@ -197,6 +221,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 		schedulerService.scheduleWithFixedDelay( this::broadcastStatusIfChanged, 1, 1, TimeUnit.SECONDS );
 		schedulerService.scheduleWithFixedDelay( this::refreshIndiWatches, 1, 1, TimeUnit.MINUTES );
+		schedulerService.scheduleWithFixedDelay( this::checkStalledCaptures, 1, 1, TimeUnit.MINUTES );
 
 		restoreHistoryFromAnalyzeLog();
 	}
@@ -635,6 +660,12 @@ public abstract class KStarsCluster extends KStarsState {
 
 		kStarsMonitor = new Thread( () -> {
 			long ekosStoppedAt = 0;
+			// Without this, every loop iteration (every ~5s) while it's day, weather stays unsafe,
+			// and Ekos is already stopped re-triggers safeStopEkos() from scratch — including its
+			// D-Bus calls into the (by then long-gone) Ekos Capture module, which just throws
+			// UnknownObject every single time. Confirmed live on 2026-08-24: over 2 hours of that
+			// spam. One attempt per "Ekos not ready" episode is enough; reset once Ekos is ready again.
+			boolean dayStopAttempted = false;
 
 			while( true ) { try {
 				if( !tryStartKStars() ) {
@@ -650,7 +681,8 @@ public abstract class KStarsCluster extends KStarsState {
 						Calendar[] range = config.getCivilTwilight();
 						if( !config.isNight(range) ) {
 							Calendar now = range[2];
-							if( getKStarsRuntime() > TimeUnit.HOURS.toSeconds( 5 ) && now.get( Calendar.HOUR_OF_DAY ) >= 15 ) {
+							if( !dayStopAttempted && getKStarsRuntime() > TimeUnit.HOURS.toSeconds( 5 ) && now.get( Calendar.HOUR_OF_DAY ) >= 15 ) {
+								dayStopAttempted = true;
 								safeStopEkos( "It's day and KStars is running more than 5h" );
 							}
 						}
@@ -695,6 +727,7 @@ public abstract class KStarsCluster extends KStarsState {
 					}
 					else {
 						ekosStoppedAt = 0;
+						dayStopAttempted = false;
 						lastHeartbeat.set( 0 );
 
 						subscribe();
@@ -1255,6 +1288,64 @@ public abstract class KStarsCluster extends KStarsState {
 			checkFocusDrift( train );
 		}
 		return state;
+	}
+
+	/**
+	 * Runs once a minute (see registration in createDevices()); restarts any train's capture
+	 * that's been sitting in one of CAPTURE_PREP_STATES for longer than CAPTURE_STALL_TIMEOUT_MS
+	 * without moving on — see the field comment above for why those specific states/timeout were
+	 * chosen. captureStateChangedAt is updated on every handleCaptureStatus call regardless of
+	 * value, so "hasn't changed" here really means "no capture signal at all for this train in
+	 * that long", matching the real incident (total silence, not a repeated stuck state).
+	 */
+	private void checkStalledCaptures() {
+		// Never nudge capture back to life while weather is unsafe — confirmed live on 2026-08-24:
+		// this watchdog restarted a train's capture during the weather-triggered shutdown sequence,
+		// and Ekos resumed the regular imaging sequence instead of just the intended one-off
+		// shutdown dark frame, producing 18 minutes of real light frames during confirmed-unsafe
+		// weather. A stuck capture during unsafe weather should be left to the existing
+		// safety-abort/roof-close path, not "fixed" by restarting it.
+		if( this.weatherState.get() != org.kde.kstars.ekos.Weather.WeatherState.WEATHER_OK ) {
+			return;
+		}
+
+		long now = System.currentTimeMillis();
+
+		for( var entry : captureStatus.entrySet() ) {
+			String train = entry.getKey();
+			CaptureStatus state = entry.getValue();
+
+			if( !CAPTURE_PREP_STATES.contains( state ) ) {
+				continue;
+			}
+
+			long changedAt = captureStateChangedAt.getOrDefault( train, now );
+			long stuckForMs = now - changedAt;
+			if( stuckForMs < CAPTURE_STALL_TIMEOUT_MS ) {
+				continue;
+			}
+
+			long lastNudge = lastCaptureStallNudge.getOrDefault( train, 0L );
+			if( now - lastNudge < CAPTURE_STALL_COOLDOWN_MS ) {
+				logError( "Capture for train " + train + " is still stuck in " + state + " after a recent restart attempt "
+						+ "— likely not a transient Ekos hiccup, needs manual attention", null );
+				continue;
+			}
+
+			logError( "Capture for train " + train + " has been stuck in " + state + " for "
+					+ ( stuckForMs / 1000 ) + "s — restarting capture for this train", null );
+			history.recordTimelineEvent( "focus", "Capture stuck in " + state + ", restarted (" + train + ")" );
+
+			lastCaptureStallNudge.put( train, now );
+			try {
+				this.capture.methods.abort( train );
+				sleep( 1000 );
+				this.capture.methods.start( train );
+			}
+			catch( Throwable t ) {
+				logError( "Failed to restart stuck capture for train " + train, t );
+			}
+		}
 	}
 
 	/**
