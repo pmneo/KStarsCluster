@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { actions } from '../api/actions';
 import { getJobStateLabel, type SchedulerJob } from '../api/types';
 
 interface Props {
@@ -22,12 +24,32 @@ function formatTime(iso: string): string {
 export function SchedulerCard({ schedulerState, activeJob, jobs, ekosReady, plannedJobs }: Props) {
   const showingPlanned = !ekosReady;
   const displayJobs = showingPlanned ? plannedJobs : jobs;
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Ekos has no D-Bus signal for "a job was added/edited/reordered" in the Scheduler (only
+  // jobStarted/jobEnded), so the live `jobs` list otherwise only catches up once some job
+  // actually starts or ends — this covers the gap on demand instead of a standing poll. Not
+  // shown in planned/file mode: that already re-reads the .esl file every 30s on its own (see
+  // App.tsx's plannedJobs poll), and a refresh here would just be a live D-Bus call with nothing
+  // to show for it while Ekos isn't connected.
+  function refreshJobs() {
+    setRefreshing(true);
+    actions.scheduler.refresh().finally(() => setRefreshing(false));
+  }
+
   return (
     <div className="card card--wide">
-      <h3>
-        Scheduler
-        {showingPlanned && <span className="scheduler-mode-note"> · planned — Ekos not connected</span>}
-      </h3>
+      <div className="card-header-row">
+        <h3>
+          Scheduler
+          {showingPlanned && <span className="scheduler-mode-note"> · planned — Ekos not connected</span>}
+        </h3>
+        {!showingPlanned && (
+          <button onClick={refreshJobs} disabled={refreshing}>
+            {refreshing ? 'Refreshing…' : 'Refresh jobs'}
+          </button>
+        )}
+      </div>
       <dl>
         <dt>State</dt>
         <dd>{schedulerState}</dd>

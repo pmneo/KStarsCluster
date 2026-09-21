@@ -44,6 +44,10 @@ export const actions = {
   scheduler: {
     start: () => runAction('scheduler/start'),
     stop: () => runAction('scheduler/stop'),
+    /** Ekos has no D-Bus signal for "a job was added/edited/reordered" in the Scheduler (only
+     * jobStarted/jobEnded), so the live jobs list otherwise only catches up once some job
+     * actually starts or ends — see KStarsCluster's "scheduler/refresh" action. */
+    refresh: () => runAction('scheduler/refresh'),
   },
   train: {
     focusRun: (train: string) => runAction(`focus/run/${encodeURIComponent(train)}`),

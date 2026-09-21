@@ -1553,7 +1553,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 		actions.put( "scheduler", ( parts, req, resp ) -> {
 			if( parts.length < 2 ) {
-				return "usage: scheduler/<start|stop>";
+				return "usage: scheduler/<start|stop|refresh>";
 			}
 			switch( parts[1] ) {
 				case "start":
@@ -1561,6 +1561,16 @@ public abstract class KStarsCluster extends KStarsState {
 					return "OK";
 				case "stop":
 					scheduler.methods.stop();
+					return "OK";
+				case "refresh":
+					// Ekos has no D-Bus signal for "a job was added/edited/reordered" (only
+					// jobStarted/jobEnded/clearJobTable), so allSchedulerJobs otherwise only
+					// catches up once some job actually starts or ends. A manual refresh button
+					// covers the gap without a standing poll — same one-off-click exception to
+					// the "D-Bus calls only from the signal thread" convention that scheduler/
+					// start and stop above already rely on (see fetchAllSchedulerJobs()'s own
+					// comment).
+					allSchedulerJobs.set( fetchAllSchedulerJobs() );
 					return "OK";
 				default:
 					return "unknown scheduler action " + parts[1];
@@ -2048,9 +2058,12 @@ public abstract class KStarsCluster extends KStarsState {
 
 	/**
 	 * Raw D-Bus fetch of every job in the loaded schedule (not just the currently executing
-	 * one) — only ever called from {@link #updateSchedulerActiveJob}, i.e. from the same
-	 * signal-handler-safe contexts that already refresh {@link #schedulerActiveJob}. Cached
-	 * into {@link #allSchedulerJobs}; buildStatusSnapshot() reads the cache, never this.
+	 * one). Called from {@link #updateSchedulerActiveJob} (signal-handler-safe contexts that
+	 * already refresh {@link #schedulerActiveJob}) and from the "scheduler/refresh" web action
+	 * — the latter runs directly on the Jetty request thread, same tolerated one-off-click
+	 * exception as the "scheduler/start"/"scheduler/stop" actions next to it, not a standing
+	 * poll. Cached into {@link #allSchedulerJobs}; buildStatusSnapshot() reads the cache, never
+	 * this.
 	 */
 	private List<SchedulerJob> fetchAllSchedulerJobs() {
 		try {

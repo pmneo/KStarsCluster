@@ -368,6 +368,17 @@ table td:first-child {
   font-size: 0.8em;
 }
 
+.card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.card-header-row h3 {
+  margin: 0;
+}
+
 .scheduler-jobs th {
   text-align: left;
   color: var(--muted);
