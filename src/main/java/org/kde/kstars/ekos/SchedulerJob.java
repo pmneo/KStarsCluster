@@ -63,6 +63,33 @@ public class SchedulerJob implements Serializable {
         }
     }
 
+    /** Sums Exposure*Count across every &lt;Job&gt; in a raw Ekos Sequence Queue (.esq) FILE — the
+     *  total wall-clock time this sequence takes to capture (excluding slews/focus/meridian
+     *  flips etc., just the exposures themselves). Used by the "sequenceFiles" web action to show
+     *  duration next to each option in the Add Scheduler Job dialog's Sequence picker, so a raw
+     *  filename doesn't have to be reverse-engineered to know how long a sequence runs. Returns 0
+     *  on anything malformed, same best-effort spirit as countSequenceFrames() above. */
+    public static double totalExposureSeconds( File esq ) {
+        try {
+            DocumentBuilder b = DocumentBuilderFactory.newInstance().newDocumentBuilder();
+            Document doc = b.parse( esq );
+            NodeList jobs = doc.getDocumentElement().getElementsByTagName( "Job" );
+            double total = 0;
+            for( int i=0; i<jobs.getLength(); i++ ) {
+                Element job = (Element) jobs.item(i);
+                String exposure = text( job, "Exposure" );
+                String count = text( job, "Count" );
+                if( exposure != null && count != null ) {
+                    total += Double.parseDouble( exposure ) * Integer.parseInt( count );
+                }
+            }
+            return total;
+        }
+        catch( Exception e ) {
+            return 0;
+        }
+    }
+
     public static List<SchedulerJob> parseEslFile( File esl ) {
         try {
             DocumentBuilder b = DocumentBuilderFactory.newInstance().newDocumentBuilder();

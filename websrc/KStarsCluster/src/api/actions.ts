@@ -20,12 +20,21 @@ export async function fetchScheduleFileJobs(): Promise<SchedulerJob[]> {
   return Array.isArray(jobs) ? (jobs as SchedulerJob[]) : [];
 }
 
+export interface SequenceFileInfo {
+  /** Absolute path — only ever used as the value submitted to scheduler.addJob, never shown
+   * (see AddJobCard, which displays `name` + `seconds` instead). */
+  path: string;
+  name: string;
+  /** Total exposure time (Exposure * Count summed across every Job in the file), in seconds. */
+  seconds: number;
+}
+
 /** Every .esq file sitting in whichever folder(s) the schedule's existing jobs already point
  * into (see KStarsClusterServer's "sequenceFiles" action) — used by the Add Scheduler Job
  * dialog's Sequence picker, so a sequence exported but not yet used by any job still shows up. */
-export async function fetchSequenceFiles(): Promise<string[]> {
+export async function fetchSequenceFiles(): Promise<SequenceFileInfo[]> {
   const files = await runAction('sequenceFiles');
-  return Array.isArray(files) ? (files as string[]) : [];
+  return Array.isArray(files) ? (files as SequenceFileInfo[]) : [];
 }
 
 export const actions = {

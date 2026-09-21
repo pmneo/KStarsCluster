@@ -6,7 +6,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -733,16 +733,24 @@ public class KStarsClusterServer extends KStarsCluster {
                     }
                 }
 
-                List<String> result = new ArrayList<>();
+                // Absolute path is only used as the option's submit VALUE — the web UI shows
+                // `name` (the file's own basename) plus `seconds` (total exposure time, see
+                // SchedulerJob.totalExposureSeconds) since a raw path is noise once every path
+                // shares the same folder(s) and a duration is far more useful to pick by.
+                List<Map<String,Object>> result = new ArrayList<>();
                 for( String dir : dirs ) {
                     File[] files = new File( dir ).listFiles( ( d, name ) -> name.endsWith( ".esq" ) );
                     if( files != null ) {
                         for( File f : files ) {
-                            result.add( f.getAbsolutePath() );
+                            Map<String,Object> entry = new HashMap<>();
+                            entry.put( "path", f.getAbsolutePath() );
+                            entry.put( "name", f.getName() );
+                            entry.put( "seconds", SchedulerJob.totalExposureSeconds( f ) );
+                            result.add( entry );
                         }
                     }
                 }
-                Collections.sort( result );
+                result.sort( Comparator.comparing( m -> (String) m.get( "name" ) ) );
                 return result;
             }
             catch( Throwable t ) {

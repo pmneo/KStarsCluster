@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { actions, fetchScheduleFileJobs, fetchSequenceFiles } from '../api/actions';
+import { actions, fetchScheduleFileJobs, fetchSequenceFiles, type SequenceFileInfo } from '../api/actions';
 import type { SchedulerJob } from '../api/types';
 
 export interface CapturedFov {
@@ -20,13 +20,21 @@ interface Props {
 
 const INSERT_AT_END = '';
 
+/** e.g. 5400 -> "1h30m", 3240 -> "54m" — matches the compact style already used elsewhere for
+ * durations in this app. */
+function formatDuration(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.round((totalSeconds % 3600) / 60);
+  return h > 0 ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m`;
+}
+
 /** A popup dialog (same backdrop-click-to-close / Escape-to-close convention as ImageViewer),
  * not a plain grid card — an earlier version rendered inline in the dashboard grid, which meant
  * clicking the Sky Map's "Add job here" button silently updated a card the user had to go
  * scrolling for, with zero feedback at the click site itself. */
 export function AddJobCard({ capturedFov, onFovConsumed }: Props) {
   const [knownJobs, setKnownJobs] = useState<SchedulerJob[]>([]);
-  const [sequenceFiles, setSequenceFiles] = useState<string[]>([]);
+  const [sequenceFiles, setSequenceFiles] = useState<SequenceFileInfo[]>([]);
   const [name, setName] = useState('');
   const [sequence, setSequence] = useState('');
   const [repeats, setRepeats] = useState(1);
@@ -75,7 +83,7 @@ export function AddJobCard({ capturedFov, onFovConsumed }: Props) {
     setError(null);
   }, [capturedFov]);
 
-  const sequenceOptions = Array.from(new Set(sequenceFiles)).sort();
+  const sequenceOptions = sequenceFiles.slice().sort((a, b) => a.name.localeCompare(b.name));
   // Lead jobs only — a follower has no name of its own (see SchedulerJob.parseEslFile's
   // inheritance comment) and inserting "before" one would split an existing pair in half, which
   // the backend already refuses to do (see SchedulerJob.findInsertionPoint). Kept in file order
@@ -84,7 +92,7 @@ export function AddJobCard({ capturedFov, onFovConsumed }: Props) {
   const existingLeadJobNames = knownJobs.filter((j) => j.lead).map((j) => j.name);
 
   useEffect(() => {
-    if (!sequence && sequenceOptions.length > 0) setSequence(sequenceOptions[0]);
+    if (!sequence && sequenceOptions.length > 0) setSequence(sequenceOptions[0].path);
   }, [sequenceOptions, sequence]);
 
   if (!capturedFov) return null;
@@ -140,7 +148,9 @@ export function AddJobCard({ capturedFov, onFovConsumed }: Props) {
             Sequence
             <select value={sequence} onChange={(e) => setSequence(e.target.value)}>
               {sequenceOptions.length === 0 && <option value="">No known sequences</option>}
-              {sequenceOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              {sequenceOptions.map((s) => (
+                <option key={s.path} value={s.path}>{s.name} ({formatDuration(s.seconds)})</option>
+              ))}
             </select>
           </label>
           <label>
