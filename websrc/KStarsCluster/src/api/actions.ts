@@ -20,6 +20,14 @@ export async function fetchScheduleFileJobs(): Promise<SchedulerJob[]> {
   return Array.isArray(jobs) ? (jobs as SchedulerJob[]) : [];
 }
 
+/** Every .esq file sitting in whichever folder(s) the schedule's existing jobs already point
+ * into (see KStarsClusterServer's "sequenceFiles" action) — used by the Add Scheduler Job
+ * dialog's Sequence picker, so a sequence exported but not yet used by any job still shows up. */
+export async function fetchSequenceFiles(): Promise<string[]> {
+  const files = await runAction('sequenceFiles');
+  return Array.isArray(files) ? (files as string[]) : [];
+}
+
 export const actions = {
   connection: {
     startEkos: () => runAction('startEkos'),

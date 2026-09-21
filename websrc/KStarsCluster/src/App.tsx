@@ -305,7 +305,6 @@ export function App() {
               lastImageFilename={getLastImageFilename(status)}
               onUsePlanningFov={setAddJobFov}
             />
-            <AddJobCard capturedFov={addJobFov} onFovConsumed={() => setAddJobFov(null)} />
             {trains.map((train) => (
               <TrainCaptureCard
                 key={`${train}-capture`}
@@ -341,6 +340,7 @@ export function App() {
 
       <LogPanel />
       <ImageViewer image={viewerImage} onClose={() => setViewerImage(null)} />
+      <AddJobCard capturedFov={addJobFov} onFovConsumed={() => setAddJobFov(null)} />
     </div>
   );
 }

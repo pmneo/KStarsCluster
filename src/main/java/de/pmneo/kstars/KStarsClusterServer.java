@@ -4,9 +4,14 @@ import java.io.File;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -694,6 +699,54 @@ public class KStarsClusterServer extends KStarsCluster {
             }
             catch( Throwable t ) {
                 logError( "Failed to parse configured schedule file for the web UI", t );
+                return List.of();
+            }
+        } );
+
+        // Used by the "Add Scheduler Job" dialog's Sequence picker — every job's own `sequence`
+        // only covers .esq files a job ALREADY points at, which misses ones sitting in the same
+        // folder that just haven't been used yet (e.g. a freshly-exported sequence for a new
+        // target). Scans the parent folder(s) of whatever sequence paths already appear in the
+        // schedule (there's no other configured "sequences directory" to start from) rather than
+        // one hardcoded path, since a real schedule's jobs aren't guaranteed to all share one
+        // folder.
+        actions.put( "sequenceFiles", ( parts, req, resp ) -> {
+            if( loadSchedule == null || loadSchedule.isEmpty() ) {
+                return List.of();
+            }
+            try {
+                List<SchedulerJob> jobs = SchedulerJob.parseEslFile( new File( loadSchedule ) );
+
+                Set<String> dirs = new LinkedHashSet<>();
+                for( SchedulerJob job : jobs ) {
+                    if( job.sequence == null ) {
+                        continue;
+                    }
+                    try {
+                        File parent = new File( new URI( job.sequence ) ).getParentFile();
+                        if( parent != null ) {
+                            dirs.add( parent.getAbsolutePath() );
+                        }
+                    }
+                    catch( Exception e ) {
+                        // malformed/unresolvable sequence URI on one job — skip it, not fatal to the rest
+                    }
+                }
+
+                List<String> result = new ArrayList<>();
+                for( String dir : dirs ) {
+                    File[] files = new File( dir ).listFiles( ( d, name ) -> name.endsWith( ".esq" ) );
+                    if( files != null ) {
+                        for( File f : files ) {
+                            result.add( f.getAbsolutePath() );
+                        }
+                    }
+                }
+                Collections.sort( result );
+                return result;
+            }
+            catch( Throwable t ) {
+                logError( "Failed to list sequence files for the web UI", t );
                 return List.of();
             }
         } );
