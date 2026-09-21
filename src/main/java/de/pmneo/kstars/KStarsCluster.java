@@ -1553,7 +1553,7 @@ public abstract class KStarsCluster extends KStarsState {
 
 		actions.put( "scheduler", ( parts, req, resp ) -> {
 			if( parts.length < 2 ) {
-				return "usage: scheduler/<start|stop|refresh>";
+				return "usage: scheduler/<start|stop|refresh|addJob>";
 			}
 			switch( parts[1] ) {
 				case "start":
@@ -1572,6 +1572,8 @@ public abstract class KStarsCluster extends KStarsState {
 					// comment).
 					allSchedulerJobs.set( fetchAllSchedulerJobs() );
 					return "OK";
+				case "addJob":
+					return addSchedulerJob( req );
 				default:
 					return "unknown scheduler action " + parts[1];
 			}
@@ -2055,6 +2057,92 @@ public abstract class KStarsCluster extends KStarsState {
 		}
     }
 
+
+	/**
+	 * Overridden by {@link KStarsClusterServer} to point at its own configured loadSchedule path.
+	 * Kept as an overridable hook (rather than a field declared here) so the "scheduler" action's
+	 * addJob case can stay next to start/stop/refresh in one switch instead of splitting scheduler
+	 * action handling across both classes. Returns null if no schedule file is configured.
+	 */
+	protected File getScheduleFile() {
+		return null;
+	}
+
+	/**
+	 * "scheduler/addJob" web action: appends one new lead(Primary)+follower(Secondary) job pair —
+	 * this observatory is always a dual-train rig, every hand-created pair in a real schedule
+	 * targets both trains, so there's no per-job train choice — to the configured .esl file, using
+	 * the coordinates/rotation of whatever the caller currently has framed (typically the Sky
+	 * Map's Planning FOV) plus a chosen sequence file and repeat count. {@code insertBeforeJobName}
+	 * is an existing lead job's name to insert the new pair before (its own pair, not a mid-pair
+	 * split — see SchedulerJob.findInsertionPoint()'s own comment), or absent/blank to just append
+	 * at the end. See SchedulerJob.appendJobToEslFile()'s own comment for why this is a full DOM
+	 * parse/insert/re-serialize rather than a raw string append.
+	 *
+	 * Always written to disk first — that's the durable source of truth this whole feature (the
+	 * always-visible Scheduler card, the Sky Map's planned-target overlay) already reads from, so
+	 * the new pair survives a KStars restart even if nothing else changes. If Ekos is currently
+	 * connected, ALSO pokes it live via Scheduler.appendEkosScheduleList() (a whole-document
+	 * append — there's no per-field "add one job" D-Bus call, see that method's own comment) using
+	 * a throwaway temp file, so the running Scheduler picks up the addition immediately instead of
+	 * needing a manual reload — note that call always appends at the end of the LIVE queue
+	 * regardless of insertBeforeJobName (append has no position argument), so the requested
+	 * position is only exact on disk; either way {@link #allSchedulerJobs} is refreshed afterward
+	 * so the web UI reflects it without a separate "scheduler/refresh" click.
+	 */
+	private Object addSchedulerJob( HttpServletRequest req ) {
+		File esl = getScheduleFile();
+		if( esl == null ) {
+			return "No schedule file configured (see -ls/--loadSchedule)";
+		}
+
+		String name = req.getParameter( "name" );
+		String sequence = req.getParameter( "sequence" );
+		String insertBeforeJobName = req.getParameter( "insertBeforeJobName" );
+		String raParam = req.getParameter( "ra" );
+		String decParam = req.getParameter( "dec" );
+		String paParam = req.getParameter( "pa" );
+		String repeatsParam = req.getParameter( "repeats" );
+
+		if( name == null || name.isBlank()
+				|| sequence == null || sequence.isBlank()
+				|| raParam == null || decParam == null || paParam == null || repeatsParam == null ) {
+			return "usage: scheduler/addJob?name=&ra=&dec=&pa=&sequence=&repeats=&insertBeforeJobName=";
+		}
+
+		try {
+			double ra = Double.parseDouble( raParam );
+			double dec = Double.parseDouble( decParam );
+			double pa = Double.parseDouble( paParam );
+			int repeats = Integer.parseInt( repeatsParam );
+
+			String profile = SchedulerJob.appendJobToEslFile( esl, name, ra, dec, pa, sequence, repeats, insertBeforeJobName );
+
+			if( ekosReady.get() ) {
+				File temp = File.createTempFile( "kstarscluster-addjob-", ".esl" );
+				try {
+					SchedulerJob.writeSingleJobEslFile( temp, profile, name, ra, dec, pa, sequence, repeats );
+					if( !scheduler.methods.appendEkosScheduleList( temp.toURI().toString() ) ) {
+						logError( "Ekos rejected appendEkosScheduleList for the new job '" + name + "' — it was still saved to " + esl, null );
+					}
+				}
+				finally {
+					temp.delete();
+				}
+			}
+
+			allSchedulerJobs.set( fetchAllSchedulerJobs() );
+
+			return "OK";
+		}
+		catch( NumberFormatException e ) {
+			return "Invalid numeric parameter: " + e.getMessage();
+		}
+		catch( IOException e ) {
+			logError( "Failed to add scheduler job '" + name + "'", e );
+			return "Failed to add job: " + e.getMessage();
+		}
+	}
 
 	/**
 	 * Raw D-Bus fetch of every job in the loaded schedule (not just the currently executing

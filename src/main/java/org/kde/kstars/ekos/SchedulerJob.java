@@ -1,6 +1,7 @@
 package org.kde.kstars.ekos;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.Serializable;
 import java.io.StringReader;
@@ -10,9 +11,15 @@ import java.util.List;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.OutputKeys;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 
@@ -135,6 +142,235 @@ public class SchedulerJob implements Serializable {
         }
         catch( Throwable t ) {
             throw new RuntimeException( "Failed to read esl file", t );
+        }
+    }
+
+    private static Element textElement( Document doc, String tag, String text ) {
+        Element el = doc.createElement( tag );
+        el.setTextContent( text );
+        return el;
+    }
+
+    private static Element valueElement( Document doc, String tag, String text, String value ) {
+        Element el = textElement( doc, tag, text );
+        el.setAttribute( "value", value );
+        return el;
+    }
+
+    /** This observatory is always a dual-train rig — every hand-created job pair in a real
+     *  current_schedule.esl targets "Primary" (lead) + "Secondary" (follower), no exceptions — so
+     *  a newly-added target always gets both, not a per-job train choice. */
+    private static final String LEAD_TRAIN = "Primary";
+    private static final String FOLLOWER_TRAIN = "Secondary";
+
+    /** Builds the LEAD &lt;Job&gt; DOM element matching the shape KStars itself writes (confirmed
+     *  against a real current_schedule.esl): ASAP startup, the same altitude/moon-separation/
+     *  twilight/horizon constraint set seen on every hand-created job in that file, all four
+     *  Track/Focus/Align/Guide steps, and a simple repeat-N-times completion condition. Good
+     *  enough for "point the mount here and shoot this sequence N times" — anything more
+     *  elaborate (culmination timing, per-step toggles, custom constraints) still needs tuning in
+     *  Ekos's own Scheduler editor afterwards. */
+    private static Element buildLeadJobElement(
+            Document doc, String name, double ra, double dec, double pa,
+            String sequencePath, int repeats ) {
+        Element job = doc.createElement( "Job" );
+
+        Element jobType = doc.createElement( "JobType" );
+        jobType.setAttribute( "lead", "true" );
+        job.appendChild( jobType );
+
+        job.appendChild( textElement( doc, "Name", name ) );
+        job.appendChild( doc.createElement( "Group" ) );
+
+        Element coords = doc.createElement( "Coordinates" );
+        coords.appendChild( textElement( doc, "J2000RA", String.valueOf( ra ) ) );
+        coords.appendChild( textElement( doc, "J2000DE", String.valueOf( dec ) ) );
+        job.appendChild( coords );
+
+        job.appendChild( textElement( doc, "OpticalTrain", LEAD_TRAIN ) );
+        job.appendChild( textElement( doc, "PositionAngle", String.valueOf( pa ) ) );
+        job.appendChild( textElement( doc, "Sequence", sequencePath ) );
+
+        Element startup = doc.createElement( "StartupCondition" );
+        startup.appendChild( textElement( doc, "Condition", "ASAP" ) );
+        job.appendChild( startup );
+
+        Element constraints = doc.createElement( "Constraints" );
+        constraints.appendChild( valueElement( doc, "Constraint", "MinimumAltitude", "-15" ) );
+        constraints.appendChild( valueElement( doc, "Constraint", "MoonSeparation", "10" ) );
+        constraints.appendChild( textElement( doc, "Constraint", "EnforceTwilight" ) );
+        constraints.appendChild( textElement( doc, "Constraint", "EnforceArtificialHorizon" ) );
+        job.appendChild( constraints );
+
+        job.appendChild( buildCompletionCondition( doc, repeats ) );
+
+        Element steps = doc.createElement( "Steps" );
+        for( String step : new String[]{ "Track", "Focus", "Align", "Guide" } ) {
+            steps.appendChild( textElement( doc, "Step", step ) );
+        }
+        job.appendChild( steps );
+
+        return job;
+    }
+
+    /** Builds the FOLLOWER &lt;Job&gt; DOM element that always immediately follows a lead job in
+     *  this observatory's real schedule files — no Name/Coordinates/Group/StartupCondition/
+     *  Constraints/Steps of its own (inherited from the preceding lead job by parseEslFile(), see
+     *  its own comment), just JobType/OpticalTrain/PositionAngle/Sequence/CompletionCondition,
+     *  each duplicating the lead job's own value (confirmed against every pair in a real file —
+     *  PositionAngle/Sequence/CompletionCondition are physically repeated, not omitted like Name/
+     *  Coordinates are). */
+    private static Element buildFollowerJobElement( Document doc, double pa, String sequencePath, int repeats ) {
+        Element job = doc.createElement( "Job" );
+
+        Element jobType = doc.createElement( "JobType" );
+        jobType.setAttribute( "lead", "false" );
+        job.appendChild( jobType );
+
+        job.appendChild( textElement( doc, "OpticalTrain", FOLLOWER_TRAIN ) );
+        job.appendChild( textElement( doc, "PositionAngle", String.valueOf( pa ) ) );
+        job.appendChild( textElement( doc, "Sequence", sequencePath ) );
+        job.appendChild( buildCompletionCondition( doc, repeats ) );
+
+        return job;
+    }
+
+    private static Element buildCompletionCondition( Document doc, int repeats ) {
+        Element completion = doc.createElement( "CompletionCondition" );
+        completion.appendChild( valueElement( doc, "Condition", "Repeat", String.valueOf( repeats ) ) );
+        return completion;
+    }
+
+    private static void writeDocument( Document doc, File target ) throws Exception {
+        Transformer t = TransformerFactory.newInstance().newTransformer();
+        t.setOutputProperty( OutputKeys.INDENT, "yes" );
+        t.setOutputProperty( OutputKeys.ENCODING, "UTF-8" );
+        try( FileOutputStream out = new FileOutputStream( target ) ) {
+            t.transform( new DOMSource( doc ), new StreamResult( out ) );
+        }
+    }
+
+    /** Finds where to splice a new lead+follower pair into an existing &lt;SchedulerList&gt;'s
+     *  children: right before the lead &lt;Job&gt; named {@code insertBeforeJobName} (i.e. before
+     *  that target's whole pair), or — if that's null/blank/not found — right after the last
+     *  existing &lt;Job&gt; (or right after &lt;Profile&gt; if there are none yet), i.e. appended at
+     *  the end. Returns null to mean "append via root.appendChild", a real Node to mean "insert
+     *  before this node". Never returns a &lt;Job&gt; with no &lt;Name&gt; (a follower) as the
+     *  "insert before" target — that would split an existing pair in half. */
+    private static Node findInsertionPoint( Element root, String insertBeforeJobName ) {
+        NodeList children = root.getChildNodes();
+
+        if( insertBeforeJobName != null && !insertBeforeJobName.isBlank() ) {
+            for( int i=0; i<children.getLength(); i++ ) {
+                Node n = children.item(i);
+                if( n.getNodeType() == Node.ELEMENT_NODE && "Job".equals( n.getNodeName() )
+                        && insertBeforeJobName.equals( text( (Element) n, "Name" ) ) ) {
+                    return n;
+                }
+            }
+        }
+
+        Node insertAfter = null;
+        for( int i=0; i<children.getLength(); i++ ) {
+            Node n = children.item(i);
+            if( n.getNodeType() == Node.ELEMENT_NODE
+                    && ( "Job".equals( n.getNodeName() ) || "Profile".equals( n.getNodeName() ) ) ) {
+                insertAfter = n;
+            }
+        }
+        return insertAfter != null ? insertAfter.getNextSibling() : null;
+    }
+
+    /** Appends a freshly-built lead(Primary)+follower(Secondary) job pair to the .esl file on disk
+     *  (creating a minimal empty schedule first if the file doesn't exist yet) and returns the
+     *  schedule's &lt;Profile&gt; name, so a caller that also wants to poke a *running* Ekos via
+     *  Scheduler.appendEkosScheduleList() (see KStarsCluster's "scheduler/addJob" web action) can
+     *  reuse it without a second file read.
+     *
+     *  Parses the existing document and re-serializes the whole thing rather than a raw string
+     *  append: a real schedule file's trailing &lt;SchedulerAlgorithm&gt;/&lt;ErrorHandlingStrategy&gt;/
+     *  &lt;StartupProcedure&gt;/&lt;ShutdownProcedure&gt; elements have to stay the LAST children of
+     *  &lt;SchedulerList&gt;, so naively inserting text right before &lt;/SchedulerList&gt; would silently
+     *  reorder those scheduler-wide settings after the new pair instead of leaving them where they
+     *  are. See {@link #findInsertionPoint} for where the pair actually lands — {@code
+     *  insertBeforeJobName} may be null/blank to just append at the end. */
+    public static String appendJobToEslFile(
+            File esl, String name, double ra, double dec, double pa,
+            String sequencePath, int repeats, String insertBeforeJobName ) throws IOException {
+        try {
+            DocumentBuilder b = DocumentBuilderFactory.newInstance().newDocumentBuilder();
+            Document doc;
+            Element root;
+            String profile;
+
+            if( esl.exists() ) {
+                doc = b.parse( esl );
+                root = doc.getDocumentElement();
+                profile = text( root, "Profile" );
+            }
+            else {
+                doc = b.newDocument();
+                root = doc.createElement( "SchedulerList" );
+                root.setAttribute( "version", "2.2" );
+                root.appendChild( textElement( doc, "Profile", "" ) );
+                doc.appendChild( root );
+                profile = "";
+            }
+
+            Element leadJob = buildLeadJobElement( doc, name, ra, dec, pa, sequencePath, repeats );
+            Element followerJob = buildFollowerJobElement( doc, pa, sequencePath, repeats );
+
+            Node insertBefore = findInsertionPoint( root, insertBeforeJobName );
+            if( insertBefore != null ) {
+                root.insertBefore( leadJob, insertBefore );
+                root.insertBefore( followerJob, insertBefore );
+            }
+            else {
+                root.appendChild( leadJob );
+                root.appendChild( followerJob );
+            }
+
+            writeDocument( doc, esl );
+            return profile;
+        }
+        catch( IOException e ) {
+            throw e;
+        }
+        catch( Exception e ) {
+            throw new IOException( "Failed to append job to esl file", e );
+        }
+    }
+
+    /** Writes a standalone lead(Primary)+follower(Secondary) pair as its own schedule file — used
+     *  only as the source for Scheduler.appendEkosScheduleList(fileURL), which appends a whole
+     *  schedule document's jobs to a currently-running Scheduler's live queue (there's no
+     *  per-field "add one job" D-Bus call — confirmed against org.kde.kstars.Ekos.Scheduler.xml's
+     *  full method list: job creation is exclusively file-based). That call always appends at the
+     *  END of the live queue regardless of where the pair landed on disk (append has no position
+     *  argument) — a real, unavoidable gap between the two; document order mostly only matters for
+     *  the lead/follower pairing itself, not for a running scheduler's evaluation order, so this is
+     *  an accepted limitation rather than something worked around here. Callers should write this
+     *  to a throwaway temp file. */
+    public static void writeSingleJobEslFile(
+            File target, String profile, String name, double ra, double dec, double pa,
+            String sequencePath, int repeats ) throws IOException {
+        try {
+            DocumentBuilder b = DocumentBuilderFactory.newInstance().newDocumentBuilder();
+            Document doc = b.newDocument();
+            Element root = doc.createElement( "SchedulerList" );
+            root.setAttribute( "version", "2.2" );
+            root.appendChild( textElement( doc, "Profile", profile == null ? "" : profile ) );
+            root.appendChild( buildLeadJobElement( doc, name, ra, dec, pa, sequencePath, repeats ) );
+            root.appendChild( buildFollowerJobElement( doc, pa, sequencePath, repeats ) );
+            doc.appendChild( root );
+
+            writeDocument( doc, target );
+        }
+        catch( IOException e ) {
+            throw e;
+        }
+        catch( Exception e ) {
+            throw new IOException( "Failed to write single-job esl file", e );
         }
     }
 

@@ -7,6 +7,7 @@ import { ConnectionCard } from './components/ConnectionCard';
 import { TrainCaptureCard } from './components/TrainCaptureCard';
 import { TrainFocusCard } from './components/TrainFocusCard';
 import { SchedulerCard } from './components/SchedulerCard';
+import { AddJobCard, type CapturedFov } from './components/AddJobCard';
 import { CoolingCalibrationCard } from './components/CoolingCalibrationCard';
 import { ObservatoryCard } from './components/ObservatoryCard';
 import { CurrentStatusCard } from './components/CurrentStatusCard';
@@ -94,6 +95,9 @@ export function App() {
   // The Scheduler card's fallback when Ekos isn't running/connected yet — see SchedulerCard's
   // own `plannedJobs` prop.
   const [plannedJobs, setPlannedJobs] = useState<SchedulerJob[]>([]);
+  // Set by the Sky Map's Planning FOV "Add job here" button (see the SkyMapCard prop below) —
+  // consumed by AddJobCard, which clears it back to null once the form is submitted or cancelled.
+  const [addJobFov, setAddJobFov] = useState<CapturedFov | null>(null);
 
   // Read inside the polling effects below via a ref rather than a `[status]` dependency — status
   // itself updates far more often (live per-second broadcast) than these polls should ever fire.
@@ -299,7 +303,9 @@ export function App() {
               fov={status.fov}
               pa={status.alignment?.pa}
               lastImageFilename={getLastImageFilename(status)}
+              onUsePlanningFov={setAddJobFov}
             />
+            <AddJobCard capturedFov={addJobFov} onFovConsumed={() => setAddJobFov(null)} />
             {trains.map((train) => (
               <TrainCaptureCard
                 key={`${train}-capture`}

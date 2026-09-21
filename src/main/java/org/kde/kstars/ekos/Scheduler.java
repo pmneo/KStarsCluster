@@ -22,6 +22,11 @@ public interface Scheduler extends DBusInterface {
     public boolean loadScheduler(String fileURL);
     public void setSequence(String sequenceFileURL);
     public void resetAllJobs();
+    /** Appends a WHOLE schedule document's jobs to the currently running Scheduler's live queue
+     *  — there's no separate per-field "add one job" D-Bus call (confirmed against the full
+     *  org.kde.kstars.Ekos.Scheduler.xml method list), so a single-job addition still has to go
+     *  through a (throwaway, one-job) .esl file. See SchedulerJob.writeSingleJobEslFile(). */
+    public boolean appendEkosScheduleList(String fileURL);
     
     public static enum SchedulerState {
         SCHEDULER_IDLE,     /*< Scheduler is stopped. */

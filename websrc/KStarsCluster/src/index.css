@@ -197,6 +197,38 @@ button:disabled {
   padding: 4px 8px;
 }
 
+.add-job-form {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.add-job-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+  color: var(--muted);
+  gap: 4px;
+}
+
+.add-job-form input,
+.add-job-form select {
+  background: #10121a;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 4px 8px;
+  max-width: 260px;
+}
+
+.muted-note {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 12px 0 0;
+}
+
 .roof-status {
   margin: 12px 0 0;
   color: var(--muted);

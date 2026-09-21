@@ -47,7 +47,12 @@ public class KStarsClusterServer extends KStarsCluster {
         }
         this.loadSchedule = loadSchedule;
     }
-    
+
+    @Override
+    protected File getScheduleFile() {
+        return loadSchedule == null || loadSchedule.isEmpty() ? null : new File( loadSchedule );
+    }
+
     public void ekosReady() {
         super.ekosReady();
 
