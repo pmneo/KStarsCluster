@@ -146,15 +146,41 @@ public abstract class KStarsCluster extends KStarsState {
 	// shutdown dark frame) can legitimately take several minutes depending on the delta, and this
 	// watchdog wrongly nudged it, which (see checkStalledCaptures' weather guard below) is exactly
 	// how a restarted capture ended up imaging for 18 minutes during confirmed-unsafe weather.
+	//
+	// CAPTURE_DITHERING and CAPTURE_CALIBRATING are excluded for the same underlying reason, root-
+	// caused live on 2026-09-05/06 (raw KStars debug log, not just our own log) rather than just
+	// bumping the timeout again:
+	//  - CAPTURE_DITHERING: Ekos synchronizes dithering across both trains — "Dithering requested
+	//    by camera 1 blocked by camera 0". A train that just finished its exposure has to wait for
+	//    its sibling train to *also* be ready to dither, which is bounded by the SIBLING's exposure
+	//    length (seen waiting on a fresh 300s exposure), not anything this train is doing. No fixed
+	//    timeout is ever correct here — it depends on whatever exposure times the sequences use.
+	//  - CAPTURE_CALIBRATING: "Mount is moving. Resetting calibration..." — after a slew (new
+	//    target/job) Ekos throws away guide calibration and redoes it from scratch, a genuine
+	//    multi-step physical process (test pulses in both axes, measuring resulting star motion)
+	//    that legitimately takes minutes. Interrupting it doesn't help; it just forces recalibration
+	//    to restart, plausibly explaining why one such stretch dragged on for ~20 minutes.
+	// Neither has a per-step progress signal we track (unlike CAPTURE_FOCUSING's Focus.newHFR, see
+	// below) to tell "still working" from "actually wedged", so — same as the temperature/rotator
+	// case — the honest fix is to not second-guess these states with a timeout at all.
 	private static final Set<CaptureStatus> CAPTURE_PREP_STATES = EnumSet.of(
 			CaptureStatus.CAPTURE_PROGRESS, CaptureStatus.CAPTURE_WAITING, CaptureStatus.CAPTURE_IMAGE_RECEIVED,
-			CaptureStatus.CAPTURE_DITHERING, CaptureStatus.CAPTURE_FOCUSING, CaptureStatus.CAPTURE_FILTER_FOCUS,
+			CaptureStatus.CAPTURE_FOCUSING, CaptureStatus.CAPTURE_FILTER_FOCUS,
 			CaptureStatus.CAPTURE_CHANGING_FILTER, CaptureStatus.CAPTURE_GUIDER_DRIFT,
-			CaptureStatus.CAPTURE_ALIGNING, CaptureStatus.CAPTURE_CALIBRATING );
+			CaptureStatus.CAPTURE_ALIGNING );
 	private static final long CAPTURE_STALL_TIMEOUT_MS = TimeUnit.SECONDS.toMillis( 90 );
 	private static final long CAPTURE_STALL_COOLDOWN_MS = TimeUnit.MINUTES.toMillis( 10 );
 
 	private final ConcurrentHashMap<String, Long> lastCaptureStallNudge = new ConcurrentHashMap<>();
+
+	// A real autofocus run (CAPTURE_FOCUSING) legitimately keeps sending Focus.newHFR progress
+	// as each V-curve step is measured — confirmed live on 2026-09-05: an 11-step narrowband
+	// V-curve routinely takes 100-150s total (well past our 90s timeout) while continuously
+	// producing newHFR samples every ~7-10s, and checkStalledCaptures used to judge staleness
+	// purely from captureStateChangedAt (which Ekos only pushes once, on ENTERING
+	// CAPTURE_FOCUSING, not again until it's done) — so it aborted dozens of perfectly healthy,
+	// still-running focus runs on both trains. See checkStalledCaptures().
+	private final ConcurrentHashMap<String, Long> lastFocusProgressAt = new ConcurrentHashMap<>();
 
 	// Set to false whenever subscribe() gives up waiting for the expected device counts
 	// before they were all met — the shutdown gate must not trust an incomplete device
@@ -451,6 +477,7 @@ public abstract class KStarsCluster extends KStarsState {
 		subscriptions.add( this.focus.addSigHandler( Focus.newHFR.class, hfr -> {
 			logDebug( hfr.getName() + ": new hfr " + hfr.getHFR() + " @ " + hfr.getPosition() );
 			history.recordHfr( hfr.getTrain(), hfr.getHFR(), hfr.getPosition() );
+			lastFocusProgressAt.put( hfr.getTrain(), System.currentTimeMillis() );
 		} ) );
 		subscriptions.add( this.scheduler.addNewStatusHandler( Scheduler.newStatus.class, status -> {
 			this.handleSchedulerStatus( status.getStatus() );
@@ -994,22 +1021,35 @@ public abstract class KStarsCluster extends KStarsState {
 
 		logMessage( "Shutting down Ekos / KStars (" + reason + ")" );
 
-		try {
-			final Map<String,String> trains =
-					Stream.of( PRIMARY_TRAIN, SECONDARY_TRAIN )
-							.filter(train -> capture.methods.findCameraPosition( train, false ) >= 0 )
-							.collect( Collectors.toMap( k->k, v -> "/home/philip/ASI2600/OnEkosStop.esq") );
-			captureAndWait( trains );
-			var tmpDarks = new File( "/tmp/ekosStop/Dark" );
-			if( tmpDarks.isDirectory() ) {
-				for (var f : tmpDarks.listFiles()) {
-					f.delete();
-				}
-			}
-			logMessage( "Caputure one focus offeset image done" );
+		// Confirmed live on 2026-09-20: the day-timeout path can fire hours after Ekos already
+		// stopped on its own (e.g. weather stayed unsafe all day, Ekos shut down at 07:07, this
+		// runs at 15:00) — canStopEkos() above doesn't check whether Ekos is actually still up,
+		// only mount/capture/device-enumeration state, all of which are trivially "fine" once
+		// everything is already stopped. Without this guard, the capture.methods D-Bus calls below
+		// throw UnknownObject ("No such object path '/KStars/Ekos/Capture'") since that object
+		// doesn't exist once Ekos is gone — caught harmlessly, but there's no reference frame to
+		// capture anyway, so skip the attempt entirely instead of logging a spurious stack trace.
+		if( !ekosReady.get() || this.capture == null ) {
+			logMessage( "Ekos is already stopped, skipping reference capture before shutdown" );
 		}
-		catch( Throwable t ) {
-			logError( "Failed to go back to L before shutdown", t );
+		else {
+			try {
+				final Map<String,String> trains =
+						Stream.of( PRIMARY_TRAIN, SECONDARY_TRAIN )
+								.filter(train -> capture.methods.findCameraPosition( train, false ) >= 0 )
+								.collect( Collectors.toMap( k->k, v -> "/home/philip/ASI2600/OnEkosStop.esq") );
+				captureAndWait( trains );
+				var tmpDarks = new File( "/tmp/ekosStop/Dark" );
+				if( tmpDarks.isDirectory() ) {
+					for (var f : tmpDarks.listFiles()) {
+						f.delete();
+					}
+				}
+				logMessage( "Caputure one focus offeset image done" );
+			}
+			catch( Throwable t ) {
+				logError( "Failed to go back to L before shutdown", t );
+			}
 		}
 
 		WaitUntil.waitUntil( "canStop", 120,
@@ -1320,6 +1360,12 @@ public abstract class KStarsCluster extends KStarsState {
 			}
 
 			long changedAt = captureStateChangedAt.getOrDefault( train, now );
+			// CAPTURE_FOCUSING specifically has its own, more granular progress signal (each
+			// V-curve step's Focus.newHFR) — a real run keeps producing those the whole time even
+			// though captureStateChangedAt itself only updates once, on entering the state.
+			if( state == CaptureStatus.CAPTURE_FOCUSING ) {
+				changedAt = Math.max( changedAt, lastFocusProgressAt.getOrDefault( train, 0L ) );
+			}
 			long stuckForMs = now - changedAt;
 			if( stuckForMs < CAPTURE_STALL_TIMEOUT_MS ) {
 				continue;
@@ -1615,13 +1661,11 @@ public abstract class KStarsCluster extends KStarsState {
 				var angles = Arrays.stream(parts[1].split(",")).map(p -> Double.valueOf(p.trim())).toArray(Double[]::new);
 
 				Map<String,String> trains = Map.of(
-						PRIMARY_TRAIN, "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_B_nocal.esq"
-						//SECONDARY_TRAIN, "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_A_nocal.esq"
+						PRIMARY_TRAIN,   "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_nocal.esq",
+						SECONDARY_TRAIN, "/home/philip/ASI2600/15_lrgb_HaOiiiSii_flat_G100_O50_nocal.esq"
 				);
 
 				List<Integer> trainIds = trains.keySet().stream().map( train -> capture.methods.findCameraPosition( train, true ) ).toList();
-
-
 
 				for( var light : this.lightBoxDevices.values() ) {
 					light.lightOn();
@@ -1647,11 +1691,6 @@ public abstract class KStarsCluster extends KStarsState {
 					);
 
 					logMessage("Moved rotator to postion " + pos);
-
-
-					for (var train : trains.keySet()) {
-						capture.methods.abort(train);
-					}
 
 					captureAndWait(trains);
 				}
@@ -1686,10 +1725,14 @@ public abstract class KStarsCluster extends KStarsState {
 		});
 		try {
 			for (var train : trains.entrySet()) {
-				capture.methods.loadSequenceQueue(train.getValue(), train.getKey(), true, "");
+				finished.put(train.getKey(), false);
+
+				logMessage( "Loading " + train.getKey() + " sequence: " + train.getValue() );
+				capture.methods.loadSequenceQueue(train.getValue(), train.getKey(), false, "");
 			}
 
 			for (var train : trains.keySet()) {
+				logMessage( "Starting capture of " + train );
 				capture.methods.start(train);
 			}
 
