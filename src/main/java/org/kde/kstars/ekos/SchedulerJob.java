@@ -23,6 +23,14 @@ public class SchedulerJob implements Serializable {
         parseEslFile( new File( System.getProperty("user.home") + "/current_schedule.esl" ) );
     }
 
+    /** Null-safe replacement for the previous {@code el.getElementsByTagName(tag).item(0).getTextContent()}
+     *  chain — that threw a NullPointerException on any element a <Job> doesn't carry, which turned out
+     *  to be the normal case for follower jobs (see below), not just malformed files. */
+    private static String text( Element el, String tag ) {
+        NodeList nl = el.getElementsByTagName( tag );
+        return nl.getLength() > 0 ? nl.item(0).getTextContent() : null;
+    }
+
     public static List<SchedulerJob> parseEslFile( File esl ) {
         try {
             DocumentBuilder b = DocumentBuilderFactory.newInstance().newDocumentBuilder();
@@ -32,19 +40,50 @@ public class SchedulerJob implements Serializable {
 
             NodeList jobs = doc.getDocumentElement().getElementsByTagName( "Job" );
 
+            // A "follower" job (<JobType lead='false'/>, one per secondary optical train) images
+            // the same target as the lead job immediately before it in the file, so the ESL format
+            // doesn't repeat Name/Coordinates/PositionAngle for it — only OpticalTrain and Sequence
+            // differ. Confirmed against a real current_schedule.esl: every lead Job is immediately
+            // followed by its train's follower Job(s). Without inheriting here, a follower would
+            // show up on the Sky Map "open targets" overlay as a phantom marker at RA=0/DEC=0
+            // instead of its actual target.
+            SchedulerJob lastLead = null;
+
             for( int i=0; i<jobs.getLength(); i++ ) {
                 Element jobEl = (Element) jobs.item(i);
 
                 SchedulerJob job = new SchedulerJob();
 
-                job.name = jobEl.getElementsByTagName( "Name" ).item(0).getTextContent();
-                job.targetRA = Double.parseDouble( jobEl.getElementsByTagName( "J2000RA" ).item(0).getTextContent() );
-                job.targetDEC = Double.parseDouble( jobEl.getElementsByTagName( "J2000DE" ).item(0).getTextContent() );
-                
-                job.pa = Double.parseDouble( jobEl.getElementsByTagName( "PositionAngle" ).item(0).getTextContent() );
-                job.sequence = new File( jobEl.getElementsByTagName( "Sequence" ).item(0).getTextContent() ).toURI().toString();
+                NodeList jobTypeNodes = jobEl.getElementsByTagName( "JobType" );
+                job.lead = jobTypeNodes.getLength() == 0
+                        || !"false".equals( ( (Element) jobTypeNodes.item(0) ).getAttribute( "lead" ) );
+                job.opticalTrain = text( jobEl, "OpticalTrain" );
 
-                
+                String name = text( jobEl, "Name" );
+                String ra = text( jobEl, "J2000RA" );
+                String de = text( jobEl, "J2000DE" );
+                String pa = text( jobEl, "PositionAngle" );
+
+                if( name != null ) {
+                    job.name = name;
+                    job.targetRA = ra != null ? Double.parseDouble( ra ) : 0;
+                    job.targetDEC = de != null ? Double.parseDouble( de ) : 0;
+                    job.pa = pa != null ? Double.parseDouble( pa ) : 0;
+                }
+                else if( lastLead != null ) {
+                    job.name = lastLead.name;
+                    job.targetRA = lastLead.targetRA;
+                    job.targetDEC = lastLead.targetDEC;
+                    job.pa = lastLead.pa;
+                }
+
+                if( job.lead ) {
+                    lastLead = job;
+                }
+
+                String sequence = text( jobEl, "Sequence" );
+                job.sequence = sequence != null ? new File( sequence ).toURI().toString() : null;
+
                 sl.add( job );
 
                 System.out.println( job );
@@ -83,9 +122,15 @@ public class SchedulerJob implements Serializable {
     public int completedCount;
     public String completionTime;
     public boolean inSequenceFocus;
+    /** Only populated by parseEslFile() (not present in the live D-Bus job JSON) — true for the
+     *  train that owns this target's Name/Coordinates, false for a follower train imaging the
+     *  same target. See parseEslFile()'s lead-inheritance comment. */
+    public boolean lead;
     public double minAltitude;
     public double minMoonSeparation;
     public String name;
+    /** Only populated by parseEslFile() — which optical train this job runs on. */
+    public String opticalTrain;
     public double pa;
     public int repeatsRemaining;
     public int repeatsRequired;
