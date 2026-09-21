@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStatusSocket } from './api/useStatusSocket';
-import { getTrains, getDevices, getLastImageFilename, type StatusSnapshot, type ViewerImage, type TimelineCaptureSelection } from './api/types';
+import { getTrains, getDevices, getLastImageFilename, type StatusSnapshot, type ViewerImage, type TimelineCaptureSelection, type SchedulerJob } from './api/types';
 import { fetchAllskyCameras, fetchAllskyChart, fetchAllskyKeograms, nearestAllskyMatches, allskyImageUrl, type AllskyCameraInfo, type AllskyMatch, type AllskyNightKeogram, type AllskyPoint } from './api/allskyApi';
+import { fetchScheduleFileJobs } from './api/actions';
 import { ConnectionCard } from './components/ConnectionCard';
 import { TrainCaptureCard } from './components/TrainCaptureCard';
 import { TrainFocusCard } from './components/TrainFocusCard';
@@ -47,6 +48,11 @@ const ALLSKY_STAR_HISTORY_POLL_MS = 5 * 60_000;
 // A completed night's keogram only changes once a day — matches the backend's own cache TTL
 // (AllskyClient.NIGHT_KEOGRAM_CACHE_MS), no point polling faster than that.
 const NIGHT_KEOGRAM_POLL_MS = 15 * 60_000;
+// The .esl file on disk can be edited in KStars while Ekos is down, so this keeps polling rather
+// than fetching once — same reasoning as SkyMapCard's own diskJobs fetch for the "open targets"
+// overlay, just on a longer interval since a stale schedule sitting on screen a few seconds longer
+// is harmless here.
+const PLANNED_JOBS_POLL_MS = 30_000;
 
 /** Earliest timestamp anywhere in the retained session history — closely mirrors (without fully
  * duplicating) SessionTimeline's own fullStart calculation, just enough to know which of the
@@ -85,6 +91,9 @@ export function App() {
   // Stars" lane needs the whole visible window's history, not just one moment's nearest match.
   const [allskyStarHistory, setAllskyStarHistory] = useState<AllskyPoint[]>([]);
   const [nightKeograms, setNightKeograms] = useState<AllskyNightKeogram[]>([]);
+  // The Scheduler card's fallback when Ekos isn't running/connected yet — see SchedulerCard's
+  // own `plannedJobs` prop.
+  const [plannedJobs, setPlannedJobs] = useState<SchedulerJob[]>([]);
 
   // Read inside the polling effects below via a ref rather than a `[status]` dependency — status
   // itself updates far more often (live per-second broadcast) than these polls should ever fire.
@@ -94,6 +103,20 @@ export function App() {
   useEffect(() => {
     fetchAllskyCameras().then(setAllskyCameras).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (status?.ekosReady) {
+      setPlannedJobs([]);
+      return undefined;
+    }
+    let cancelled = false;
+    function poll() {
+      fetchScheduleFileJobs().then((jobs) => { if (!cancelled) setPlannedJobs(jobs); }).catch(() => {});
+    }
+    poll();
+    const interval = window.setInterval(poll, PLANNED_JOBS_POLL_MS);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [status?.ekosReady]);
 
   // Anchored per-night (using the dusk/dawn bounds nightKeograms already computed) rather than
   // fixed-size chunks stacked back from "now" — indi-allsky's own loop endpoint caps how many
@@ -260,7 +283,13 @@ export function App() {
              * the first pair of wide cards after the normal-width ones above, so the grid's
              * left-to-right auto-flow lands them in the same row instead of pairing each with
              * whatever wide card happens to be next in the list. */}
-            <SchedulerCard schedulerState={status.schedulerState} activeJob={status.activeJob} jobs={status.jobs} />
+            <SchedulerCard
+              schedulerState={status.schedulerState}
+              activeJob={status.activeJob}
+              jobs={status.jobs}
+              ekosReady={status.ekosReady}
+              plannedJobs={plannedJobs}
+            />
             <SkyMapCard
               dataSource={liveSkyMapDataSource}
               mountCoords={status.mountCoords}

@@ -362,6 +362,12 @@ table td:first-child {
   margin-top: 0;
 }
 
+.scheduler-mode-note {
+  color: var(--muted);
+  font-weight: normal;
+  font-size: 0.8em;
+}
+
 .scheduler-jobs th {
   text-align: left;
   color: var(--muted);
