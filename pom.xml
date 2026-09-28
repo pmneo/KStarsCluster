@@ -132,8 +132,10 @@
             <version>1.21.1</version>
         </dependency>
 
-        <!-- Reads KStars' own userdb.sqlite (read-only) to pull the user's artificial horizon
-             regions for the Sky Map's horizon simulation. -->
+        <!-- Reads KStars' own userdb.sqlite (read-only): the user's artificial horizon regions
+             for the Sky Map's horizon simulation (ArtificialHorizon), and the active profile's
+             optical-train device assignments for offline device->train history remapping
+             (OpticalTrainDb). -->
         <dependency>
             <groupId>org.xerial</groupId>
             <artifactId>sqlite-jdbc</artifactId>
