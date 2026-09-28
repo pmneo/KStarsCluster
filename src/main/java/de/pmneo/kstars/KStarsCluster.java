@@ -49,6 +49,7 @@ import bsh.Interpreter;
 
 import de.pmneo.kstars.utils.Coordinates;
 import de.pmneo.kstars.utils.FocusDriftDetector;
+import de.pmneo.kstars.utils.OpticalTrainDb;
 import de.pmneo.kstars.utils.RaDecUtils;
 import de.pmneo.kstars.web.CommandServlet.Action;
 
@@ -258,6 +259,16 @@ public abstract class KStarsCluster extends KStarsState {
 	 * whole time. Ekos' own Analyze module already logs exactly this history to disk (session by
 	 * session) — replay the latest file once at startup so the web UI isn't blank right after a
 	 * restart. See SessionHistory.restoreFromAnalyzeLog for the actual parsing/replay.
+	 *
+	 * Runs at CONSTRUCTOR time, i.e. potentially long before KStars/Ekos is even running — the
+	 * whole point is that this app stays useful without it. That's exactly why the device->train
+	 * remap right after this reads OpticalTrainDb (straight off KStars' own on-disk config/
+	 * userdb.sqlite) instead of only relying on the D-Bus-based remapAnalyzeLogHistoryToTrains()
+	 * in ekosReady(): if Ekos never becomes ready this session (or takes a while to), history
+	 * would otherwise sit mis-keyed by device name for the whole session in the meantime. Both
+	 * remaps are kept — this offline one for immediate correctness, the D-Bus one later as a
+	 * live-truth re-check (e.g. in case the equipment profile changed between this and Ekos
+	 * actually connecting) — remapDeviceKeysToTrains() is idempotent, so running it twice is safe.
 	 */
 	private void restoreHistoryFromAnalyzeLog() {
 		try {
@@ -271,6 +282,13 @@ public abstract class KStarsCluster extends KStarsState {
 		catch( Throwable t ) {
 			logError( "Failed to restore history from analyze log", t );
 		}
+
+		try {
+			history.remapDeviceKeysToTrains( OpticalTrainDb.readDeviceToTrain() );
+		}
+		catch( Throwable t ) {
+			logError( "Failed to remap analyze-log history from device names to trains", t );
+		}
 	}
 
 	/**
@@ -283,13 +301,18 @@ public abstract class KStarsCluster extends KStarsState {
 	 * keyed by device name for any log written by such a KStars build. Old logs have no such
 	 * field at all and fall back to PRIMARY_TRAIN already, so they need no fixing here.
 	 *
-	 * Resolved via the same Focus.camera(train)/focuser(train) D-Bus calls Ekos itself uses
+	 * This is the LIVE re-check, not the only fix — restoreHistoryFromAnalyzeLog() already does
+	 * this once, offline, via OpticalTrainDb (straight off KStars' own on-disk config/userdb, no
+	 * D-Bus needed) so history is correct immediately even if Ekos never becomes ready this
+	 * session. Kept here too as a self-healing re-run against live truth (e.g. in case the
+	 * equipment profile changed between this app's own startup and Ekos actually connecting) —
+	 * resolved via the same Focus.camera(train)/focuser(train) D-Bus calls Ekos itself uses
 	 * internally to go from a train to its assigned devices — the reverse direction of
-	 * Focus.focuser(train) already used elsewhere (see correctFocusDrift) — so this needs
-	 * this.focus to actually be connected, hence called from ekosReady() rather than the
-	 * constructor. A camera's own device name (as opposed to the focuser's) isn't available via
-	 * any currently-wrapped Capture method for an arbitrary train, only Focus's, which is fine:
-	 * both modules resolve the same OpticalTrainManager assignment Ekos itself uses.
+	 * Focus.focuser(train) already used elsewhere (see correctFocusDrift). A camera's own device
+	 * name (as opposed to the focuser's) isn't available via any currently-wrapped Capture method
+	 * for an arbitrary train, only Focus's, which is fine: both modules resolve the same
+	 * OpticalTrainManager assignment Ekos itself uses. remapDeviceKeysToTrains() is idempotent, so
+	 * running it again here after the offline pass already ran is harmless.
 	 */
 	private void remapAnalyzeLogHistoryToTrains() {
 		Map<String,String> deviceToTrain = new HashMap<>();
