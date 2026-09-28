@@ -341,10 +341,17 @@ public class SessionHistory {
         // this walks backward through up to 10 files merging history until met.
         EkosAnalyzeLog.ParsedHistory parsed = EkosAnalyzeLog.parseRecent( analyzeDir, 50, 300, 300, 10 );
 
-        // Recent KStars versions tag CaptureComplete/AutofocusComplete rows with the train
-        // they belong to; older rows (and thus older log files) come back keyed under
-        // EkosAnalyzeLog's DEFAULT_TRAIN ("Primary") — same train every such row was
-        // attributed to before this per-train restore existed.
+        // Recent KStars versions tag CaptureComplete/AutofocusComplete rows with the physical
+        // camera/focuser DEVICE that was active (e.g. "ZWO CCD ASI2600A"), NOT the optical train
+        // name every other per-train map in this app is keyed by — EkosAnalyzeLog just reads
+        // that field back verbatim, so `train` below is really "whatever device or fallback
+        // train name that row's field held." Older rows (and thus older log files) have no such
+        // field at all and come back keyed under EkosAnalyzeLog's DEFAULT_TRAIN ("Primary") —
+        // same train every such row was attributed to before this per-train restore existed, so
+        // those need no fixing. This class deliberately makes no D-Bus calls itself (see the
+        // class comment) to resolve which device belongs to which train, so any device-keyed
+        // entries here are only corrected later, once the caller can actually ask — see
+        // remapDeviceKeysToTrains().
         for( var entry : parsed.images.entrySet() ) {
             String train = entry.getKey();
             for( CapturedImage img : entry.getValue() ) {
@@ -371,6 +378,58 @@ public class SessionHistory {
         }
 
         return new RestoreSummary( parsed.totalImages(), parsed.totalHfrSamples(), parsed.guideSamples.size(), parsed.timelineEvents.size() );
+    }
+
+    /**
+     * Rekeys any images/hfrHistory entries currently sitting under a physical device name (see
+     * restoreFromAnalyzeLog()'s own comment on why those can exist at all) onto the correct
+     * train name. Deliberately takes the mapping as a plain argument rather than resolving it
+     * itself — this class makes no D-Bus calls (see the class comment), so the caller (which
+     * does have live D-Bus access) is the one that can actually ask Ekos which device belongs to
+     * which train.
+     *
+     * Re-records each entry through recordCapturedImage()/recordHfr() instead of moving the
+     * Deques directly — reuses their existing cap-trimming, and merges correctly with anything
+     * already recorded under the real train name (from live signals that arrived before this
+     * runs) instead of clobbering it.
+     *
+     * A no-op for a key that isn't in deviceToTrain at all (an already-correct train name, or
+     * EkosAnalyzeLog's DEFAULT_TRAIN fallback for an old log with no device field) — nothing to
+     * remap in either case.
+     */
+    public void remapDeviceKeysToTrains( Map<String,String> deviceToTrain ) {
+        for( var entry : deviceToTrain.entrySet() ) {
+            String device = entry.getKey();
+            String train = entry.getValue();
+            if( device.equals( train ) ) {
+                continue; // already correct, e.g. a train whose device happens to share its name
+            }
+
+            Deque<CapturedImage> images = capturedImages.remove( device );
+            if( images != null ) {
+                for( CapturedImage img : images ) {
+                    Map<String,Object> m = new LinkedHashMap<>();
+                    m.put( "filename", img.filename );
+                    m.put( "filter", img.filter );
+                    m.put( "exposure", img.exposure );
+                    m.put( "hfr", img.hfr );
+                    m.put( "eccentricity", img.eccentricity );
+                    m.put( "median", img.median );
+                    m.put( "starCount", img.starCount );
+                    m.put( "width", img.width );
+                    m.put( "height", img.height );
+                    m.put( "type", img.type );
+                    recordCapturedImage( train, img.ts, m );
+                }
+            }
+
+            Deque<HfrSample> hfr = hfrHistory.remove( device );
+            if( hfr != null ) {
+                for( HfrSample s : hfr ) {
+                    recordHfr( train, s.ts, s.hfr, s.position );
+                }
+            }
+        }
     }
 
     /** Folded into the status push instead of separate polling loops for the HFR chart and image

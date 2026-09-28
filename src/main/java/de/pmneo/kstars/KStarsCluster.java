@@ -273,6 +273,49 @@ public abstract class KStarsCluster extends KStarsState {
 		}
 	}
 
+	/**
+	 * Modern KStars (see the "Analyze: Support multiple cameras and focusers per session" change)
+	 * tags CaptureComplete/AutofocusComplete rows in the .analyze log with the physical DEVICE
+	 * name (e.g. "ZWO CCD ASI2600A") that was active for that event, not the optical train name
+	 * ("Primary"/"Secondary") every OTHER per-train map in this codebase is keyed by —
+	 * EkosAnalyzeLog just reads that field back verbatim, so restoreHistoryFromAnalyzeLog() (run
+	 * from the constructor, before this.focus exists) leaves SessionHistory's images/hfrHistory
+	 * keyed by device name for any log written by such a KStars build. Old logs have no such
+	 * field at all and fall back to PRIMARY_TRAIN already, so they need no fixing here.
+	 *
+	 * Resolved via the same Focus.camera(train)/focuser(train) D-Bus calls Ekos itself uses
+	 * internally to go from a train to its assigned devices — the reverse direction of
+	 * Focus.focuser(train) already used elsewhere (see correctFocusDrift) — so this needs
+	 * this.focus to actually be connected, hence called from ekosReady() rather than the
+	 * constructor. A camera's own device name (as opposed to the focuser's) isn't available via
+	 * any currently-wrapped Capture method for an arbitrary train, only Focus's, which is fine:
+	 * both modules resolve the same OpticalTrainManager assignment Ekos itself uses.
+	 */
+	private void remapAnalyzeLogHistoryToTrains() {
+		Map<String,String> deviceToTrain = new HashMap<>();
+		for( String train : List.of( PRIMARY_TRAIN, SECONDARY_TRAIN ) ) {
+			try {
+				String camera = this.focus.methods.camera( train );
+				if( camera != null && !camera.isBlank() ) {
+					deviceToTrain.put( camera, train );
+				}
+			}
+			catch( Throwable t ) {
+				logError( "Failed to resolve camera device for train " + train, t );
+			}
+			try {
+				String focuser = this.focus.methods.focuser( train );
+				if( focuser != null && !focuser.isBlank() ) {
+					deviceToTrain.put( focuser, train );
+				}
+			}
+			catch( Throwable t ) {
+				logError( "Failed to resolve focuser device for train " + train, t );
+			}
+		}
+		history.remapDeviceKeysToTrains( deviceToTrain );
+	}
+
 	private String lastBroadcastStatus = null;
 	private void broadcastStatusIfChanged() {
 		try {
@@ -1209,6 +1252,11 @@ public abstract class KStarsCluster extends KStarsState {
 		catch( Throwable t ) {
 			logError( "Failed to read initial align solution", t );
 		}
+
+		//the constructor-time analyze-log replay (see restoreHistoryFromAnalyzeLog()) ran before
+		//this.focus existed, so any device-keyed history from it is still keyed wrong — fix it up
+		//now that we can actually ask Ekos which device belongs to which train
+		remapAnalyzeLogHistoryToTrains();
 
 		//initial job determination: when we connect while a job is ALREADY executing,
 		//no scheduler newLog will fire until the next scheduler action — fetch it once
