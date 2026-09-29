@@ -428,15 +428,22 @@ export function SessionTimeline({
     // second half of the night, its captures packed tightly enough that every focus tick behind
     // them disappeared). Drawing captures first and focus always last guarantees focus markers
     // stay visible regardless of how dense the surrounding captures are.
-    // Prefer the precise, state-transition-based spans (see captureStateFocusSegments) — falls
-    // back to the older HFR-sample-gap guess only when this train's "capture-<train>" lane has no
-    // events at all yet, e.g. a session running from before this per-train lane started being
-    // recorded (KStarsState.handleCaptureStatus). Once that lane has any data, trust it fully
-    // rather than mixing both for the same stretch, which would double up markers.
-    const hasCaptureStateLane = timelineEvents.some((e) => e.lane === `capture-${train}`);
-    const focusSegs = hasCaptureStateLane
-      ? captureStateFocusSegments(timelineEvents, train, hfrHistory[train] ?? [], now)
-      : focusSegments(hfrHistory[train] ?? []);
+    // Prefer the precise, state-transition-based spans (see captureStateFocusSegments) for
+    // whatever time range this train's "capture-<train>" lane actually covers — but that lane
+    // only starts recording from whenever KStarsCluster (re)started, so trusting it for the WHOLE
+    // displayed range as soon as it has ANY event (as an earlier version of this did) throws away
+    // every already-restored, pre-restart HFR-based run the instant the very first live status
+    // signal arrives post-restart — confirmed live: Primary lost its entire night's worth of focus
+    // markers within moments of a restart, while Secondary (no live signal yet) still looked
+    // right. Split at the lane's own earliest event instead: everything before it still has no
+    // real state data, so it keeps using the HFR-sample-gap guess; only what happened after uses
+    // the precise spans.
+    const laneEvents = timelineEvents.filter((e) => e.lane === `capture-${train}`);
+    const laneStart = laneEvents.length > 0 ? Math.min(...laneEvents.map((e) => e.ts)) : Infinity;
+    const focusSegs = [
+      ...focusSegments(hfrHistory[train] ?? []).filter((seg) => seg.end < laneStart),
+      ...captureStateFocusSegments(timelineEvents, train, hfrHistory[train] ?? [], now),
+    ];
     const segments = [
       ...captureSegments(images[train] ?? [], dynamicFilterSeen, filterLegend),
       ...focusSegs,
