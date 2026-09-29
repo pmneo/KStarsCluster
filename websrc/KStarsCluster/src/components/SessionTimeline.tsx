@@ -392,11 +392,17 @@ export function SessionTimeline({
 
   const rows: Row[] = [];
   rows.push({ kind: 'segments', label: 'Scheduler', segments: schedulerSegments(timelineEvents, jobColors, now) });
-  for (const train of Object.keys(images).sort()) {
-    rows.push({ kind: 'segments', label: `Capture (${train})`, segments: captureSegments(images[train], dynamicFilterSeen, filterLegend) });
-  }
-  for (const train of Object.keys(hfrHistory).sort()) {
-    rows.push({ kind: 'segments', label: `Focus (${train})`, segments: focusSegments(hfrHistory[train]) });
+  // Focus runs share the Capture row (one row per train) rather than their own lane — an
+  // autofocus run is a gap in that train's captures anyway, so showing it inline (in FOCUS_MARK's
+  // purple, distinct from every filter color) reads as "why did capturing pause here" without a
+  // separate lane to visually reconcile it against.
+  const captureTrains = new Set([...Object.keys(images), ...Object.keys(hfrHistory)]);
+  for (const train of Array.from(captureTrains).sort()) {
+    const segments = [
+      ...captureSegments(images[train] ?? [], dynamicFilterSeen, filterLegend),
+      ...focusSegments(hfrHistory[train] ?? []),
+    ].sort((a, b) => a.start - b.start);
+    rows.push({ kind: 'segments', label: `Capture (${train})`, segments });
   }
   // Only shown when a drift correction has actually happened — unlike Guide/Mount/Align (which
   // always have *some* state once Ekos is running), this is an exceptional event, and an
