@@ -48,7 +48,7 @@ const STATUS_GOOD = '#0ca30c';
 const STATUS_WARNING = '#fab219';
 const STATUS_CRITICAL = '#d03b3b';
 const IDLE = '#4a4f5e';
-const FOCUS_MARK = '#9085e9';
+const FOCUS_MARK = '#eab308';
 
 function categoricalColor(seen: Map<string, string>, key: string): string {
   let color = seen.get(key);
