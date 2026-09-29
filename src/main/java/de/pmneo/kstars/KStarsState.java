@@ -219,6 +219,15 @@ public class KStarsState extends WithLogging {
         logMessage( "handleCaptureStatus(" + train + ", " + state + ")" );
         state = captureStatus.computeIfAbsent( train, t -> CaptureStatus.CAPTURE_IDLE );
 
+        // Per-train lane, same unconditional "record every state change" pattern as guide/mount/
+        // align above — without this, the web UI's Session Timeline had no real record of exactly
+        // when a train entered/left CAPTURE_FOCUSING, and could only guess a focus run's span from
+        // the sparse Focus.newHFR sample timestamps (see SessionHistory/EkosAnalyzeLog), which
+        // always starts later than the run actually did (the first V-curve point only arrives
+        // after the initial move+exposure) and so drew a too-short marker instead of a span
+        // covering the whole capture gap.
+        history.recordTimelineEvent( "capture-" + train, state.name() );
+
         switch (state) {
             case CAPTURE_CAPTURING:
                 captureRunning.put( train, true );

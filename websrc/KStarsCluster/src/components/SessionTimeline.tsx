@@ -223,6 +223,27 @@ function focusSegments( samples: HfrSample[] ): Segment[] {
   }));
 }
 
+/** Precise focus-run spans, built the same way Guide/Mount/Align already derive their own
+ * segments — a per-train "capture-<train>" lane (see KStarsState.handleCaptureStatus) records
+ * every capture-state change, so a CAPTURE_FOCUSING entry's segment naturally ends at whatever
+ * the next state change is: the TRUE wall-clock span. focusSegments() above has to guess a run's
+ * start/end from the first/last Focus.newHFR sample it happened to receive instead — always
+ * later than the run actually started (the first V-curve point only arrives after the initial
+ * move+exposure), which drew a too-short marker instead of one spanning the whole capture gap.
+ * HFR samples inside a segment's span are cross-referenced only to enrich its tooltip (point
+ * count + best HFR), never to determine the boundaries themselves. */
+function captureStateFocusSegments( events: TimelineEvent[], train: string, samples: HfrSample[], now: number ): Segment[] {
+  return toSegments(events, `capture-${train}`, now, (label) => (label === 'CAPTURE_FOCUSING' ? FOCUS_MARK : ''))
+    .filter((seg) => seg.color === FOCUS_MARK)
+    .map((seg) => {
+      const inRange = samples.filter((s) => s.ts >= seg.start && s.ts <= seg.end);
+      const title = inRange.length > 0
+        ? `Autofocus (${inRange.length} points, best HFR ${Math.min(...inRange.map((s) => s.hfr)).toFixed(2)})`
+        : 'Autofocus';
+      return { ...seg, key: `autofocus-${seg.start}`, title };
+    });
+}
+
 /** Focus-drift correction events (KStarsCluster.correctFocusDrift) — always a "this happened
  * here" moment, never an ongoing state, so unlike toSegments there's no "runs until the next
  * event" case to handle: every one of these is rendered as a zero-duration marker. Rendered in
@@ -407,9 +428,18 @@ export function SessionTimeline({
     // second half of the night, its captures packed tightly enough that every focus tick behind
     // them disappeared). Drawing captures first and focus always last guarantees focus markers
     // stay visible regardless of how dense the surrounding captures are.
+    // Prefer the precise, state-transition-based spans (see captureStateFocusSegments) — falls
+    // back to the older HFR-sample-gap guess only when this train's "capture-<train>" lane has no
+    // events at all yet, e.g. a session running from before this per-train lane started being
+    // recorded (KStarsState.handleCaptureStatus). Once that lane has any data, trust it fully
+    // rather than mixing both for the same stretch, which would double up markers.
+    const hasCaptureStateLane = timelineEvents.some((e) => e.lane === `capture-${train}`);
+    const focusSegs = hasCaptureStateLane
+      ? captureStateFocusSegments(timelineEvents, train, hfrHistory[train] ?? [], now)
+      : focusSegments(hfrHistory[train] ?? []);
     const segments = [
       ...captureSegments(images[train] ?? [], dynamicFilterSeen, filterLegend),
-      ...focusSegments(hfrHistory[train] ?? []),
+      ...focusSegs,
     ];
     rows.push({ kind: 'segments', label: `Capture (${train})`, segments });
   }
