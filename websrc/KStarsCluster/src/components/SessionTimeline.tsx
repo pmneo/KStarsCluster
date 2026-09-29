@@ -201,6 +201,16 @@ function captureSegments( imgs: CapturedImage[], dynamicSeen: Map<string, string
  * are minutes to hours apart — one segment per run instead of per sample. */
 const RUN_GAP_MS = 60_000;
 
+/** A real autofocus run takes tens of seconds to a few minutes (every one seen live so far: 2-4
+ * minutes) — generous headroom over that, not a tuned "typical" value. Needed because
+ * captureStateFocusSegments() below trusts "this train's next capture-state event" as a
+ * CAPTURE_FOCUSING run's end, which is wrong if that "next event" is actually unrelated to this
+ * run at all: confirmed live, a train left sitting in CAPTURE_FOCUSING with no proper exit signal
+ * (the observing session ended for the night mid-focus) had its next lane event arrive 64 minutes
+ * later (an eventual abort) — rendering as an hour-long "still focusing" bar stretching to that
+ * point, even though the live focusState had already read FOCUS_IDLE the whole time. */
+const MAX_FOCUS_RUN_MS = 10 * 60_000;
+
 function focusSegments( samples: HfrSample[] ): Segment[] {
   const sorted = [...samples].sort((a, b) => a.ts - b.ts);
   const runs: HfrSample[][] = [];
@@ -236,11 +246,13 @@ function captureStateFocusSegments( events: TimelineEvent[], train: string, samp
   return toSegments(events, `capture-${train}`, now, (label) => (label === 'CAPTURE_FOCUSING' ? FOCUS_MARK : ''))
     .filter((seg) => seg.color === FOCUS_MARK)
     .map((seg) => {
-      const inRange = samples.filter((s) => s.ts >= seg.start && s.ts <= seg.end);
-      const title = inRange.length > 0
+      const wasTruncated = seg.end - seg.start > MAX_FOCUS_RUN_MS;
+      const end = wasTruncated ? seg.start + MAX_FOCUS_RUN_MS : seg.end;
+      const inRange = samples.filter((s) => s.ts >= seg.start && s.ts <= end);
+      const title = (inRange.length > 0
         ? `Autofocus (${inRange.length} points, best HFR ${Math.min(...inRange.map((s) => s.hfr)).toFixed(2)})`
-        : 'Autofocus';
-      return { ...seg, key: `autofocus-${seg.start}`, title };
+        : 'Autofocus') + (wasTruncated ? ' — no exit signal, exact end unknown' : '');
+      return { ...seg, key: `autofocus-${seg.start}`, end, title };
     });
 }
 
