@@ -398,10 +398,19 @@ export function SessionTimeline({
   // separate lane to visually reconcile it against.
   const captureTrains = new Set([...Object.keys(images), ...Object.keys(hfrHistory)]);
   for (const train of Array.from(captureTrains).sort()) {
+    // Focus segments MUST come last, not chronologically interleaved: every segment <rect> is
+    // clamped to a minimum 1.5px width (see the row rendering below), so a night's worth of
+    // capture segments densely packs the row with slightly-overlapping rects — whichever one is
+    // LATER in this array draws on top (plain SVG sibling paint order). Sorting by start time
+    // put whichever capture segment happened to start right after a focus run on top of it,
+    // silently hiding the focus marker in any densely-packed stretch (confirmed live: Secondary's
+    // second half of the night, its captures packed tightly enough that every focus tick behind
+    // them disappeared). Drawing captures first and focus always last guarantees focus markers
+    // stay visible regardless of how dense the surrounding captures are.
     const segments = [
       ...captureSegments(images[train] ?? [], dynamicFilterSeen, filterLegend),
       ...focusSegments(hfrHistory[train] ?? []),
-    ].sort((a, b) => a.start - b.start);
+    ];
     rows.push({ kind: 'segments', label: `Capture (${train})`, segments });
   }
   // Only shown when a drift correction has actually happened — unlike Guide/Mount/Align (which
