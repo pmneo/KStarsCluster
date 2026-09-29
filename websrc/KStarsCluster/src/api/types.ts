@@ -57,13 +57,15 @@ export interface ViewerImage {
 /** Whatever moment is hovered/clicked on the Session Timeline (any row, not just a Capture slice —
  * see SessionTimeline's timestampAtClientX) — `ts` is used to find the nearest allsky match per
  * camera (see allskyApi's nearestAllskyMatches) regardless of what's at that exact moment.
- * `capture` is only set if a capture was actually exposing at that precise instant (see
- * SessionTimeline's findActiveCaptureAt) — e.g. hovering an hour of SCHEDULER_IDLE with nothing
- * capturing leaves it unset, so CaptureCompareStrip shows the allsky comparison without implying a
- * specific frame was taken "around" that moment when none actually was. */
+ * `captures` holds one entry per train that was actually exposing at that precise instant (see
+ * SessionTimeline's findActiveCapturesAt) — empty if nothing was, e.g. hovering an hour of
+ * SCHEDULER_IDLE, so CaptureCompareStrip shows the allsky comparison without implying a specific
+ * frame was taken "around" that moment when none actually was. Every train checked, not just
+ * whichever row was hovered — a dual-train setup can easily have BOTH exposing at the same
+ * instant, and only ever showing the first one found silently hid the other. */
 export interface TimelineCaptureSelection {
   ts: number;
-  capture?: { train: string; image: ViewerImage };
+  captures: { train: string; image: ViewerImage }[];
 }
 
 /** INDI CCDChip::CCDFrameType order — confirmed against a real captureComplete signal (Flat frame -> type 3). */

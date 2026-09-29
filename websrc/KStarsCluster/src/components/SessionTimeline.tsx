@@ -98,26 +98,29 @@ interface Segment {
   title: string;
 }
 
-/** The capture (across every train, not just whichever row was actually hovered) that was
- * actually exposing at a given timestamp — an exact-window check (img.ts - exposure*1000 <= ts <=
- * img.ts), not "whichever capture happens to be nearest": hovering an hour of SCHEDULER_IDLE with
- * nothing capturing shouldn't show some capture from hours away as if it were "around" that
- * moment. For an actual Capture segment, seg.start/end (see captureSegments) already ARE that
- * same image's own exposure window, and timestampAtClientX clamps to them — so hovering a Capture
- * slice always resolves back to that exact image, no separate code path needed. */
-function findActiveCaptureAt(ts: number, images: Record<string, CapturedImage[]>): { train: string; image: ViewerImage } | undefined {
+/** Every capture (one per train, not just whichever row was actually hovered — a dual-train setup
+ * routinely has both exposing at once) that was actually exposing at a given timestamp — an
+ * exact-window check (img.ts - exposure*1000 <= ts <= img.ts), not "whichever capture happens to
+ * be nearest": hovering an hour of SCHEDULER_IDLE with nothing capturing shouldn't show some
+ * capture from hours away as if it were "around" that moment. For an actual Capture segment,
+ * seg.start/end (see captureSegments) already ARE that same image's own exposure window, and
+ * timestampAtClientX clamps to them — so hovering a Capture slice always resolves back to that
+ * exact image, no separate code path needed. */
+function findActiveCapturesAt(ts: number, images: Record<string, CapturedImage[]>): { train: string; image: ViewerImage }[] {
+  const found: { train: string; image: ViewerImage }[] = [];
   for (const [train, imgs] of Object.entries(images)) {
     for (const img of imgs) {
       if (ts >= img.ts - img.exposure * 1000 && ts <= img.ts) {
-        return { train, image: { filename: img.filename, target: img.target, filter: img.filter, exposure: img.exposure } };
+        found.push({ train, image: { filename: img.filename, target: img.target, filter: img.filter, exposure: img.exposure } });
+        break; // one train can't have two overlapping exposures — move on to the next train
       }
     }
   }
-  return undefined;
+  return found;
 }
 
 function buildSelection(ts: number, images: Record<string, CapturedImage[]>): TimelineCaptureSelection {
-  return { ts, capture: findActiveCaptureAt(ts, images) };
+  return { ts, captures: findActiveCapturesAt(ts, images) };
 }
 
 /** Turns one lane's state-change events into contiguous segments: each event normally lasts

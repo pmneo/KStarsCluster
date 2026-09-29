@@ -21,30 +21,49 @@ interface Props {
   onClear: () => void;
 }
 
+/** One train's capture thumbnail — its own auto-stretch fetch/state, since each train showing at
+ * the same hovered moment (see CaptureCompareStrip) needs an independent stretch, not one shared
+ * across all of them. */
+function CaptureThumb({ train, image, onOpenImage }: { train: string; image: ViewerImage; onOpenImage: (image: ViewerImage) => void }) {
+  const [stretch, setStretch] = useState<StretchSettings>(DEFAULT_STRETCH);
+  const requestedFilenameRef = useRef<string | null>(null);
+  const frameNumber = getFrameNumber(image.filename);
+
+  useEffect(() => {
+    if (requestedFilenameRef.current === image.filename) return;
+    requestedFilenameRef.current = image.filename;
+    setStretch(DEFAULT_STRETCH);
+    fetchAutoStretch(image.filename, false)
+      .then((s) => { if (requestedFilenameRef.current === image.filename) setStretch(s); })
+      .catch(() => { /* leave the default stretch in place, no retry */ });
+  }, [image.filename]);
+
+  return (
+    <div className="image-thumb image-thumb--compare">
+      <button type="button" className="image-thumb-open" onClick={() => onOpenImage(image)} title={image.filename}>
+        <img src={imageUrl(image.filename, THUMB_MAX_DIM, stretch)} alt={image.filename} />
+      </button>
+      <span className="image-caption">
+        {train} · {image.target && <>{image.target} · </>}
+        {image.filter} {image.exposure}s
+        {frameNumber !== undefined && <> · #{frameNumber}</>}
+      </span>
+    </div>
+  );
+}
+
 /** Shown directly under the Session Timeline, always — while a moment is hovered/pinned (see
  * SessionTimeline's onHoverCapture/onSelectCapture) it's the nearest allsky match per camera, so
  * "what did the sky look like around this moment" sits right next to whatever else is showing
- * instead of in a separate card. `selection.capture` is only set if a capture was actually
- * exposing at that precise instant (see findActiveCaptureAt) — hovering a stretch of the timeline
+ * instead of in a separate card. `selection.captures` holds one entry per train that was actually
+ * exposing at that precise instant (see findActiveCapturesAt) — hovering a stretch of the timeline
  * with nothing capturing (e.g. SCHEDULER_IDLE) shows just the allsky comparison, not some other
- * capture from hours away as if it were relevant here. Click the capture thumb to open it in the
- * full ImageViewer; the allsky ones are just for looking at, no stretch settings apply to a raw
- * allsky JPEG. */
+ * capture from hours away as if it were relevant here; a dual-train setup with BOTH exposing at
+ * once shows both, not just whichever train's row happened to be hovered. Click a capture thumb
+ * to open it in the full ImageViewer; the allsky ones are just for looking at, no stretch settings
+ * apply to a raw allsky JPEG. */
 export function CaptureCompareStrip({ selection, allskyMatches, onOpenImage, onClear }: Props) {
-  const [stretch, setStretch] = useState<StretchSettings>(DEFAULT_STRETCH);
-  const requestedFilenameRef = useRef<string | null>(null);
-  const capture = selection?.capture;
-  const frameNumber = capture ? getFrameNumber(capture.image.filename) : undefined;
-
-  useEffect(() => {
-    const filename = capture?.image.filename;
-    if (!filename || requestedFilenameRef.current === filename) return;
-    requestedFilenameRef.current = filename;
-    setStretch(DEFAULT_STRETCH);
-    fetchAutoStretch(filename, false)
-      .then((s) => { if (requestedFilenameRef.current === filename) setStretch(s); })
-      .catch(() => { /* leave the default stretch in place, no retry */ });
-  }, [capture?.image.filename]);
+  const captures = selection?.captures ?? [];
 
   if (!selection) {
     return (
@@ -59,22 +78,10 @@ export function CaptureCompareStrip({ selection, allskyMatches, onOpenImage, onC
 
   return (
     <div className="image-strip image-strip--compare">
-      {capture ? (
-        <div className="image-thumb image-thumb--compare">
-          <button
-            type="button"
-            className="image-thumb-open"
-            onClick={() => onOpenImage(capture.image)}
-            title={capture.image.filename}
-          >
-            <img src={imageUrl(capture.image.filename, THUMB_MAX_DIM, stretch)} alt={capture.image.filename} />
-          </button>
-          <span className="image-caption">
-            {capture.image.target && <>{capture.image.target} · </>}
-            {capture.image.filter} {capture.image.exposure}s
-            {frameNumber !== undefined && <> · #{frameNumber}</>}
-          </span>
-        </div>
+      {captures.length > 0 ? (
+        captures.map(({ train, image }) => (
+          <CaptureThumb key={train} train={train} image={image} onOpenImage={onOpenImage} />
+        ))
       ) : (
         <div className="image-thumb image-thumb--compare">
           <div className="image-thumb-placeholder" />
