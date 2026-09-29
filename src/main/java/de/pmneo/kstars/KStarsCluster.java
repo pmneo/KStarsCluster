@@ -246,11 +246,8 @@ public abstract class KStarsCluster extends KStarsState {
 			logError( "Failed to start http client", t);
 		}
 
-		schedulerService.scheduleWithFixedDelay( this::broadcastStatusIfChanged, 1, 1, TimeUnit.SECONDS );
-		schedulerService.scheduleWithFixedDelay( this::refreshIndiWatches, 1, 1, TimeUnit.MINUTES );
-		schedulerService.scheduleWithFixedDelay( this::checkStalledCaptures, 1, 1, TimeUnit.MINUTES );
-
-		restoreHistoryFromAnalyzeLog();
+		// Deliberately NOT scheduled here — see start()'s own comment for why registering
+		// periodic/background work from this constructor is unsafe.
 	}
 
 	/**
@@ -744,7 +741,32 @@ public abstract class KStarsCluster extends KStarsState {
 	private static final long HEARTBEAT_TIMEOUT_MS = 15_000;
 
 	private AtomicBoolean opticalTrain;
+
+	/** Guards the one-time setup below so it only ever runs once, independent of the
+	 *  kStarsMonitor-restart guard right after it (different concern: that one allows start()
+	 *  to be called again later to restart a dead watchdog thread — this setup must NOT repeat
+	 *  if that ever happens). */
+	private final AtomicBoolean started = new AtomicBoolean( false );
+
 	public void start() {
+		// Deliberately NOT done from the constructor: scheduleWithFixedDelay's first execution
+		// can fire on a background thread before a SUBCLASS's own field initializers finish
+		// running (those run after super()'s constructor body but are still part of "constructing
+		// the subclass", a separate step the JVM performs after this constructor returns) — a
+		// genuine, if narrow, race window. Confirmed live: broadcastStatusIfChanged (which calls
+		// the OVERRIDDEN buildStatusSnapshot(), touching KStarsClusterServer's own roofStatus
+		// field) occasionally threw a NullPointerException on roofStatus right at startup,
+		// intermittently — timing-dependent, matching exactly this class of bug. start() is only
+		// ever called from ServerRunner.main(), strictly after the object (every subclass field
+		// included) is fully constructed, so registering here instead closes the window entirely.
+		if( started.compareAndSet( false, true ) ) {
+			schedulerService.scheduleWithFixedDelay( this::broadcastStatusIfChanged, 1, 1, TimeUnit.SECONDS );
+			schedulerService.scheduleWithFixedDelay( this::refreshIndiWatches, 1, 1, TimeUnit.MINUTES );
+			schedulerService.scheduleWithFixedDelay( this::checkStalledCaptures, 1, 1, TimeUnit.MINUTES );
+
+			restoreHistoryFromAnalyzeLog();
+		}
+
 		if( kStarsMonitor != null ) {
 			if( kStarsMonitor.isAlive() ) {
 				return;
