@@ -429,6 +429,25 @@ public class SessionHistory {
                     recordHfr( train, s.ts, s.hfr, s.position );
                 }
             }
+
+            // Per-train capture-state lane (KStarsState.handleCaptureStatus live, or
+            // EkosAnalyzeLog's AutofocusStarting/Complete/Aborted parsing when replayed) — same
+            // device-vs-train mismatch as images/hfrHistory above, just keyed by LANE NAME
+            // instead of a map key, so it needs its own pass rather than reusing either loop.
+            String deviceLane = "capture-" + device;
+            String trainLane = "capture-" + train;
+            List<TimelineEvent> toRemap = new ArrayList<>();
+            for( TimelineEvent e : timelineEvents ) {
+                if( e.lane.equals( deviceLane ) ) {
+                    toRemap.add( e );
+                }
+            }
+            if( !toRemap.isEmpty() ) {
+                timelineEvents.removeAll( toRemap );
+                for( TimelineEvent e : toRemap ) {
+                    recordTimelineEvent( e.ts, trainLane, e.label );
+                }
+            }
         }
     }
 

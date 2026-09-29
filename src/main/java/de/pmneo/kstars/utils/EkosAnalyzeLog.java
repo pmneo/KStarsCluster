@@ -151,7 +151,11 @@ public class EkosAnalyzeLog {
                     case "CaptureComplete":
                         parseCaptureComplete( result, ts, parts );
                         break;
+                    case "AutofocusStarting":
+                        parseAutofocusStarting( result, ts, parts );
+                        break;
                     case "AutofocusComplete":
+                    case "AutofocusAborted":
                         parseAutofocusComplete( result, ts, parts );
                         break;
                     case "GuideStats":
@@ -187,6 +191,9 @@ public class EkosAnalyzeLog {
      *  DEFAULT_TRAIN — same for parseAutofocusComplete's 10-vs-11 check below. */
     private static final int CAPTURE_COMPLETE_FIELDS_BEFORE_TRAIN = 9;
     private static final int AUTOFOCUS_COMPLETE_FIELDS_BEFORE_TRAIN = 10;
+    /** AutofocusStarting,<offsetSec>,<filter>,<temperature>,<pointCount>,<?>[,<device>] — 6 fields
+     *  (indices 0-5) before an optional trailing device name, confirmed against a real log. */
+    private static final int AUTOFOCUS_STARTING_FIELDS_BEFORE_TRAIN = 6;
 
     private static void parseCaptureComplete( ParsedHistory result, long ts, String[] parts ) {
         // CaptureComplete,<offsetSec>,<exposure>,<filter>,<hfr>,<filepath>,<binx>,<biny>,<eccentricity>[,<train>]
@@ -212,6 +219,9 @@ public class EkosAnalyzeLog {
 
     private static void parseAutofocusComplete( ParsedHistory result, long ts, String[] parts ) {
         // AutofocusComplete,<offsetSec>,<temperature>,<pointCount>,<?>,<filter>,<pos>|<hfr>|<weight>|<flag>|...,...,<solutionDescription>[,<train>]
+        // AutofocusAborted has the identical shape through the points field (confirmed against a
+        // real log) — same call site handles both, only the outcome differs and that doesn't
+        // affect anything parsed here.
         // Confirmed against a real KStars 3.8.4 analyze log (Analyze log version 1.0) — the
         // points list is index 6, not 3, and each sample is a 4-tuple, not a pair (position,
         // HFR, weight, flag). Getting either wrong used to silently yield zero HFR samples,
@@ -233,6 +243,30 @@ public class EkosAnalyzeLog {
                 //skip malformed quadruple
             }
         }
+
+        // Marks the END of whatever focus run parseAutofocusStarting's matching CAPTURE_FOCUSING
+        // event opened on this same device's lane (see toSegments()'s "each event lasts until the
+        // next same-lane event" mechanism, reused as-is by the frontend's
+        // captureStateFocusSegments) — same lane, same device-name key as that event uses,
+        // remapped to the real train name later by SessionHistory.remapDeviceKeysToTrains(). The
+        // label itself doesn't matter beyond "not CAPTURE_FOCUSING" (capturing resumes right after
+        // either a successful or aborted run either way), so one label covers both outcomes.
+        result.addTimelineEvent( ts, "capture-" + train, "CAPTURE_CAPTURING" );
+    }
+
+    /** AutofocusStarting,<offsetSec>,<filter>,<temperature>,<pointCount>,<?>[,<device>] — marks
+     *  the TRUE start of a focus run, unlike AutofocusComplete's own timestamp (the first V-curve
+     *  point only arrives after the initial move+exposure, so anchoring a run's start there always
+     *  lands later than reality — exactly why the Session Timeline used to show focus runs as a
+     *  short mark near the end instead of a span covering the whole capture gap). Emits onto the
+     *  same "capture-<device>" lane parseAutofocusComplete's own exit marker uses, so
+     *  toSegments() naturally computes the true (start, end) span from the pair. */
+    private static void parseAutofocusStarting( ParsedHistory result, long ts, String[] parts ) {
+        if( parts.length < 6 ) {
+            return;
+        }
+        String train = parts.length > AUTOFOCUS_STARTING_FIELDS_BEFORE_TRAIN ? parts[parts.length - 1] : DEFAULT_TRAIN;
+        result.addTimelineEvent( ts, "capture-" + train, "CAPTURE_FOCUSING" );
     }
 
     private static void parseGuideStats( ParsedHistory result, long ts, String[] parts ) {
