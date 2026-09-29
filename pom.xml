@@ -170,6 +170,18 @@
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>de.pmneo.kstars.ServerRunner</mainClass>
+                                    <manifestEntries>
+                                        <!-- sqlite-jdbc (ArtificialHorizon/OpticalTrainDb) loads a native library via
+                                             System::load — JDK 24+ warns on this by default and will eventually refuse
+                                             it outright unless the jar/module is explicitly granted native access.
+                                             This manifest entry is the JAR-level equivalent of passing the JVM's own
+                                             "enable native access" flag (scoped to ALL-UNNAMED) on the command line,
+                                             so `java -jar` (or any launcher that respects the manifest) doesn't need
+                                             it passed in manually. Doesn't help an IDE debug launch that bypasses the
+                                             jar/manifest entirely (raw -classpath + main class) — that still needs
+                                             the flag added to its own VM options. -->
+                                        <Enable-Native-Access>ALL-UNNAMED</Enable-Native-Access>
+                                    </manifestEntries>
                                 </transformer>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
